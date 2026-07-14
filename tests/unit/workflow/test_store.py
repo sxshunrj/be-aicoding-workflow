@@ -60,3 +60,28 @@ def test_saved_event_is_compact_json_with_new_version(tmp_path: Path) -> None:
         "data": {"accepted": True},
     }
     assert ": " not in line
+
+
+def test_invalid_event_does_not_advance_persisted_state(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "run")
+    state = RunState.new("RUN-001", "abc123")
+    store.create(state)
+
+    with pytest.raises(TypeError, match="plain serialization value"):
+        store.save(0, state, Event(type="invalid", data={"value": object()}))
+
+    assert store.load().version == 0
+    assert store.events_path.read_text(encoding="utf-8") == ""
+
+
+def test_tuple_event_value_is_rejected_instead_of_coerced_to_json_list(
+    tmp_path: Path,
+) -> None:
+    store = StateStore(tmp_path / "run")
+    state = RunState.new("RUN-001", "abc123")
+    store.create(state)
+
+    with pytest.raises(TypeError, match="plain serialization value"):
+        store.save(0, state, Event(type="invalid", data={"value": (1, 2)}))
+
+    assert store.load().version == 0

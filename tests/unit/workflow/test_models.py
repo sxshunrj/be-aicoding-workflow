@@ -1,3 +1,5 @@
+import pytest
+
 from ai_workflow.workflow.models import NodeStatus, Phase, RunState
 
 
@@ -22,3 +24,29 @@ def test_run_state_round_trips_through_plain_data() -> None:
 
     assert restored == state
     assert restored.to_dict()["nodes"]["spec"]["status"] == "valid"
+
+
+def test_rejects_non_plain_artifact_values() -> None:
+    state = RunState.new("RUN-001", "abc123")
+    state.artifacts["spec"] = {"digest": ("not", "a", "list")}
+
+    with pytest.raises(TypeError, match="plain serialization value"):
+        state.to_dict()
+
+
+def test_rejects_unsupported_schema_version() -> None:
+    data = RunState.new("RUN-001", "abc123").to_dict()
+    data["schema_version"] = 2
+
+    with pytest.raises(ValueError, match="unsupported schema_version"):
+        RunState.from_dict(data)
+
+
+def test_rejects_malformed_node_entry() -> None:
+    data = RunState.new("RUN-001", "abc123").to_dict()
+    nodes = data["nodes"]
+    assert isinstance(nodes, dict)
+    nodes["spec"] = "not a mapping"
+
+    with pytest.raises(TypeError, match="node 'spec' must be a mapping"):
+        RunState.from_dict(data)

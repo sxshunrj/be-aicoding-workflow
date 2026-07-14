@@ -7,7 +7,7 @@ from uuid import uuid4
 import yaml
 
 from ai_workflow.errors import AppError
-from ai_workflow.workflow.models import RunState
+from ai_workflow.workflow.models import RunState, validate_plain_value
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +27,8 @@ class StateStore:
         state_temporary = self._temporary_path(self.state_path)
         events_temporary = self._temporary_path(self.events_path)
         try:
-            self._write_state(state_temporary, state)
+            state_payload = self._serialize_state(state.to_dict())
+            state_temporary.write_text(state_payload, encoding="utf-8")
             events_temporary.write_text("", encoding="utf-8")
             try:
                 os.link(state_temporary, self.state_path)
@@ -42,6 +43,7 @@ class StateStore:
         data = yaml.safe_load(self.state_path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise AppError("invalid_state", "workflow state must be a mapping")
+        validate_plain_value(data)
         return RunState.from_dict(data)
 
     def save(self, expected_version: int, state: RunState, event: Event) -> None:
@@ -52,25 +54,25 @@ class StateStore:
                 "state version changed; reload before writing",
                 exit_status=4,
             )
-        state.version = expected_version + 1
+        next_version = expected_version + 1
+        state_data = state.to_dict()
+        state_data["version"] = next_version
+        event_data = {"type": event.type, "version": next_version, "data": event.data}
+        validate_plain_value(state_data, path="state")
+        validate_plain_value(event_data, path="event")
+        state_payload = self._serialize_state(state_data)
+        event_payload = json.dumps(event_data, separators=(",", ":")) + "\n"
+
+        state.version = next_version
         temporary = self.state_path.with_suffix(".yaml.tmp")
-        self._write_state(temporary, state)
+        temporary.write_text(state_payload, encoding="utf-8")
         temporary.replace(self.state_path)
         with self.events_path.open("a", encoding="utf-8") as stream:
-            stream.write(
-                json.dumps(
-                    {"type": event.type, "version": state.version, "data": event.data},
-                    separators=(",", ":"),
-                )
-                + "\n"
-            )
+            stream.write(event_payload)
 
     @staticmethod
-    def _write_state(path: Path, state: RunState) -> None:
-        path.write_text(
-            yaml.safe_dump(state.to_dict(), sort_keys=False),
-            encoding="utf-8",
-        )
+    def _serialize_state(data: dict[str, object]) -> str:
+        return yaml.safe_dump(data, sort_keys=False)
 
     @staticmethod
     def _temporary_path(path: Path) -> Path:
