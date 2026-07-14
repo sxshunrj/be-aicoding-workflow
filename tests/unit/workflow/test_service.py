@@ -1,7 +1,9 @@
 from datetime import datetime
 from pathlib import Path
+import shutil
 
 import pytest
+import yaml
 
 from ai_workflow.errors import AppError
 from ai_workflow.workflow.models import Phase
@@ -100,3 +102,71 @@ def test_rerun_transition_requires_a_started_attempt(tmp_path: Path) -> None:
 
     with pytest.raises(AppError, match="current node is not running"):
         service.transition(state.run_id, False, {Phase.SPEC: "retry"})
+
+
+def test_status_rejects_symlinked_run_directory(tmp_path: Path) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "bbbbbb")
+    target = service.init(tmp_path, "abc123")
+    alias = "RUN-20260714-123456-aaaaaa"
+    (tmp_path / ".ai-workflow" / "runs" / alias).symlink_to(
+        tmp_path / ".ai-workflow" / "runs" / target.run_id,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(AppError, match="symlink"):
+        service.status(alias)
+
+
+def test_mutation_rejects_symlinked_run_directory(tmp_path: Path) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "bbbbbb")
+    target = service.init(tmp_path, "abc123")
+    alias = "RUN-20260714-123456-aaaaaa"
+    (tmp_path / ".ai-workflow" / "runs" / alias).symlink_to(
+        tmp_path / ".ai-workflow" / "runs" / target.run_id,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(AppError, match="symlink"):
+        service.begin(alias, Phase.SPEC)
+
+
+def test_load_rejects_state_run_id_mismatch(tmp_path: Path) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "bbbbbb")
+    target = service.init(tmp_path, "abc123")
+    alias = "RUN-20260714-123456-aaaaaa"
+    shutil.copytree(
+        tmp_path / ".ai-workflow" / "runs" / target.run_id,
+        tmp_path / ".ai-workflow" / "runs" / alias,
+    )
+
+    with pytest.raises(AppError, match="does not match"):
+        service.status(alias)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda data: data.update(current_phase="unknown"),
+        lambda data: data["nodes"].pop(data["current_phase"]),
+        lambda data: data["artifacts"].update(attempts={"spec": "many"}),
+    ],
+    ids=["invalid-current-phase", "missing-current-node", "nonnumeric-attempt"],
+)
+def test_load_rejects_semantically_invalid_state(
+    tmp_path: Path, mutation
+) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+    state = service.init(tmp_path, "abc123")
+    state_path = tmp_path / ".ai-workflow" / "runs" / state.run_id / "state.yaml"
+    data = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    mutation(data)
+    state_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(AppError) as error:
+        service.status(state.run_id)
+
+    assert error.value.code == "invalid_state"

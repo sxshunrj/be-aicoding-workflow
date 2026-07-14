@@ -123,3 +123,17 @@ def test_corrupt_state_uses_json_error(tmp_path: Path, capsys) -> None:
 
     assert status != 0
     assert result["error"]["code"] == "invalid_state"
+
+
+def test_semantically_corrupt_state_uses_json_error(tmp_path: Path, capsys) -> None:
+    _config(tmp_path)
+    _, init = _call(capsys, ["workflow", "init", "--repo", str(tmp_path), "--source-revision", "abc123"])
+    run_id = init["data"]["run_id"]
+    state_path = tmp_path / ".ai-workflow" / "runs" / run_id / "state.yaml"
+    payload = state_path.read_text(encoding="utf-8").replace("current_phase: spec", "current_phase: unknown")
+    state_path.write_text(payload, encoding="utf-8")
+
+    status, result = _call(capsys, ["workflow", "status", "--repo", str(tmp_path), "--run-id", run_id])
+
+    assert status != 0
+    assert result["error"]["code"] == "invalid_state"

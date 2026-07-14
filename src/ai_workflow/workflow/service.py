@@ -17,6 +17,20 @@ from ai_workflow.workflow.store import Event, StateStore
 RUN_ID_PATTERN = re.compile(r"RUN-\d{8}-\d{6}-[0-9a-f]{6}")
 ID_SUFFIX_PATTERN = re.compile(r"[0-9a-f]{6}")
 BLOCKED_STATE_KEY = "_blocked_state"
+RUN_STATUSES = {
+    NodeStatus.PENDING.value,
+    NodeStatus.RUNNING.value,
+    NodeStatus.BLOCKED.value,
+    "completed",
+    "aborted",
+}
+NODE_STATUSES = {status.value for status in NodeStatus}
+RESTORABLE_RUN_STATUSES = {NodeStatus.PENDING.value, NodeStatus.RUNNING.value}
+RESTORABLE_NODE_STATUSES = {
+    NodeStatus.PENDING.value,
+    NodeStatus.RUNNING.value,
+    NodeStatus.RERUN.value,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,18 +168,63 @@ class WorkflowService:
         if RUN_ID_PATTERN.fullmatch(run_id) is None:
             raise AppError("invalid_run_id", "run ID has an invalid format")
         runs_root = (self.repo_root / ".ai-workflow" / "runs").resolve()
-        run_path = (runs_root / run_id).resolve()
+        run_entry = runs_root / run_id
+        if run_entry.is_symlink():
+            raise AppError("invalid_run_id", "run directory must not be a symlink")
+        run_path = run_entry.resolve()
         if run_path.parent != runs_root:
             raise AppError("invalid_run_id", "run path escapes workflow storage")
         return StateStore(run_path)
 
     def _load(self, run_id: str) -> RunState:
         try:
-            return self._store(run_id).load()
+            state = self._store(run_id).load()
         except FileNotFoundError as error:
             raise AppError("state_not_found", f"workflow run not found: {run_id}") from error
         except (yaml.YAMLError, KeyError, TypeError, ValueError, UnicodeError) as error:
             raise AppError("invalid_state", "workflow state is malformed") from error
+        self._validate_state(state, run_id)
+        return state
+
+    @staticmethod
+    def _validate_state(state: RunState, requested_run_id: str) -> None:
+        if state.run_id != requested_run_id:
+            raise AppError(
+                "invalid_state",
+                "persisted run ID does not match requested run ID",
+            )
+        try:
+            current_phase = Phase(state.current_phase)
+        except ValueError as error:
+            raise AppError("invalid_state", "current phase is invalid") from error
+        formal_phases = {phase.value for phase in Phase}
+        if set(state.nodes) != formal_phases:
+            raise AppError("invalid_state", "workflow nodes are incomplete or unknown")
+        for phase in Phase:
+            node = state.nodes[phase.value]
+            if node.phase != phase.value or node.status not in NODE_STATUSES:
+                raise AppError("invalid_state", f"node {phase.value} is invalid")
+        if state.status not in RUN_STATUSES:
+            raise AppError("invalid_state", "run status is invalid")
+        attempts = state.artifacts.get("attempts", {})
+        if not isinstance(attempts, dict):
+            raise AppError("invalid_state", "attempt metadata is invalid")
+        for phase, count in attempts.items():
+            if phase not in formal_phases or type(count) is not int or count < 0:
+                raise AppError("invalid_state", "attempt counter is invalid")
+        blocked_state = state.artifacts.get(BLOCKED_STATE_KEY)
+        if state.status == NodeStatus.BLOCKED.value:
+            if state.nodes[current_phase.value].status != NodeStatus.BLOCKED.value:
+                raise AppError("invalid_state", "blocked current node is invalid")
+            if not isinstance(blocked_state, dict):
+                raise AppError("invalid_state", "blocked lifecycle metadata is invalid")
+            if (
+                blocked_state.get("run") not in RESTORABLE_RUN_STATUSES
+                or blocked_state.get("node") not in RESTORABLE_NODE_STATUSES
+            ):
+                raise AppError("invalid_state", "blocked lifecycle metadata is invalid")
+        elif blocked_state is not None:
+            raise AppError("invalid_state", "unexpected blocked lifecycle metadata")
 
     def _save(self, state: RunState, event_type: str, data: dict[str, object]) -> None:
         self._store(state.run_id).save(state.version, state, Event(event_type, data))
