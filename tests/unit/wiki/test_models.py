@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -39,3 +39,17 @@ def test_parses_valid_entry() -> None:
     assert entry.status is KnowledgeStatus.CANDIDATE
     assert entry.scope.phases == ("implement",)
 
+
+@pytest.mark.parametrize("value", [datetime(2026, 7, 14), "2026-7-14", "2026-07-14T00:00:00"])
+def test_rejects_non_exact_iso_dates(value) -> None:
+    metadata = valid_metadata()
+    metadata["created_at"] = value
+    with pytest.raises(AppError, match="created_at must be an ISO date"):
+        KnowledgeEntry.from_parts(metadata, "Body")
+
+
+def test_taxonomy_controls_type_and_phase() -> None:
+    metadata = valid_metadata()
+    metadata["type"] = "pitfall"
+    with pytest.raises(AppError, match="not allowed by taxonomy"):
+        KnowledgeEntry.from_parts(metadata, "Body", allowed_types={"rule"}, allowed_phases={"implement"})

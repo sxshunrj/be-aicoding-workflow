@@ -88,7 +88,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "config":
             data: object = _config_data(RepositoryConfig.load(args.repo))
         elif args.command == "wiki":
-            report = WikiService(WikiRepository(args.wiki)).lint()
+            report = WikiService(WikiRepository(args.wiki, validate_layout=False)).lint()
             print(json.dumps({"ok": True, "data": report.to_dict()}))
             return 0 if report.valid else 1
         else:
