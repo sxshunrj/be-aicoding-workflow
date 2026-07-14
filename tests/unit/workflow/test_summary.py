@@ -34,3 +34,20 @@ def test_summary_translates_valid_json_event_corruption(tmp_path, event) -> None
         service.summary(run_id)
 
     assert error.value.code == "invalid_state"
+
+
+@pytest.mark.parametrize("payload", [
+    "[]",
+    '{"schema_version":2}',
+    ('{"schema_version":1,"run_id":1,"phase":"spec","attempt_id":"spec-1-abcdef",'
+     '"source_revision":"abc123","knowledge_packet":{},"prior_artifacts":[],"rerun_reason":null}'),
+])
+def test_summary_rejects_malformed_phase_packet(tmp_path, payload) -> None:
+    service, run_id = _run(tmp_path)
+    packet = next((tmp_path / ".ai-workflow" / "runs" / run_id / "attempts").glob("*/phase-packet.json"))
+    packet.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(AppError) as error:
+        service.summary(run_id)
+
+    assert error.value.code == "invalid_state"

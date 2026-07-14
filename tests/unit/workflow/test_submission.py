@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+from datetime import datetime
 
 import pytest
 
@@ -8,6 +9,7 @@ from ai_workflow.contracts.artifacts import ArtifactRef, ChildResult
 from ai_workflow.errors import AppError
 from ai_workflow.workflow.models import Phase
 from ai_workflow.workflow.service import WorkflowService
+from ai_workflow.workflow.store import StateStore
 
 
 def _service(tmp_path):
@@ -88,7 +90,7 @@ def test_retry_repairs_missing_submission_event_once(tmp_path, monkeypatch) -> N
     matching = [event for event in events if event["type"] == "result_submitted"
                 and event["data"]["attempt_id"] == attempt.attempt_id]
 
-    assert repaired.version == again.version == 2
+    assert repaired.version == again.version == 3
     assert len(matching) == 1
     assert matching[0]["version"] == repaired.version
     assert matching[0]["data"]["run_id"] == run.run_id
@@ -118,3 +120,145 @@ def test_submit_parses_the_same_result_bytes_used_for_digest(tmp_path) -> None:
     state = service.submit(run.run_id, attempt.attempt_id, OneReadPath(result))
 
     assert state.nodes["spec"].status == "valid"
+
+
+def test_delayed_repair_preserves_original_acceptance_attribution(tmp_path, monkeypatch) -> None:
+    service = WorkflowService(tmp_path, clock=lambda: datetime(2026, 7, 14, 10, 0, 0),
+                              id_factory=lambda: "abcdef")
+    (tmp_path / ".ai-workflow.yaml").write_text("repository: demo\n", encoding="utf-8")
+    run = service.init(tmp_path, "abc123")
+    attempt = service.begin(run.run_id, Phase.SPEC)
+    artifact = tmp_path / "spec.md"
+    artifact.write_text("spec", encoding="utf-8")
+    result = _result(tmp_path, attempt, artifact)
+    events_path = tmp_path / ".ai-workflow" / "runs" / run.run_id / "events.jsonl"
+    real_open = Path.open
+    failed = False
+
+    def fail_once(path, mode="r", *args, **kwargs):
+        nonlocal failed
+        if path == events_path and mode == "a" and not failed:
+            failed = True
+            raise OSError("append failed")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_once)
+    with pytest.raises(OSError):
+        service.submit(run.run_id, attempt.attempt_id, result)
+    service.begin(run.run_id, Phase.PLAN)
+    repaired = service.submit(run.run_id, attempt.attempt_id, result)
+    stable = service.submit(run.run_id, attempt.attempt_id, result)
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    matches = [event for event in events if event["type"] == "result_submitted"
+               and event["data"].get("attempt_id") == attempt.attempt_id]
+
+    assert repaired.version == stable.version == 4
+    assert len(matches) == 1
+    assert matches[0]["version"] == 4
+    assert matches[0]["data"]["accepted_version"] == 2
+    assert matches[0]["data"]["accepted_at"] == "2026-07-14T10:00:00"
+
+
+def test_competing_reconciliation_uses_optimistic_version(tmp_path, monkeypatch) -> None:
+    service, run = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC)
+    artifact = tmp_path / "spec.md"
+    artifact.write_text("spec", encoding="utf-8")
+    result = _result(tmp_path, attempt, artifact)
+    events_path = tmp_path / ".ai-workflow" / "runs" / run.run_id / "events.jsonl"
+    real_open = Path.open
+    failed = False
+
+    def fail_once(path, mode="r", *args, **kwargs):
+        nonlocal failed
+        if path == events_path and mode == "a" and not failed:
+            failed = True
+            raise OSError("append failed")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_once)
+    with pytest.raises(OSError):
+        service.submit(run.run_id, attempt.attempt_id, result)
+
+    original_save = StateStore.save
+    competing = WorkflowService(tmp_path)
+    injected = False
+
+    def race(self, expected_version, state, event):
+        nonlocal injected
+        if event.type == "result_submitted" and not injected:
+            injected = True
+            competing.submit(run.run_id, attempt.attempt_id, result)
+        return original_save(self, expected_version, state, event)
+
+    monkeypatch.setattr(StateStore, "save", race)
+    with pytest.raises(AppError) as error:
+        service.submit(run.run_id, attempt.attempt_id, result)
+
+    assert error.value.code == "stale_state"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    assert sum(event["type"] == "result_submitted" for event in events) == 1
+
+
+def test_reconciliation_truncates_only_incomplete_jsonl_tail(tmp_path, monkeypatch) -> None:
+    service, run = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC)
+    artifact = tmp_path / "spec.md"
+    artifact.write_text("spec", encoding="utf-8")
+    result = _result(tmp_path, attempt, artifact)
+    events_path = tmp_path / ".ai-workflow" / "runs" / run.run_id / "events.jsonl"
+    real_open = Path.open
+    failed = False
+
+    def partial_append(path, mode="r", *args, **kwargs):
+        nonlocal failed
+        stream = real_open(path, mode, *args, **kwargs)
+        if path == events_path and mode == "a" and not failed:
+            failed = True
+            stream.write('{"type":"result_submitted"')
+            stream.flush()
+            stream.close()
+            raise OSError("partial append")
+        return stream
+
+    monkeypatch.setattr(Path, "open", partial_append)
+    with pytest.raises(OSError):
+        service.submit(run.run_id, attempt.attempt_id, result)
+
+    state = service.submit(run.run_id, attempt.attempt_id, result)
+
+    assert state.version == 3
+    assert events_path.read_bytes().endswith(b"\n")
+    assert sum(json.loads(line)["type"] == "result_submitted"
+               for line in events_path.read_text().splitlines()) == 1
+
+
+def test_reconciliation_never_discards_malformed_complete_line(tmp_path, monkeypatch) -> None:
+    service, run = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC)
+    artifact = tmp_path / "spec.md"
+    artifact.write_text("spec", encoding="utf-8")
+    result = _result(tmp_path, attempt, artifact)
+    events_path = tmp_path / ".ai-workflow" / "runs" / run.run_id / "events.jsonl"
+    real_open = Path.open
+    failed = False
+
+    def fail_once(path, mode="r", *args, **kwargs):
+        nonlocal failed
+        if path == events_path and mode == "a" and not failed:
+            failed = True
+            raise OSError("append failed")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_once)
+    with pytest.raises(OSError):
+        service.submit(run.run_id, attempt.attempt_id, result)
+    with events_path.open("a", encoding="utf-8") as stream:
+        stream.write('{"broken":\n')
+    before = events_path.read_bytes()
+
+    with pytest.raises(AppError) as error:
+        service.submit(run.run_id, attempt.attempt_id, result)
+
+    assert error.value.code == "invalid_state"
+    assert events_path.read_bytes() == before

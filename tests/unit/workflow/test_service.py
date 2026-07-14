@@ -178,6 +178,12 @@ def test_load_rejects_semantically_invalid_state(
         {"current_attempts": {"unknown": "unknown-1-abcdef"}},
         {"current_attempts": {"spec": "bad"}},
         {"current_attempts": {"spec": "spec-1-abcdef"}},
+        {"attempts": {"spec": 1}, "attempt_history": {}},
+        {"attempts": {"spec": 1}, "attempt_history": {
+            "spec-1-abcdef": {"phase": "spec", "number": 1},
+            "spec-1-bbbbbb": {"phase": "spec", "number": 1},
+        }},
+        {"attempts": {"spec": 2}, "current_attempts": {"spec": "spec-1-abcdef"}},
         {"accepted_results": {"spec-1-abcdef": "not-a-digest"}},
         {"accepted_results": {"spec-1-abcdef": "a" * 64}},
         {"registered": ["not-an-artifact"]},
@@ -196,6 +202,30 @@ def test_load_rejects_invalid_task4_metadata(tmp_path: Path, metadata) -> None:
     state_path = tmp_path / ".ai-workflow" / "runs" / state.run_id / "state.yaml"
     data = yaml.safe_load(state_path.read_text(encoding="utf-8"))
     data["artifacts"].update(metadata)
+    state_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(AppError) as error:
+        service.status(state.run_id)
+
+    assert error.value.code == "invalid_state"
+
+
+def test_load_rejects_accepted_result_owned_by_another_node(tmp_path: Path) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+    state = service.init(tmp_path, "abc123")
+    attempt = service.begin(state.run_id, Phase.SPEC)
+    state_path = tmp_path / ".ai-workflow" / "runs" / state.run_id / "state.yaml"
+    data = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    data["artifacts"]["accepted_results"] = {
+        attempt.attempt_id: {
+            "run_id": state.run_id, "node": "plan", "phase": "plan",
+            "attempt_id": attempt.attempt_id, "result_digest": "a" * 64,
+            "artifact_digest": None, "accepted_version": data["version"],
+            "accepted_at": "2026-07-14T10:00:00", "status": "unable_to_complete",
+            "summary": "blocked", "artifact": None,
+        }
+    }
     state_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
     with pytest.raises(AppError) as error:

@@ -38,6 +38,41 @@ RESTORABLE_NODE_STATUSES = {
     NodeStatus.RUNNING.value,
     NodeStatus.RERUN.value,
 }
+ACCEPTANCE_KEYS = {"run_id", "node", "phase", "attempt_id", "result_digest",
+                   "artifact_digest", "accepted_version", "accepted_at", "status",
+                   "summary", "artifact"}
+
+
+def _valid_acceptance_record(record: object, run_id: str, attempt_id: str,
+                             source_revision: str) -> bool:
+    if not isinstance(record, dict) or set(record) != ACCEPTANCE_KEYS:
+        return False
+    if (record.get("run_id") != run_id or record.get("attempt_id") != attempt_id
+            or record.get("node") not in {phase.value for phase in Phase}
+            or record.get("phase") != record.get("node")
+            or not isinstance(record.get("result_digest"), str)
+            or DIGEST_PATTERN.fullmatch(record["result_digest"]) is None
+            or type(record.get("accepted_version")) is not int
+            or record["accepted_version"] < 1
+            or not isinstance(record.get("accepted_at"), str)
+            or record.get("status") not in {"completed", "unable_to_complete"}
+            or not isinstance(record.get("summary"), str) or not record["summary"].strip()):
+        return False
+    try:
+        datetime.fromisoformat(record["accepted_at"])
+    except ValueError:
+        return False
+    artifact, artifact_digest = record.get("artifact"), record.get("artifact_digest")
+    if artifact is None:
+        return artifact_digest is None and record["status"] == "unable_to_complete"
+    if not isinstance(artifact, dict):
+        return False
+    try:
+        ref = ArtifactRef.from_dict(artifact)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (artifact_digest == ref.sha256 and ref.phase.value == record["node"]
+            and ref.source_revision == source_revision)
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +158,10 @@ class WorkflowService:
         if not isinstance(current_attempts, dict):
             raise AppError("invalid_state", "current attempt metadata is invalid")
         current_attempts[phase.value] = attempt_id
+        history = state.artifacts.setdefault("attempt_history", {})
+        if not isinstance(history, dict):
+            raise AppError("invalid_state", "attempt history is invalid")
+        history[attempt_id] = {"phase": phase.value, "number": number}
         node.status = NodeStatus.RUNNING.value
         state.status = NodeStatus.RUNNING.value
         packet_path = self._store(run_id).run_dir / "attempts" / attempt_id / "phase-packet.json"
@@ -149,9 +188,8 @@ class WorkflowService:
         except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
             raise AppError("invalid_result", f"child result is invalid: {error}") from error
         if previous is not None:
-            if previous == result_digest:
-                self._repair_submission_evidence(state, attempt_id, result_digest, result)
-                return state
+            if isinstance(previous, dict) and previous.get("result_digest") == result_digest:
+                return self._reconcile_submission_evidence(run_id, attempt_id, result_digest)
             raise AppError("result_conflict", "attempt already has a different accepted result")
         matching = [name for name, owner in current.items() if owner == attempt_id]
         if len(matching) != 1:
@@ -168,7 +206,11 @@ class WorkflowService:
             if not isinstance(artifacts, list):
                 raise AppError("invalid_state", "artifact registry is invalid")
             artifacts.append(artifact.to_dict())
-        accepted[attempt_id] = result_digest
+        accepted_at = self.clock().isoformat()
+        accepted_version = state.version + 1
+        record = self._acceptance_record(state, phase, attempt_id, result_digest, result,
+                                         accepted_version, accepted_at)
+        accepted[attempt_id] = record
         state.artifacts["accepted_results"] = accepted
         if result.status == "completed":
             state.nodes[phase.value].status = NodeStatus.VALID.value
@@ -176,39 +218,41 @@ class WorkflowService:
         else:
             state.nodes[phase.value].status = NodeStatus.RERUN.value
             state.status = NodeStatus.PENDING.value
-        self._save(state, "result_submitted",
-                   self._submission_event_data(state, phase, attempt_id, result_digest, result))
+        self._store(state.run_id).save(
+            state.version, state, Event("result_submitted", record, accepted_at))
         return state
 
     @staticmethod
-    def _submission_event_data(state: RunState, phase: Phase, attempt_id: str,
-                               result_digest: str, result: ChildResult) -> dict[str, object]:
+    def _acceptance_record(state: RunState, phase: Phase, attempt_id: str,
+                           result_digest: str, result: ChildResult,
+                           accepted_version: int, accepted_at: str) -> dict[str, object]:
         artifact = result.artifact
         return {"run_id": state.run_id, "node": phase.value, "phase": phase.value,
                 "attempt_id": attempt_id, "result_digest": result_digest,
                 "artifact_digest": None if artifact is None else artifact.sha256,
+                "accepted_version": accepted_version, "accepted_at": accepted_at,
                 "status": result.status, "summary": result.summary,
                 "artifact": None if artifact is None else artifact.to_dict()}
 
-    def _repair_submission_evidence(self, state: RunState, attempt_id: str,
-                                    result_digest: str, result: ChildResult) -> None:
-        current = state.artifacts["current_attempts"]
-        assert isinstance(current, dict)
-        matching = [name for name, owner in current.items() if owner == attempt_id]
-        if len(matching) != 1:
-            raise AppError("invalid_state", "accepted result has no attempt owner")
-        phase = Phase(matching[0])
-        expected = self._submission_event_data(state, phase, attempt_id, result_digest, result)
-        events = self._read_events(state.run_id)
+    def _reconcile_submission_evidence(self, run_id: str, attempt_id: str,
+                                       result_digest: str) -> RunState:
+        state = self._load(run_id)
+        accepted = state.artifacts["accepted_results"]
+        assert isinstance(accepted, dict)
+        record = accepted.get(attempt_id)
+        if not isinstance(record, dict) or record.get("result_digest") != result_digest:
+            raise AppError("result_conflict", "accepted result changed during reconciliation")
+        events = self._read_events(state.run_id, recover_incomplete_tail=True)
         found = any(event["type"] == "result_submitted"
-                    and event["version"] == state.version
-                    and all(event["data"].get(key) == expected[key]
+                    and all(event["data"].get(key) == record[key]
                             for key in ("run_id", "node", "attempt_id", "result_digest",
-                                        "artifact_digest"))
+                                        "artifact_digest", "accepted_version", "accepted_at"))
                     for event in events)
         if not found:
-            self._store(state.run_id).append_event(
-                state.version, Event("result_submitted", expected, self.clock().isoformat()))
+            self._store(state.run_id).save(
+                state.version, state,
+                Event("result_submitted", record, self.clock().isoformat()))
+        return state
 
     def _validate_artifact(self, state: RunState, phase: Phase, artifact: ArtifactRef,
                            result_path: Path) -> None:
@@ -268,20 +312,33 @@ class WorkflowService:
         cited: set[str] = set()
         for packet in self._store(run_id).run_dir.glob("attempts/*/phase-packet.json"):
             try:
-                knowledge = json.loads(packet.read_text(encoding="utf-8")).get("knowledge_packet", {})
-                ids = knowledge.get("cited_knowledge_ids", []) if isinstance(knowledge, dict) else []
+                phase_packet = PhasePacket.load(packet)
+                if phase_packet.run_id != run_id:
+                    raise ValueError("phase packet run ID does not match")
+                knowledge = phase_packet.knowledge_packet
+                ids = knowledge.get("cited_knowledge_ids", [])
                 cited.update(str(item) for item in ids)
-            except (OSError, json.JSONDecodeError, TypeError):
-                continue
+            except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+                raise AppError("invalid_state", "workflow phase packet is malformed") from error
         return RunSummary(run_id, durations, len(attempts),
                           sum(1 for item in submissions if item["data"].get("status") == "unable_to_complete")
                           + sum(len(item.get("reruns", {})) for item in transitions),
                           tuple(transitions), tuple(sorted(cited)))
 
-    def _read_events(self, run_id: str) -> list[dict[str, object]]:
+    def _read_events(self, run_id: str, *, recover_incomplete_tail: bool = False) -> list[dict[str, object]]:
         events: list[dict[str, object]] = []
         try:
-            for line in self._store(run_id).events_path.read_text(encoding="utf-8").splitlines():
+            path = self._store(run_id).events_path
+            payload = path.read_bytes()
+            if recover_incomplete_tail and payload and not payload.endswith(b"\n"):
+                boundary = payload.rfind(b"\n") + 1
+                tail = payload[boundary:]
+                try:
+                    json.loads(tail.decode("utf-8"))
+                except (UnicodeError, json.JSONDecodeError):
+                    path.write_bytes(payload[:boundary])
+                    payload = payload[:boundary]
+            for line in payload.decode("utf-8").splitlines():
                 event = json.loads(line)
                 if not isinstance(event, dict):
                     raise ValueError("event must be an object")
@@ -418,29 +475,50 @@ class WorkflowService:
             if phase not in formal_phases or type(count) is not int or count < 0:
                 raise AppError("invalid_state", "attempt counter is invalid")
         current_attempts = state.artifacts.get("current_attempts", {})
+        attempt_history = state.artifacts.get("attempt_history", {})
         accepted_results = state.artifacts.get("accepted_results", {})
         registered = state.artifacts.get("registered", [])
         rerun_reasons = state.artifacts.get("rerun_reasons", {})
-        def known_attempt(attempt_id: object, expected_phase: object | None = None) -> bool:
+        def attempt_parts(attempt_id: object) -> tuple[str, int] | None:
             if not isinstance(attempt_id, str):
-                return False
+                return None
             match = ATTEMPT_ID_PATTERN.fullmatch(attempt_id)
             if match is None:
-                return False
-            phase, number = match.group(1), int(match.group(2))
-            return (expected_phase is None or phase == expected_phase) and number <= attempts.get(phase, 0)
+                return None
+            return match.group(1), int(match.group(2))
+
+        if not isinstance(attempt_history, dict):
+            raise AppError("invalid_state", "attempt history is invalid")
+        for attempt_id, owner in attempt_history.items():
+            parts = attempt_parts(attempt_id)
+            if (parts is None or not isinstance(owner, dict)
+                    or set(owner) != {"phase", "number"}
+                    or owner.get("phase") != parts[0] or owner.get("number") != parts[1]
+                    or parts[1] > attempts.get(parts[0], 0)):
+                raise AppError("invalid_state", "attempt history is invalid")
+        expected_history = {(phase, number) for phase, count in attempts.items()
+                            for number in range(1, count + 1)}
+        actual_history = {attempt_parts(attempt_id) for attempt_id in attempt_history}
+        if len(attempt_history) != len(expected_history) or actual_history != expected_history:
+            raise AppError("invalid_state", "attempt history is incomplete or duplicated")
 
         if not isinstance(current_attempts, dict) or any(
-            phase not in formal_phases or not known_attempt(attempt_id, phase)
+            phase not in formal_phases or attempt_parts(attempt_id) != (phase, attempts.get(phase))
+            or attempt_id not in attempt_history
             for phase, attempt_id in current_attempts.items()
         ):
             raise AppError("invalid_state", "current attempt metadata is invalid")
-        if not isinstance(accepted_results, dict) or any(
-            not known_attempt(attempt_id)
-            or not isinstance(digest, str) or DIGEST_PATTERN.fullmatch(digest) is None
-            for attempt_id, digest in accepted_results.items()
-        ):
+        if not isinstance(accepted_results, dict):
             raise AppError("invalid_state", "accepted result metadata is invalid")
+        for attempt_id, record in accepted_results.items():
+            if attempt_id not in attempt_history or not _valid_acceptance_record(
+                record, state.run_id, attempt_id, state.source_revision
+            ):
+                raise AppError("invalid_state", "accepted result metadata is invalid")
+            owner = attempt_history[attempt_id]
+            assert isinstance(owner, dict) and isinstance(record, dict)
+            if record["node"] != owner["phase"] or record["accepted_version"] > state.version:
+                raise AppError("invalid_state", "accepted result ownership is invalid")
         if not isinstance(registered, list) or not all(isinstance(item, dict) for item in registered):
             raise AppError("invalid_state", "artifact registry is invalid")
         try:

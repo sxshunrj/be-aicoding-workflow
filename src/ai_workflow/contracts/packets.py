@@ -41,11 +41,14 @@ class PhasePacket:
         knowledge, artifacts = data["knowledge_packet"], data["prior_artifacts"]
         if not isinstance(knowledge, dict) or not isinstance(artifacts, list):
             raise ValueError("phase packet payload is invalid")
+        for key in ("run_id", "phase", "attempt_id", "source_revision"):
+            if not isinstance(data[key], str) or not data[key].strip():
+                raise ValueError(f"phase packet {key} is invalid")
         if not all(isinstance(item, dict) for item in artifacts):
             raise ValueError("prior artifacts must be objects")
         reason = data["rerun_reason"]
         if reason is not None and not isinstance(reason, str):
             raise ValueError("rerun reason must be a string or null")
-        return cls(str(data["run_id"]), Phase(str(data["phase"])), str(data["attempt_id"]),
-                   str(data["source_revision"]), knowledge,
+        return cls(data["run_id"], Phase(data["phase"]), data["attempt_id"],
+                   data["source_revision"], knowledge,
                    tuple(ArtifactRef.from_dict(item) for item in artifacts), reason)
