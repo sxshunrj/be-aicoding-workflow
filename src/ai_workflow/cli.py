@@ -8,6 +8,8 @@ from ai_workflow.config import RepositoryConfig
 from ai_workflow.errors import AppError
 from ai_workflow.workflow.models import Phase
 from ai_workflow.workflow.service import WorkflowService
+from ai_workflow.wiki.repository import WikiRepository
+from ai_workflow.wiki.service import WikiService
 
 
 class _JsonArgumentParser(argparse.ArgumentParser):
@@ -49,6 +51,10 @@ def _parser() -> argparse.ArgumentParser:
     block.add_argument("--repo", type=Path, required=True)
     block.add_argument("--run-id", required=True)
     block.add_argument("--reason", required=True)
+    wiki = commands.add_parser("wiki")
+    wiki_commands = wiki.add_subparsers(dest="wiki_command", required=True)
+    lint = wiki_commands.add_parser("lint")
+    lint.add_argument("--wiki", type=Path, required=True)
     return parser
 
 
@@ -81,6 +87,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = _parser().parse_args(argv)
         if args.command == "config":
             data: object = _config_data(RepositoryConfig.load(args.repo))
+        elif args.command == "wiki":
+            report = WikiService(WikiRepository(args.wiki)).lint()
+            print(json.dumps({"ok": True, "data": report.to_dict()}))
+            return 0 if report.valid else 1
         else:
             service = WorkflowService(args.repo)
             if args.workflow_command == "init":
