@@ -9,6 +9,7 @@ import pytest
 
 from ai_workflow.errors import AppError
 from ai_workflow.wiki.repository import WikiRepository
+import ai_workflow.wiki.repository as repository_module
 
 
 def wiki(tmp_path):
@@ -154,3 +155,32 @@ def test_raw_enumeration_accumulates_directory_errors(tmp_path, monkeypatch) -> 
     paths, issues = repository.raw_paths()
     assert paths == []
     assert len(issues) == 1 and "candidates" in issues[0] and "unreadable" in issues[0]
+
+
+@pytest.mark.parametrize("failing_fsync_call", [1, 2])
+def test_move_fsync_failure_never_loses_the_only_entry(
+    tmp_path, monkeypatch, failing_fsync_call
+) -> None:
+    repository = wiki(tmp_path)
+    approved = replace(
+        entry(), status=KnowledgeStatus.APPROVED,
+        reviewers=("alice",), reviewed_at=date(2026, 7, 14),
+    )
+    source = tmp_path / "candidates" / f"{approved.id}.md"
+    target = tmp_path / "approved" / source.name
+    expected = repository.serialize(approved)
+    source.write_text(expected, encoding="utf-8")
+    calls = 0
+
+    def fail_selected(directory):
+        nonlocal calls
+        calls += 1
+        if calls == failing_fsync_call:
+            raise OSError("fsync failed")
+
+    monkeypatch.setattr(repository_module, "_fsync_directory", fail_selected)
+    with pytest.raises(AppError, match="durability is uncertain"):
+        repository.move(approved.id, "candidate", "approved")
+    survivors = [path for path in (source, target) if path.exists()]
+    assert survivors
+    assert all(path.read_text(encoding="utf-8") == expected for path in survivors)

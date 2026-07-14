@@ -163,18 +163,29 @@ class WikiRepository:
             entry = self.read(source_path)
             if entry.status is not target_status:
                 raise AppError("wiki_invalid", "entry status does not match target lifecycle")
-            linked = False
             try:
                 os.link(source_path, target_path)
-                linked = True
+            except OSError as error:
+                raise AppError("wiki_invalid", f"cannot move knowledge entry: {error}") from error
+            try:
                 source_path.unlink()
+            except OSError as error:
+                if source_path.exists():
+                    target_path.unlink(missing_ok=True)
+                    raise AppError("wiki_invalid", f"cannot move knowledge entry: {error}") from error
+                raise AppError(
+                    "wiki_invalid",
+                    f"knowledge entry moved but durability is uncertain: {error}",
+                ) from error
+            try:
                 _fsync_directory(target_path.parent)
                 if source_path.parent != target_path.parent:
                     _fsync_directory(source_path.parent)
             except OSError as error:
-                if linked:
-                    target_path.unlink(missing_ok=True)
-                raise AppError("wiki_invalid", f"cannot move knowledge entry: {error}") from error
+                raise AppError(
+                    "wiki_invalid",
+                    f"knowledge entry moved but durability is uncertain: {error}",
+                ) from error
             return target_path
 
     def _safe_file(self, path: Path, *, must_exist: bool = False) -> Path:
