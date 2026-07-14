@@ -14,6 +14,7 @@ from ai_workflow.workflow.models import RunState, validate_plain_value
 class Event:
     type: str
     data: dict[str, object]
+    timestamp: str | None = None
 
 
 class StateStore:
@@ -58,6 +59,8 @@ class StateStore:
         state_data = state.to_dict()
         state_data["version"] = next_version
         event_data = {"type": event.type, "version": next_version, "data": event.data}
+        if event.timestamp is not None:
+            event_data["timestamp"] = event.timestamp
         validate_plain_value(state_data, path="state")
         validate_plain_value(event_data, path="event")
         state_payload = self._serialize_state(state_data)

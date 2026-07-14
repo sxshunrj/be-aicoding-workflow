@@ -1,0 +1,93 @@
+from dataclasses import dataclass
+import json
+from pathlib import Path
+from typing import Literal
+
+from ai_workflow.workflow.models import Phase
+
+
+SCHEMA_VERSION = 1
+
+
+def _keys(data: dict[str, object], expected: set[str], name: str) -> None:
+    missing, unknown = expected - set(data), set(data) - expected
+    if missing or unknown:
+        raise ValueError(f"invalid {name} keys; missing={sorted(missing)}, unknown={sorted(unknown)}")
+
+
+@dataclass(frozen=True, slots=True)
+class Finding:
+    id: str
+    title: str
+    detail: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {"id": self.id, "title": self.title, "detail": self.detail}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "Finding":
+        _keys(data, {"id", "title", "detail"}, "finding")
+        return cls(str(data["id"]), str(data["title"]), str(data["detail"]))
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactRef:
+    path: str
+    sha256: str
+    schema_version: int
+    phase: Phase
+    source_revision: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {"path": self.path, "sha256": self.sha256, "schema_version": self.schema_version,
+                "phase": self.phase.value, "source_revision": self.source_revision}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "ArtifactRef":
+        _keys(data, {"path", "sha256", "schema_version", "phase", "source_revision"}, "artifact")
+        if data["schema_version"] != SCHEMA_VERSION:
+            raise ValueError(f"unsupported schema_version: {data['schema_version']!r}")
+        digest = str(data["sha256"])
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ValueError("artifact sha256 is invalid")
+        return cls(str(data["path"]), digest, SCHEMA_VERSION, Phase(str(data["phase"])), str(data["source_revision"]))
+
+
+@dataclass(frozen=True, slots=True)
+class ChildResult:
+    status: Literal["completed", "unable_to_complete"]
+    summary: str
+    artifact: ArtifactRef | None
+    findings: tuple[Finding, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {"schema_version": SCHEMA_VERSION, "status": self.status, "summary": self.summary,
+                "artifact": None if self.artifact is None else self.artifact.to_dict(),
+                "findings": [finding.to_dict() for finding in self.findings]}
+
+    def write(self, path: Path) -> None:
+        path.write_text(json.dumps(self.to_dict(), indent=2) + "\n", encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: Path) -> "ChildResult":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("child result must be an object")
+        if "schema_version" not in data:
+            raise ValueError("schema_version is required")
+        if data["schema_version"] != SCHEMA_VERSION:
+            raise ValueError(f"unsupported schema_version: {data['schema_version']!r}")
+        _keys(data, {"schema_version", "status", "summary", "artifact", "findings"}, "child result")
+        status = data["status"]
+        if status not in ("completed", "unable_to_complete"):
+            raise ValueError("child result status is invalid")
+        if not isinstance(data["summary"], str) or not data["summary"].strip():
+            raise ValueError("child result summary must not be empty")
+        artifact_data = data["artifact"]
+        if artifact_data is not None and not isinstance(artifact_data, dict):
+            raise ValueError("artifact must be an object or null")
+        findings_data = data["findings"]
+        if not isinstance(findings_data, list) or not all(isinstance(item, dict) for item in findings_data):
+            raise ValueError("findings must be a list")
+        return cls(status, data["summary"], None if artifact_data is None else ArtifactRef.from_dict(artifact_data),
+                   tuple(Finding.from_dict(item) for item in findings_data))
