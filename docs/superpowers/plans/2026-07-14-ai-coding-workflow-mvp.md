@@ -444,13 +444,15 @@ PHASE_ORDER = (Phase.SPEC, Phase.PLAN, Phase.IMPLEMENT, Phase.VERIFY)
 
 It must reject advancing a non-valid node, advancing from `blocked`, skipping phases, and changing a terminal run. `apply_reruns` requires a non-empty reason for every target and selects the earliest target phase.
 
+`--rerun` is repeatable. The CLI parses every `PHASE=REASON` value into the `reruns` mapping passed to `WorkflowService.transition`. It rejects unknown phases, empty reasons, duplicate phases, and malformed values through the stable JSON error envelope. This is the only authorized interface for persisting rerun decisions.
+
 Add CLI commands:
 
 ```text
 ai-workflow workflow init --repo PATH --source-revision SHA
 ai-workflow workflow status --repo PATH --run-id ID
 ai-workflow workflow begin --repo PATH --run-id ID --phase PHASE
-ai-workflow workflow transition --repo PATH --run-id ID --accept
+ai-workflow workflow transition --repo PATH --run-id ID --accept [--rerun PHASE=REASON ...]
 ai-workflow workflow block --repo PATH --run-id ID --reason TEXT
 ai-workflow workflow resume --repo PATH --run-id ID
 ai-workflow workflow abort --repo PATH --run-id ID
