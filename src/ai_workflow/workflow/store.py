@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -22,6 +24,7 @@ class StateStore:
         self.run_dir = run_dir
         self.state_path = run_dir / "state.yaml"
         self.events_path = run_dir / "events.jsonl"
+        self.events_lock_path = run_dir / "events.lock"
 
     def create(self, state: RunState) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -48,6 +51,10 @@ class StateStore:
         return RunState.from_dict(data)
 
     def save(self, expected_version: int, state: RunState, event: Event) -> None:
+        with self.event_lock():
+            self.save_locked(expected_version, state, event)
+
+    def save_locked(self, expected_version: int, state: RunState, event: Event) -> None:
         current = self.load()
         if current.version != expected_version:
             raise AppError(
@@ -61,15 +68,46 @@ class StateStore:
         validate_plain_value(state_data, path="state")
         state_payload = self._serialize_state(state_data)
         event_payload = self._serialize_event(next_version, event)
+        self.normalize_event_tail_locked(recover_malformed=False)
 
         state.version = next_version
         temporary = self.state_path.with_suffix(".yaml.tmp")
         temporary.write_text(state_payload, encoding="utf-8")
         temporary.replace(self.state_path)
-        self._append_event_payload(event_payload)
+        self._append_event_payload_locked(event_payload)
 
     def append_event(self, version: int, event: Event) -> None:
-        self._append_event_payload(self._serialize_event(version, event))
+        payload = self._serialize_event(version, event)
+        with self.event_lock():
+            self.normalize_event_tail_locked(recover_malformed=False)
+            self._append_event_payload_locked(payload)
+
+    @contextmanager
+    def event_lock(self):
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        with self.events_lock_path.open("a+b") as stream:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+    def normalize_event_tail_locked(self, *, recover_malformed: bool) -> bytes:
+        payload = self.events_path.read_bytes()
+        if not payload or payload.endswith(b"\n"):
+            return payload
+        boundary = payload.rfind(b"\n") + 1
+        tail = payload[boundary:]
+        try:
+            json.loads(tail.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as error:
+            if not recover_malformed:
+                raise AppError("invalid_state", "workflow event tail is malformed") from error
+            payload = payload[:boundary]
+        else:
+            payload += b"\n"
+        self.events_path.write_bytes(payload)
+        return payload
 
     @staticmethod
     def _serialize_event(version: int, event: Event) -> str:
@@ -79,7 +117,7 @@ class StateStore:
         validate_plain_value(event_data, path="event")
         return json.dumps(event_data, separators=(",", ":")) + "\n"
 
-    def _append_event_payload(self, event_payload: str) -> None:
+    def _append_event_payload_locked(self, event_payload: str) -> None:
         with self.events_path.open("a", encoding="utf-8") as stream:
             stream.write(event_payload)
 

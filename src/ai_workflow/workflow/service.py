@@ -236,23 +236,30 @@ class WorkflowService:
 
     def _reconcile_submission_evidence(self, run_id: str, attempt_id: str,
                                        result_digest: str) -> RunState:
-        state = self._load(run_id)
-        accepted = state.artifacts["accepted_results"]
-        assert isinstance(accepted, dict)
-        record = accepted.get(attempt_id)
-        if not isinstance(record, dict) or record.get("result_digest") != result_digest:
-            raise AppError("result_conflict", "accepted result changed during reconciliation")
-        events = self._read_events(state.run_id, recover_incomplete_tail=True)
-        found = any(event["type"] == "result_submitted"
-                    and all(event["data"].get(key) == record[key]
-                            for key in ("run_id", "node", "attempt_id", "result_digest",
-                                        "artifact_digest", "accepted_version", "accepted_at"))
-                    for event in events)
-        if not found:
-            self._store(state.run_id).save(
-                state.version, state,
-                Event("result_submitted", record, self.clock().isoformat()))
-        return state
+        store = self._store(run_id)
+        with store.event_lock():
+            try:
+                state = store.load()
+                self._validate_state(state, run_id)
+            except (yaml.YAMLError, KeyError, TypeError, ValueError, UnicodeError) as error:
+                raise AppError("invalid_state", "workflow state is malformed") from error
+            accepted = state.artifacts["accepted_results"]
+            assert isinstance(accepted, dict)
+            record = accepted.get(attempt_id)
+            if not isinstance(record, dict) or record.get("result_digest") != result_digest:
+                raise AppError("result_conflict", "accepted result changed during reconciliation")
+            events = self._read_events(run_id, recover_incomplete_tail=True,
+                                       store=store, event_lock_held=True)
+            found = any(event["type"] == "result_submitted"
+                        and all(event["data"].get(key) == record[key]
+                                for key in ("run_id", "node", "attempt_id", "result_digest",
+                                            "artifact_digest", "accepted_version", "accepted_at"))
+                        for event in events)
+            if not found:
+                store.save_locked(
+                    state.version, state,
+                    Event("result_submitted", record, self.clock().isoformat()))
+            return state
 
     def _validate_artifact(self, state: RunState, phase: Phase, artifact: ArtifactRef,
                            result_path: Path) -> None:
@@ -303,9 +310,12 @@ class WorkflowService:
             data = begun["data"]
             finished = next((event for event in submissions
                              if event["data"].get("attempt_id") == data.get("attempt_id")), None)
-            if finished and "timestamp" in begun and "timestamp" in finished:
+            finished_time = None if finished is None else finished["data"].get("accepted_at")
+            if finished is not None and finished_time is None:
+                finished_time = finished.get("timestamp")
+            if finished and "timestamp" in begun and isinstance(finished_time, str):
                 start = datetime.fromisoformat(begun["timestamp"])
-                end = datetime.fromisoformat(finished["timestamp"])
+                end = datetime.fromisoformat(finished_time)
                 phase = str(data.get("phase"))
                 durations[phase] = durations.get(phase, 0) + int((end - start).total_seconds() * 1000)
         transitions = [event["data"] for event in events if event["type"] == "workflow_transitioned"]
@@ -325,19 +335,18 @@ class WorkflowService:
                           + sum(len(item.get("reruns", {})) for item in transitions),
                           tuple(transitions), tuple(sorted(cited)))
 
-    def _read_events(self, run_id: str, *, recover_incomplete_tail: bool = False) -> list[dict[str, object]]:
+    def _read_events(self, run_id: str, *, recover_incomplete_tail: bool = False,
+                     store: StateStore | None = None,
+                     event_lock_held: bool = False) -> list[dict[str, object]]:
         events: list[dict[str, object]] = []
         try:
-            path = self._store(run_id).events_path
-            payload = path.read_bytes()
-            if recover_incomplete_tail and payload and not payload.endswith(b"\n"):
-                boundary = payload.rfind(b"\n") + 1
-                tail = payload[boundary:]
-                try:
-                    json.loads(tail.decode("utf-8"))
-                except (UnicodeError, json.JSONDecodeError):
-                    path.write_bytes(payload[:boundary])
-                    payload = payload[:boundary]
+            event_store = self._store(run_id) if store is None else store
+            if recover_incomplete_tail:
+                if not event_lock_held:
+                    raise RuntimeError("event lock is required for tail recovery")
+                payload = event_store.normalize_event_tail_locked(recover_malformed=True)
+            else:
+                payload = event_store.events_path.read_bytes()
             for line in payload.decode("utf-8").splitlines():
                 event = json.loads(line)
                 if not isinstance(event, dict):
@@ -348,6 +357,11 @@ class WorkflowService:
                     raise ValueError("event version is invalid")
                 if not isinstance(event.get("data"), dict):
                     raise ValueError("event data is invalid")
+                accepted_at = event["data"].get("accepted_at")
+                if event["type"] == "result_submitted" and accepted_at is not None:
+                    if not isinstance(accepted_at, str):
+                        raise ValueError("accepted_at is invalid")
+                    datetime.fromisoformat(accepted_at)
                 timestamp = event.get("timestamp")
                 if timestamp is not None:
                     if not isinstance(timestamp, str):
