@@ -3,6 +3,7 @@ from datetime import date
 from ai_workflow.wiki.models import KnowledgeEntry, KnowledgeStatus
 import os
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -73,7 +74,7 @@ def test_rejects_traversal_symlinks_and_collisions(tmp_path) -> None:
 
 def test_atomic_write_cleans_temp_on_replace_failure(tmp_path, monkeypatch) -> None:
     repository = wiki(tmp_path)
-    monkeypatch.setattr(os, "replace", lambda *_: (_ for _ in ()).throw(OSError("boom")))
+    monkeypatch.setattr(os, "link", lambda *_: (_ for _ in ()).throw(OSError("boom")))
     with pytest.raises(AppError, match="cannot write"):
         repository.write_candidate(entry())
     assert list((tmp_path / "candidates").iterdir()) == []
@@ -100,3 +101,56 @@ def test_move_refuses_existing_target_file_or_symlink(tmp_path) -> None:
     with pytest.raises(AppError, match="already exists"):
         repository.move(approved.id, "candidate", "approved")
     assert source.exists() and target.read_text() == "occupied"
+
+
+def test_concurrent_candidate_publication_has_one_preserved_winner(tmp_path) -> None:
+    first = wiki(tmp_path)
+    second = WikiRepository(tmp_path)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda repo: _write_result(repo, entry()), (first, second)))
+    assert sorted(results) == ["conflict", "written"]
+    assert first.read(tmp_path / "candidates" / "KW-rule-001.md").body == "# Rule\n\nBody"
+
+
+def _write_result(repository, value):
+    try:
+        repository.write_candidate(value)
+        return "written"
+    except AppError as error:
+        assert error.code == "wiki_conflict"
+        return "conflict"
+
+
+def test_write_and_move_reject_cross_directory_duplicate_ids(tmp_path) -> None:
+    repository = wiki(tmp_path)
+    duplicate = replace(entry(), status=KnowledgeStatus.ARCHIVED)
+    (tmp_path / "archive" / "KW-rule-001.md").write_text(repository.serialize(duplicate))
+    with pytest.raises(AppError, match="already exists"):
+        repository.write_candidate(entry())
+    approved = replace(entry(), status=KnowledgeStatus.APPROVED, reviewers=("alice",), reviewed_at=date(2026, 7, 14))
+    (tmp_path / "candidates" / "KW-rule-001.md").write_text(repository.serialize(approved))
+    with pytest.raises(AppError, match="duplicate"):
+        repository.move("KW-rule-001", "candidate", "approved")
+
+
+def test_read_requires_exact_canonical_lifecycle_parent(tmp_path) -> None:
+    repository = wiki(tmp_path)
+    nested = tmp_path / "candidates" / "nested"
+    nested.mkdir()
+    path = nested / "KW-rule-001.md"
+    path.write_text(repository.serialize(entry()))
+    with pytest.raises(AppError, match="outside a lifecycle directory"):
+        repository.read(path)
+
+
+def test_raw_enumeration_accumulates_directory_errors(tmp_path, monkeypatch) -> None:
+    repository = wiki(tmp_path)
+    original = type(tmp_path).iterdir
+    def failing_iterdir(path):
+        if path.name == "candidates":
+            raise OSError("unreadable")
+        return original(path)
+    monkeypatch.setattr(type(tmp_path), "iterdir", failing_iterdir)
+    paths, issues = repository.raw_paths()
+    assert paths == []
+    assert len(issues) == 1 and "candidates" in issues[0] and "unreadable" in issues[0]

@@ -48,3 +48,19 @@ def test_duplicate_taxonomy_values_are_invalid(tmp_path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert status == 1
     assert "unique" in payload["data"]["issues"][0]
+
+
+def test_lint_accumulates_unsafe_and_malformed_files(tmp_path, capsys) -> None:
+    for name in ("approved", "candidates", "archive"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "taxonomy.yaml").write_text("schema_version: 1\ntypes: [rule]\nphases: [implement]\n")
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside")
+    (tmp_path / "approved" / "linked.md").symlink_to(outside)
+    (tmp_path / "candidates" / "broken.md").write_text("not front matter")
+    status = main(["wiki", "lint", "--wiki", str(tmp_path)])
+    issues = json.loads(capsys.readouterr().out)["data"]["issues"]
+    assert status == 1 and len(issues) == 2
+    assert issues == sorted(issues)
+    assert any("symbolic link" in issue for issue in issues)
+    assert any("front matter" in issue for issue in issues)

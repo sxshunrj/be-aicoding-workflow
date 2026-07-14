@@ -22,7 +22,8 @@ class WikiService:
         entries = []
         try:
             self.repository.taxonomy()
-            paths = self.repository.paths()
+            paths, enumeration_issues = self.repository.raw_paths()
+            issues.extend(enumeration_issues)
         except AppError as error:
             return LintReport(False, (f"taxonomy/layout: {error.message}",))
         for path in paths:

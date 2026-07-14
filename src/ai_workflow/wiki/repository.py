@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import fields
+from contextlib import contextmanager
+import fcntl
 import os
 from pathlib import Path
 import tempfile
@@ -73,6 +75,18 @@ class WikiRepository:
                 result.append(path)
         return sorted(result)
 
+    def raw_paths(self) -> tuple[list[Path], list[str]]:
+        """Enumerate lint inputs without allowing one unsafe entry to stop collection."""
+        paths: list[Path] = []
+        issues: list[str] = []
+        for name in LIFECYCLE_DIRECTORIES:
+            directory = self.root / name
+            try:
+                paths.extend(path for path in directory.iterdir() if path.suffix == ".md")
+            except OSError as error:
+                issues.append(f"{name}: cannot enumerate lifecycle directory: {error}")
+        return sorted(paths), sorted(issues)
+
     def list(self, status: KnowledgeStatus | str) -> list[KnowledgeEntry]:
         wanted = _status(status)
         entries = [self.read(path) for path in self.paths() if path.parent.name == DIRECTORY[wanted]]
@@ -103,29 +117,29 @@ class WikiRepository:
         if entry.status is not KnowledgeStatus.CANDIDATE:
             raise AppError("wiki_invalid", "only candidate knowledge can be written")
         target = self._safe_file(self.root / "candidates" / f"{entry.id}.md")
-        if os.path.lexists(target):
-            raise AppError("wiki_conflict", f"knowledge entry already exists: {entry.id}")
         data = self.serialize(entry)
-        temporary: Path | None = None
-        placeholder_created = False
-        try:
-            descriptor, name = tempfile.mkstemp(prefix=f".{entry.id}.", suffix=".tmp", dir=target.parent)
-            temporary = Path(name)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            placeholder = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            os.close(placeholder)
-            placeholder_created = True
-            os.replace(temporary, target)
-            return target
-        except OSError as error:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
-            if placeholder_created:
-                target.unlink(missing_ok=True)
-            raise AppError("wiki_invalid", f"cannot write knowledge entry: {error}") from error
+        with self._lock():
+            if self._id_locations(entry.id):
+                raise AppError("wiki_conflict", f"knowledge entry already exists: {entry.id}")
+            temporary: Path | None = None
+            try:
+                descriptor, name = tempfile.mkstemp(prefix=f".{entry.id}.", suffix=".tmp", dir=target.parent)
+                temporary = Path(name)
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.link(temporary, target)
+                temporary.unlink()
+                _fsync_directory(target.parent)
+                return target
+            except FileExistsError as error:
+                raise AppError("wiki_conflict", f"knowledge entry already exists: {entry.id}") from error
+            except OSError as error:
+                raise AppError("wiki_invalid", f"cannot write knowledge entry: {error}") from error
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
 
     def move(
         self,
@@ -136,25 +150,32 @@ class WikiRepository:
         self.validate_layout()
         validate_entry_id(entry_id)
         source_status, target_status = _status(source), _status(target)
-        source_path = self._safe_file(
-            self.root / DIRECTORY[source_status] / f"{entry_id}.md", must_exist=True
-        )
-        target_path = self._safe_file(self.root / DIRECTORY[target_status] / f"{entry_id}.md")
-        if source_path == target_path or os.path.lexists(target_path):
-            raise AppError("wiki_conflict", f"target knowledge entry already exists: {entry_id}")
-        entry = self.read(source_path)
-        if entry.status is not target_status:
-            raise AppError("wiki_invalid", "entry status does not match target lifecycle")
-        linked = False
-        try:
-            os.link(source_path, target_path)
-            linked = True
-            source_path.unlink()
-        except OSError as error:
-            if linked:
-                target_path.unlink(missing_ok=True)
-            raise AppError("wiki_invalid", f"cannot move knowledge entry: {error}") from error
-        return target_path
+        with self._lock():
+            source_path = self._safe_file(
+                self.root / DIRECTORY[source_status] / f"{entry_id}.md", must_exist=True
+            )
+            target_path = self._safe_file(self.root / DIRECTORY[target_status] / f"{entry_id}.md")
+            if source_path == target_path or os.path.lexists(target_path):
+                raise AppError("wiki_conflict", f"target knowledge entry already exists: {entry_id}")
+            locations = self._id_locations(entry_id)
+            if any(path != source_path for path in locations):
+                raise AppError("wiki_conflict", f"duplicate knowledge id exists: {entry_id}")
+            entry = self.read(source_path)
+            if entry.status is not target_status:
+                raise AppError("wiki_invalid", "entry status does not match target lifecycle")
+            linked = False
+            try:
+                os.link(source_path, target_path)
+                linked = True
+                source_path.unlink()
+                _fsync_directory(target_path.parent)
+                if source_path.parent != target_path.parent:
+                    _fsync_directory(source_path.parent)
+            except OSError as error:
+                if linked:
+                    target_path.unlink(missing_ok=True)
+                raise AppError("wiki_invalid", f"cannot move knowledge entry: {error}") from error
+            return target_path
 
     def _safe_file(self, path: Path, *, must_exist: bool = False) -> Path:
         if path.is_symlink():
@@ -166,9 +187,34 @@ class WikiRepository:
             raise AppError("wiki_invalid", f"path escapes wiki root: {path}") from error
         if must_exist and (not resolved.is_file() or resolved.is_symlink()):
             raise AppError("wiki_not_found", f"knowledge entry not found: {path.name}")
-        if resolved.parent.name not in LIFECYCLE_DIRECTORIES:
+        canonical_parents = {self.root / name for name in LIFECYCLE_DIRECTORIES}
+        if resolved.parent not in canonical_parents:
             raise AppError("wiki_invalid", f"path is outside a lifecycle directory: {path}")
         return resolved
+
+    def _id_locations(self, entry_id: str) -> list[Path]:
+        locations: list[Path] = []
+        for path in self.paths():
+            if path.name == f"{entry_id}.md" or self.read(path).id == entry_id:
+                locations.append(path)
+        return locations
+
+    @contextmanager
+    def _lock(self):
+        path = self.root / ".wiki.lock"
+        if path.is_symlink():
+            raise AppError("wiki_invalid", "wiki lock must not be a symbolic link")
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(path, flags, 0o600)
+        except OSError as error:
+            raise AppError("wiki_invalid", f"cannot acquire wiki lock: {error}") from error
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
 
 
 def _status(value: KnowledgeStatus | str) -> KnowledgeStatus:
@@ -210,3 +256,11 @@ def _serialize(entry: KnowledgeEntry) -> str:
     for name in ("tags", "owners", "reviewers", "sources", "supersedes", "conflicts_with"):
         metadata[name] = list(metadata[name])
     return f"---\n{yaml.safe_dump(metadata, sort_keys=False)}---\n{entry.body}\n"
+
+
+def _fsync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
