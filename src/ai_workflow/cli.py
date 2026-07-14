@@ -8,8 +8,13 @@ from ai_workflow.config import RepositoryConfig
 from ai_workflow.errors import AppError
 
 
+class _JsonArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise AppError("invalid_arguments", message)
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ai-workflow")
+    parser = _JsonArgumentParser(prog="ai-workflow")
     commands = parser.add_subparsers(dest="command", required=True)
     config = commands.add_parser("config")
     config_commands = config.add_subparsers(dest="config_command", required=True)
