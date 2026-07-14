@@ -170,3 +170,35 @@ def test_load_rejects_semantically_invalid_state(
         service.status(state.run_id)
 
     assert error.value.code == "invalid_state"
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"current_attempts": {"unknown": "unknown-1-abcdef"}},
+        {"current_attempts": {"spec": "bad"}},
+        {"current_attempts": {"spec": "spec-1-abcdef"}},
+        {"accepted_results": {"spec-1-abcdef": "not-a-digest"}},
+        {"accepted_results": {"spec-1-abcdef": "a" * 64}},
+        {"registered": ["not-an-artifact"]},
+        {"registered": [{"path": "x", "sha256": "bad", "schema_version": 1,
+                          "phase": "spec", "source_revision": "abc123"}]},
+        {"registered": [{"path": [], "sha256": "a" * 64, "schema_version": 1,
+                          "phase": "spec", "source_revision": "abc123"}]},
+        {"rerun_reasons": {"unknown": "reason"}},
+        {"rerun_reasons": {"spec": "  "}},
+    ],
+)
+def test_load_rejects_invalid_task4_metadata(tmp_path: Path, metadata) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+    state = service.init(tmp_path, "abc123")
+    state_path = tmp_path / ".ai-workflow" / "runs" / state.run_id / "state.yaml"
+    data = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    data["artifacts"].update(metadata)
+    state_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(AppError) as error:
+        service.status(state.run_id)
+
+    assert error.value.code == "invalid_state"

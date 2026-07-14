@@ -6,6 +6,7 @@ import re
 from uuid import uuid4
 import hashlib
 import json
+import os
 
 import yaml
 
@@ -20,6 +21,8 @@ from ai_workflow.workflow.store import Event, StateStore
 
 RUN_ID_PATTERN = re.compile(r"RUN-\d{8}-\d{6}-[0-9a-f]{6}")
 ID_SUFFIX_PATTERN = re.compile(r"[0-9a-f]{6}")
+ATTEMPT_ID_PATTERN = re.compile(r"(spec|plan|implement|verify)-([1-9]\d*)-[0-9a-f]{6}")
+DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
 BLOCKED_STATE_KEY = "_blocked_state"
 RUN_STATUSES = {
     NodeStatus.PENDING.value,
@@ -142,11 +145,12 @@ class WorkflowService:
         try:
             raw_result = result_path.read_bytes()
             result_digest = hashlib.sha256(raw_result).hexdigest()
-            result = ChildResult.load(result_path)
+            result = ChildResult.from_bytes(raw_result)
         except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
             raise AppError("invalid_result", f"child result is invalid: {error}") from error
         if previous is not None:
             if previous == result_digest:
+                self._repair_submission_evidence(state, attempt_id, result_digest, result)
                 return state
             raise AppError("result_conflict", "attempt already has a different accepted result")
         matching = [name for name, owner in current.items() if owner == attempt_id]
@@ -172,11 +176,39 @@ class WorkflowService:
         else:
             state.nodes[phase.value].status = NodeStatus.RERUN.value
             state.status = NodeStatus.PENDING.value
-        self._save(state, "result_submitted", {"phase": phase.value, "attempt_id": attempt_id,
-                                                "result_digest": result_digest, "status": result.status,
-                                                "summary": result.summary,
-                                                "artifact": None if artifact is None else artifact.to_dict()})
+        self._save(state, "result_submitted",
+                   self._submission_event_data(state, phase, attempt_id, result_digest, result))
         return state
+
+    @staticmethod
+    def _submission_event_data(state: RunState, phase: Phase, attempt_id: str,
+                               result_digest: str, result: ChildResult) -> dict[str, object]:
+        artifact = result.artifact
+        return {"run_id": state.run_id, "node": phase.value, "phase": phase.value,
+                "attempt_id": attempt_id, "result_digest": result_digest,
+                "artifact_digest": None if artifact is None else artifact.sha256,
+                "status": result.status, "summary": result.summary,
+                "artifact": None if artifact is None else artifact.to_dict()}
+
+    def _repair_submission_evidence(self, state: RunState, attempt_id: str,
+                                    result_digest: str, result: ChildResult) -> None:
+        current = state.artifacts["current_attempts"]
+        assert isinstance(current, dict)
+        matching = [name for name, owner in current.items() if owner == attempt_id]
+        if len(matching) != 1:
+            raise AppError("invalid_state", "accepted result has no attempt owner")
+        phase = Phase(matching[0])
+        expected = self._submission_event_data(state, phase, attempt_id, result_digest, result)
+        events = self._read_events(state.run_id)
+        found = any(event["type"] == "result_submitted"
+                    and event["version"] == state.version
+                    and all(event["data"].get(key) == expected[key]
+                            for key in ("run_id", "node", "attempt_id", "result_digest",
+                                        "artifact_digest"))
+                    for event in events)
+        if not found:
+            self._store(state.run_id).append_event(
+                state.version, Event("result_submitted", expected, self.clock().isoformat()))
 
     def _validate_artifact(self, state: RunState, phase: Phase, artifact: ArtifactRef,
                            result_path: Path) -> None:
@@ -193,12 +225,15 @@ class WorkflowService:
             path.resolve().relative_to(self.repo_root.resolve())
         except ValueError as error:
             raise AppError("invalid_result", "artifact path escapes repository") from error
-        if path.is_symlink() or not path.is_file():
-            raise AppError("invalid_result", "artifact path must be a regular file")
         digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(65536), b""):
-                digest.update(chunk)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(path, flags)
+            with os.fdopen(descriptor, "rb") as stream:
+                for chunk in iter(lambda: stream.read(65536), b""):
+                    digest.update(chunk)
+        except OSError as error:
+            raise AppError("invalid_result", "artifact path must be a regular file") from error
         if digest.hexdigest() != artifact.sha256:
             raise AppError("artifact_digest_mismatch", "artifact digest does not match result")
 
@@ -208,35 +243,28 @@ class WorkflowService:
         if not isinstance(raw, list):
             raise AppError("invalid_state", "artifact registry is invalid")
         try:
-            return tuple(ArtifactRef.from_dict(item) for item in raw if isinstance(item, dict))
+            if not all(isinstance(item, dict) for item in raw):
+                raise ValueError("artifact registry entries must be objects")
+            return tuple(ArtifactRef.from_dict(item) for item in raw)
         except (ValueError, TypeError, KeyError) as error:
             raise AppError("invalid_state", "artifact registry is invalid") from error
 
     def summary(self, run_id: str) -> RunSummary:
         self._load(run_id)
-        events = []
-        try:
-            for line in self._store(run_id).events_path.read_text(encoding="utf-8").splitlines():
-                events.append(json.loads(line))
-        except (OSError, json.JSONDecodeError, TypeError) as error:
-            raise AppError("invalid_state", "workflow events are malformed") from error
-        attempts = [event for event in events if event.get("type") == "phase_begun"]
-        submissions = [event for event in events if event.get("type") == "result_submitted"]
+        events = self._read_events(run_id)
+        attempts = [event for event in events if event["type"] == "phase_begun"]
+        submissions = [event for event in events if event["type"] == "result_submitted"]
         durations: dict[str, int] = {}
         for begun in attempts:
-            data = begun.get("data", {})
-            if not isinstance(data, dict):
-                continue
+            data = begun["data"]
             finished = next((event for event in submissions
-                             if isinstance(event.get("data"), dict)
-                             and event["data"].get("attempt_id") == data.get("attempt_id")), None)
-            if finished and isinstance(begun.get("timestamp"), str) and isinstance(finished.get("timestamp"), str):
+                             if event["data"].get("attempt_id") == data.get("attempt_id")), None)
+            if finished and "timestamp" in begun and "timestamp" in finished:
                 start = datetime.fromisoformat(begun["timestamp"])
                 end = datetime.fromisoformat(finished["timestamp"])
                 phase = str(data.get("phase"))
                 durations[phase] = durations.get(phase, 0) + int((end - start).total_seconds() * 1000)
-        transitions = [event["data"] for event in events if event.get("type") == "workflow_transitioned"
-                       and isinstance(event.get("data"), dict)]
+        transitions = [event["data"] for event in events if event["type"] == "workflow_transitioned"]
         cited: set[str] = set()
         for packet in self._store(run_id).run_dir.glob("attempts/*/phase-packet.json"):
             try:
@@ -249,6 +277,29 @@ class WorkflowService:
                           sum(1 for item in submissions if item["data"].get("status") == "unable_to_complete")
                           + sum(len(item.get("reruns", {})) for item in transitions),
                           tuple(transitions), tuple(sorted(cited)))
+
+    def _read_events(self, run_id: str) -> list[dict[str, object]]:
+        events: list[dict[str, object]] = []
+        try:
+            for line in self._store(run_id).events_path.read_text(encoding="utf-8").splitlines():
+                event = json.loads(line)
+                if not isinstance(event, dict):
+                    raise ValueError("event must be an object")
+                if not isinstance(event.get("type"), str) or not event["type"]:
+                    raise ValueError("event type is invalid")
+                if type(event.get("version")) is not int or event["version"] < 1:
+                    raise ValueError("event version is invalid")
+                if not isinstance(event.get("data"), dict):
+                    raise ValueError("event data is invalid")
+                timestamp = event.get("timestamp")
+                if timestamp is not None:
+                    if not isinstance(timestamp, str):
+                        raise ValueError("event timestamp is invalid")
+                    datetime.fromisoformat(timestamp)
+                events.append(event)
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+            raise AppError("invalid_state", "workflow events are malformed") from error
+        return events
 
     def transition(
         self, run_id: str, accepted: bool, reruns: dict[Phase, str]
@@ -366,6 +417,43 @@ class WorkflowService:
         for phase, count in attempts.items():
             if phase not in formal_phases or type(count) is not int or count < 0:
                 raise AppError("invalid_state", "attempt counter is invalid")
+        current_attempts = state.artifacts.get("current_attempts", {})
+        accepted_results = state.artifacts.get("accepted_results", {})
+        registered = state.artifacts.get("registered", [])
+        rerun_reasons = state.artifacts.get("rerun_reasons", {})
+        def known_attempt(attempt_id: object, expected_phase: object | None = None) -> bool:
+            if not isinstance(attempt_id, str):
+                return False
+            match = ATTEMPT_ID_PATTERN.fullmatch(attempt_id)
+            if match is None:
+                return False
+            phase, number = match.group(1), int(match.group(2))
+            return (expected_phase is None or phase == expected_phase) and number <= attempts.get(phase, 0)
+
+        if not isinstance(current_attempts, dict) or any(
+            phase not in formal_phases or not known_attempt(attempt_id, phase)
+            for phase, attempt_id in current_attempts.items()
+        ):
+            raise AppError("invalid_state", "current attempt metadata is invalid")
+        if not isinstance(accepted_results, dict) or any(
+            not known_attempt(attempt_id)
+            or not isinstance(digest, str) or DIGEST_PATTERN.fullmatch(digest) is None
+            for attempt_id, digest in accepted_results.items()
+        ):
+            raise AppError("invalid_state", "accepted result metadata is invalid")
+        if not isinstance(registered, list) or not all(isinstance(item, dict) for item in registered):
+            raise AppError("invalid_state", "artifact registry is invalid")
+        try:
+            refs = tuple(ArtifactRef.from_dict(item) for item in registered)
+        except (KeyError, TypeError, ValueError) as error:
+            raise AppError("invalid_state", "artifact registry is invalid") from error
+        if any(ref.source_revision != state.source_revision for ref in refs):
+            raise AppError("invalid_state", "artifact registry source revision is invalid")
+        if not isinstance(rerun_reasons, dict) or any(
+            phase not in formal_phases or not isinstance(reason, str) or not reason.strip()
+            for phase, reason in rerun_reasons.items()
+        ):
+            raise AppError("invalid_state", "rerun reason metadata is invalid")
         blocked_state = state.artifacts.get(BLOCKED_STATE_KEY)
         if state.status == NodeStatus.BLOCKED.value:
             if state.nodes[current_phase.value].status != NodeStatus.BLOCKED.value:

@@ -58,18 +58,28 @@ class StateStore:
         next_version = expected_version + 1
         state_data = state.to_dict()
         state_data["version"] = next_version
-        event_data = {"type": event.type, "version": next_version, "data": event.data}
-        if event.timestamp is not None:
-            event_data["timestamp"] = event.timestamp
         validate_plain_value(state_data, path="state")
-        validate_plain_value(event_data, path="event")
         state_payload = self._serialize_state(state_data)
-        event_payload = json.dumps(event_data, separators=(",", ":")) + "\n"
+        event_payload = self._serialize_event(next_version, event)
 
         state.version = next_version
         temporary = self.state_path.with_suffix(".yaml.tmp")
         temporary.write_text(state_payload, encoding="utf-8")
         temporary.replace(self.state_path)
+        self._append_event_payload(event_payload)
+
+    def append_event(self, version: int, event: Event) -> None:
+        self._append_event_payload(self._serialize_event(version, event))
+
+    @staticmethod
+    def _serialize_event(version: int, event: Event) -> str:
+        event_data = {"type": event.type, "version": version, "data": event.data}
+        if event.timestamp is not None:
+            event_data["timestamp"] = event.timestamp
+        validate_plain_value(event_data, path="event")
+        return json.dumps(event_data, separators=(",", ":")) + "\n"
+
+    def _append_event_payload(self, event_payload: str) -> None:
         with self.events_path.open("a", encoding="utf-8") as stream:
             stream.write(event_payload)
 

@@ -27,7 +27,9 @@ class Finding:
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "Finding":
         _keys(data, {"id", "title", "detail"}, "finding")
-        return cls(str(data["id"]), str(data["title"]), str(data["detail"]))
+        if not all(isinstance(data[key], str) for key in ("id", "title", "detail")):
+            raise ValueError("finding fields must be strings")
+        return cls(data["id"], data["title"], data["detail"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,10 +49,18 @@ class ArtifactRef:
         _keys(data, {"path", "sha256", "schema_version", "phase", "source_revision"}, "artifact")
         if data["schema_version"] != SCHEMA_VERSION:
             raise ValueError(f"unsupported schema_version: {data['schema_version']!r}")
-        digest = str(data["sha256"])
+        if not isinstance(data["path"], str) or not data["path"]:
+            raise ValueError("artifact path is invalid")
+        if not isinstance(data["source_revision"], str) or not data["source_revision"].strip():
+            raise ValueError("artifact source revision is invalid")
+        if not isinstance(data["sha256"], str):
+            raise ValueError("artifact sha256 is invalid")
+        digest = data["sha256"]
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
             raise ValueError("artifact sha256 is invalid")
-        return cls(str(data["path"]), digest, SCHEMA_VERSION, Phase(str(data["phase"])), str(data["source_revision"]))
+        if not isinstance(data["phase"], str):
+            raise ValueError("artifact phase is invalid")
+        return cls(data["path"], digest, SCHEMA_VERSION, Phase(data["phase"]), data["source_revision"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +80,11 @@ class ChildResult:
 
     @classmethod
     def load(cls, path: Path) -> "ChildResult":
-        data = json.loads(path.read_text(encoding="utf-8"))
+        return cls.from_bytes(path.read_bytes())
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> "ChildResult":
+        data = json.loads(payload.decode("utf-8"))
         if not isinstance(data, dict):
             raise ValueError("child result must be an object")
         if "schema_version" not in data:
