@@ -29,14 +29,25 @@ class StateMachine:
         self._require_changeable(state)
         if not reruns:
             raise AppError("invalid_transition", "at least one rerun is required")
+        try:
+            current_index = PHASE_ORDER.index(Phase(state.current_phase))
+        except ValueError as error:
+            raise AppError("invalid_transition", "current phase is invalid") from error
         for phase, reason in reruns.items():
             if phase not in PHASE_ORDER:
                 raise AppError("invalid_transition", f"invalid rerun phase: {phase}")
+            if PHASE_ORDER.index(phase) > current_index:
+                raise AppError("invalid_transition", "cannot rerun a forward phase")
             if not reason.strip():
                 raise AppError("invalid_transition", "rerun reason must not be empty")
         earliest = min(reruns, key=PHASE_ORDER.index)
-        for phase in reruns:
-            state.nodes[phase.value].status = NodeStatus.RERUN.value
+        earliest_index = PHASE_ORDER.index(earliest)
+        for phase in PHASE_ORDER[earliest_index:]:
+            state.nodes[phase.value].status = (
+                NodeStatus.RERUN.value
+                if phase in reruns
+                else NodeStatus.PENDING.value
+            )
         state.current_phase = earliest.value
         state.status = NodeStatus.PENDING.value
         return state

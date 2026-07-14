@@ -21,6 +21,7 @@ def test_rerun_moves_back_to_earliest_invalid_phase() -> None:
     state = RunState.new("RUN-001", "abc123")
     for node in state.nodes.values():
         node.status = "valid"
+    state.current_phase = Phase.VERIFY.value
     machine = StateMachine()
     machine.apply_reruns(
         state,
@@ -36,9 +37,30 @@ def test_rerun_moves_back_to_earliest_invalid_phase() -> None:
 
 def test_rejects_empty_rerun_reason() -> None:
     state = RunState.new("RUN-001", "abc123")
+    state.current_phase = Phase.PLAN.value
 
     with pytest.raises(AppError, match="reason must not be empty"):
         StateMachine().apply_reruns(state, {Phase.PLAN: "  "})
+
+
+def test_rejects_rerun_of_a_forward_phase() -> None:
+    state = RunState.new("RUN-001", "abc123")
+    state.current_phase = Phase.IMPLEMENT.value
+
+    with pytest.raises(AppError, match="forward phase"):
+        StateMachine().apply_reruns(state, {Phase.VERIFY: "not reached"})
+
+
+def test_rerun_resets_downstream_nodes() -> None:
+    state = RunState.new("RUN-001", "abc123")
+    state.current_phase = Phase.VERIFY.value
+    for node in state.nodes.values():
+        node.status = "valid"
+
+    StateMachine().apply_reruns(state, {Phase.IMPLEMENT: "missing branch"})
+
+    assert state.nodes["implement"].status == "rerun"
+    assert state.nodes["verify"].status == "pending"
 
 
 @pytest.mark.parametrize("status", ["blocked", "aborted", "completed"])

@@ -38,7 +38,8 @@ def _parser() -> argparse.ArgumentParser:
     transition = workflow_commands.add_parser("transition")
     transition.add_argument("--repo", type=Path, required=True)
     transition.add_argument("--run-id", required=True)
-    transition.add_argument("--accept", action="store_true", required=True)
+    transition.add_argument("--accept", action="store_true")
+    transition.add_argument("--rerun", action="append", default=[])
     block = workflow_commands.add_parser("block")
     block.add_argument("--repo", type=Path, required=True)
     block.add_argument("--run-id", required=True)
@@ -50,6 +51,24 @@ def _config_data(config: RepositoryConfig) -> dict[str, object]:
     data = asdict(config)
     data["wiki_path"] = str(config.wiki_path)
     return data
+
+
+def _reruns(values: list[str]) -> dict[Phase, str]:
+    reruns: dict[Phase, str] = {}
+    for value in values:
+        if "=" not in value:
+            raise AppError("invalid_arguments", "--rerun must use PHASE=REASON")
+        name, reason = value.split("=", 1)
+        try:
+            phase = Phase(name)
+        except ValueError as error:
+            raise AppError("invalid_arguments", f"unknown rerun phase: {name}") from error
+        if not reason.strip():
+            raise AppError("invalid_arguments", "rerun reason must not be empty")
+        if phase in reruns:
+            raise AppError("invalid_arguments", f"duplicate rerun phase: {name}")
+        reruns[phase] = reason
+    return reruns
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -66,7 +85,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             elif args.workflow_command == "begin":
                 data = service.begin(args.run_id, args.phase).to_dict()
             elif args.workflow_command == "transition":
-                data = service.transition(args.run_id, args.accept, {}).to_dict()
+                reruns = _reruns(args.rerun)
+                if args.accept == bool(reruns):
+                    raise AppError(
+                        "invalid_arguments",
+                        "transition requires exactly one of --accept or --rerun",
+                    )
+                data = service.transition(args.run_id, args.accept, reruns).to_dict()
             elif args.workflow_command == "block":
                 data = service.block(args.run_id, args.reason).to_dict()
             elif args.workflow_command == "resume":
