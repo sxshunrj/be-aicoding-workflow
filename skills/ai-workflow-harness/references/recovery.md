@@ -31,11 +31,19 @@ ai-workflow workflow abort --repo REPO --run-id RUN
 
 ### terminal
 
-`completed` 或 `aborted` 不可 begin/stage/finalize/review/transition。进入 terminal cleanup；重复会话只恢复尚未完成人类 gate 的 cleanup，不改变 run。
+`completed` 或 `aborted` 不可 begin/stage/finalize/review/transition。进入 terminal cleanup；每次新会话都从其步骤 1 安全幂等重放，不根据 chat 猜测 cleanup 进度。
 
 ## stale / conflict
 
 - stale attempt：Child 不修改 `state.yaml`，不替换 attempt ID，也不调用 workflow helper。Harness `status -> begin` 获取当前 prompt，重新 dispatch 原 Child；Child 只重新生成自己的 artifact/ChildResult。
 - staged result conflict：保留两份原始证据并停下，不覆盖。
-- `stale_review_gate`：先 `status`。若持久 gate 仍 stale，禁止循环调用 `review`；由 Harness 执行 `workflow block --reason "stale review gate cannot be refreshed"`，展示证据并等待人类 `resume`/`abort`。人类 resume 清除旧 gate 后才重新 `review`，旧 acceptance 永久作废。
+Review error 必须按互斥 route 处理：
+
+| error.code | exact route | 禁止动作 |
+| --- | --- | --- |
+| `review_gate_mismatch` | `workflow status -> workflow review` | 不进入 block |
+| `stale_review_gate` | `workflow status -> workflow block -> human resume/abort` | 禁止继续 review |
+
+- `review_gate_mismatch`：`status` 读取当前持久 gate，再重新 `review` 并展示新 digest。
+- `stale_review_gate`：`status` 确认后直接执行 `workflow block --reason "stale review gate cannot be refreshed"`，不得尝试 review。等待人类 `resume`/`abort`；旧 acceptance 作废。
 - event/state integrity error：fail closed 并报告人类；绝不手工 repair state。

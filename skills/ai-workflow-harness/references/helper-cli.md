@@ -41,7 +41,8 @@ ai-workflow wiki archive --wiki PATH --id ID --reviewer NAME --reason TEXT --exp
 | code 类别 | 处理 |
 | --- | --- |
 | `barrier_incomplete` | 不算 Child failure；等待缺失 sibling，再 stage/finalize |
-| `stale_state`、`attempt_owner_mismatch`、`review_gate_required`、`review_gate_mismatch` | 立即 `workflow status`，按 recovery 中的持久化证据继续 |
+| `stale_state`、`attempt_owner_mismatch`、`review_gate_required` | 立即 `workflow status`，按 recovery 中的持久化证据继续 |
+| `review_gate_mismatch` | `workflow status` 后重新 `workflow review`；不 block |
 | `stale_review_gate` | `status` 后仍 stale 就 `workflow block`；等待人类 resume/abort，禁止 review loop |
 | `result_conflict`、`dispatch_packet_conflict`、`dispatch_prompt_conflict`、`immutable_conflict` | 停止写入；`status` 后向人类呈现冲突，不覆盖文件 |
 | `artifact_digest_mismatch`、`invalid_result`、`protected_artifact_path`、`unsupported_schema_version` | 拒绝该结果；只让原 Child 修复自己拥有的 artifact/ChildResult |

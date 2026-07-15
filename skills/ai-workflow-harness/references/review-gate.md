@@ -28,9 +28,19 @@ ai-workflow workflow review --repo REPO --run-id RUN [--rerun NODE=REASON ...]
 ai-workflow workflow review-accept --repo REPO --run-id RUN --expected-digest DIGEST
 ```
 
-若 digest/state version 已 stale，回到 `status -> review`，重新向人类展示；禁止复用旧接受。
+## 3. mismatch / stale 恢复
 
-## 3. transition
+两条路线互斥，先按 Helper 的 `error.code` 选择：
+
+| error.code | exact route | 禁止动作 |
+| --- | --- | --- |
+| `review_gate_mismatch` | `workflow status -> workflow review` | 不进入 block |
+| `stale_review_gate` | `workflow status -> workflow block -> human resume/abort` | 禁止继续 review |
+
+- `review_gate_mismatch` 表示 caller 提供的 digest 不匹配。`status` 读取当前持久 gate 后重新 `review`，再向人类展示新 digest。
+- `stale_review_gate` 表示 gate 与 state version 不再一致。`status` 确认后直接 `workflow block --reason "stale review gate cannot be refreshed"`；不得继续 review 循环。只在人类明确选择 `resume` 或 `abort` 后继续，旧 acceptance 永久作废。
+
+## 4. transition
 
 只有 gate 已持久化接受后才调用：
 

@@ -2,6 +2,8 @@
 
 适用于 `phase=verify`、`child=code_review`。
 
+- Owner mapping：`verify.code_review` -> `code-review-report.md`
+
 ## 唯一 artifact
 
 只读检查 scoped diff、spec、implementation plan/report 与测试报告，写 `code-review-report.md`（实际路径以 `allowed_output_path` 为准）。不得修改产品代码、测试 case、其他报告或 workflow state。

@@ -2,6 +2,9 @@
 
 按 Dispatch Packet 的 `child` 选择一个 owner；一次 dispatch 只写一个 artifact。
 
+- Owner mapping：`plan.solution` -> `implementation-plan.md`
+- Owner mapping：`plan.test_strategy` -> `test-strategy.md`
+
 ## `solution` -> `implementation-plan.md`
 
 把 accepted technical spec 转为按依赖排序的实现步骤。为每步标出目标文件/组件、行为变化、验证方式、风险与回滚边界；引用 prior artifact 或代码路径作为 `evidence`。不得编码、执行测试或写 `test-strategy.md`。

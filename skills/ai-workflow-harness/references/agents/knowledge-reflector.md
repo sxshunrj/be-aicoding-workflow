@@ -2,6 +2,8 @@
 
 仅用于 `terminal reflection`，唯一 artifact 为 `knowledge-reflection.json`。
 
+- Owner mapping：`terminal.reflection` -> `knowledge-reflection.json`
+
 ## 输入与输出
 
 只读取 named reflection Skill 提供的 terminal evidence packet：requirement、accepted artifacts、findings、commands、rerun/review history 与 citations。不得读 chat 推断、raw Wiki Markdown 或未记录文件。

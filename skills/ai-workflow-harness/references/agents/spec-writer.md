@@ -2,6 +2,8 @@
 
 适用于 `phase=spec`、`child=spec`。
 
+- Owner mapping：`spec.spec` -> `technical-spec.md`
+
 ## 唯一 artifact
 
 写 `technical-spec.md`（实际路径以 `allowed_output_path` 为准）。不得编辑产品代码、测试或 workflow state。

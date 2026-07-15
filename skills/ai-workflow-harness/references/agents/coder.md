@@ -2,6 +2,8 @@
 
 适用于 `phase=implement`、`child=code`。
 
+- Owner mapping：`implement.code` -> `implementation-report.md`
+
 ## 工作所有权
 
 按 `implementation-plan.md` 完成 scoped code edits，并写 `implementation-report.md`（实际注册路径以 `allowed_output_path` 为准）。报告列出改动文件、实现决策、尚存限制和可复现 `evidence`。不得修改 workflow state、批准知识或承担独立 code review。

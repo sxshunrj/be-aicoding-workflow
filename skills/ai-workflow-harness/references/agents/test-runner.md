@@ -1,5 +1,9 @@
 # Test Runner contract
 
+- Owner mapping：`verify.build` -> `build-report.md`
+- Owner mapping：`verify.unit_test` -> `unit-test-report.md`
+- Owner mapping：`verify.integration_test` -> `integration-test-report.md`
+
 按 Dispatch Packet 的 `child` 选择唯一 artifact：
 
 | child | artifact |

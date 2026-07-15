@@ -1,4 +1,6 @@
+import json
 from pathlib import Path
+import re
 
 from ai_workflow.contracts.artifacts import ChildResult
 
@@ -25,6 +27,78 @@ REQUIRED_FILES = {
 CONTROL_SEQUENCE = (
     "status -> begin -> dispatch -> stage -> barrier -> finalize -> review -> "
     "transition -> status"
+)
+CHILD_RESULT_KEYS = {
+    "schema_version",
+    "run_id",
+    "phase",
+    "child",
+    "attempt_id",
+    "execution_mode",
+    "status",
+    "summary",
+    "artifact",
+    "findings",
+    "knowledge_citations",
+}
+ARTIFACT_REF_KEYS = {
+    "path",
+    "sha256",
+    "schema_version",
+    "phase",
+    "child",
+    "source_revision",
+}
+WORKFLOW_COMMANDS = (
+    "ai-workflow config show --repo REPO",
+    "ai-workflow workflow init --repo REPO --source-revision SHA --requirement TEXT --profile PROFILE",
+    "ai-workflow workflow status --repo REPO --run-id RUN",
+    "ai-workflow workflow begin --repo REPO --run-id RUN --phase PHASE --skill-dir SKILL_DIR",
+    "ai-workflow workflow stage --repo REPO --run-id RUN --attempt-id ATTEMPT --child CHILD --result FILE",
+    "ai-workflow workflow finalize --repo REPO --run-id RUN --attempt-id ATTEMPT",
+    "ai-workflow workflow review --repo REPO --run-id RUN [--rerun NODE=REASON ...]",
+    "ai-workflow workflow review-accept --repo REPO --run-id RUN --expected-digest SHA",
+    "ai-workflow workflow transition --repo REPO --run-id RUN",
+    "ai-workflow workflow block --repo REPO --run-id RUN --reason TEXT",
+    "ai-workflow workflow resume --repo REPO --run-id RUN [--rerun NODE=REASON ...]",
+    "ai-workflow workflow abort --repo REPO --run-id RUN",
+    "ai-workflow workflow summary --repo REPO --run-id RUN",
+)
+WIKI_COMMANDS = (
+    "ai-workflow wiki lint --wiki PATH",
+    "ai-workflow wiki search --wiki PATH [QUERY FILTERS]",
+    "ai-workflow wiki packet --wiki PATH --output FILE [QUERY FILTERS]",
+    "ai-workflow wiki propose --wiki PATH --proposal FILE",
+    "ai-workflow wiki promote --wiki PATH --id ID --reviewer NAME --expected-digest SHA",
+    "ai-workflow wiki reject --wiki PATH --id ID --reviewer NAME --reason TEXT --expected-digest SHA",
+    "ai-workflow wiki archive --wiki PATH --id ID --reviewer NAME --reason TEXT --expected-digest SHA",
+)
+OWNER_MAPPINGS = {
+    "references/agents/spec-writer.md": (
+        ("spec.spec", "technical-spec.md"),
+    ),
+    "references/agents/planner.md": (
+        ("plan.solution", "implementation-plan.md"),
+        ("plan.test_strategy", "test-strategy.md"),
+    ),
+    "references/agents/coder.md": (
+        ("implement.code", "implementation-report.md"),
+    ),
+    "references/agents/test-runner.md": (
+        ("verify.build", "build-report.md"),
+        ("verify.unit_test", "unit-test-report.md"),
+        ("verify.integration_test", "integration-test-report.md"),
+    ),
+    "references/agents/code-reviewer.md": (
+        ("verify.code_review", "code-review-report.md"),
+    ),
+    "references/agents/knowledge-reflector.md": (
+        ("terminal.reflection", "knowledge-reflection.json"),
+    ),
+}
+STALE_ROUTES = (
+    "| `review_gate_mismatch` | `workflow status -> workflow review` | 不进入 block |",
+    "| `stale_review_gate` | `workflow status -> workflow block -> human resume/abort` | 禁止继续 review |",
 )
 
 
@@ -133,11 +207,42 @@ def test_common_child_contract_defines_exact_schema_v2_result_and_no_state_rules
     assert "`allowed_output_path` 是唯一可 stage 的物理路径" in contract
 
 
-def test_stale_review_recovery_fails_closed_instead_of_looping_review() -> None:
-    recovery = _read("references/recovery.md")
-    assert "stale_review_gate" in recovery
-    assert "workflow block" in recovery
-    assert "禁止循环调用 `review`" in recovery
+def test_child_result_example_has_exact_top_level_and_artifact_keys() -> None:
+    contract = _read("references/agents/common-phase-contract.md")
+    match = re.search(r"```json\n(?P<payload>.*?)\n```", contract, re.DOTALL)
+    assert match is not None
+    payload = json.loads(match.group("payload"))
+    assert set(payload) == CHILD_RESULT_KEYS
+    assert payload["schema_version"] == 2
+    assert isinstance(payload["artifact"], dict)
+    assert set(payload["artifact"]) == ARTIFACT_REF_KEYS
+    assert payload["artifact"]["schema_version"] == 2
+
+
+def test_helper_cli_documents_the_exact_command_and_argument_matrix() -> None:
+    helper = _read("references/helper-cli.md")
+    table_commands = tuple(
+        re.findall(r"^\| `(ai-workflow (?:config|workflow) [^`]+)` \|", helper, re.MULTILINE)
+    )
+    assert table_commands == WORKFLOW_COMMANDS
+    block = re.search(
+        r"Knowledge commands.*?```text\n(?P<commands>.*?)\n```",
+        helper,
+        re.DOTALL,
+    )
+    assert block is not None
+    assert tuple(block.group("commands").splitlines()) == WIKI_COMMANDS
+
+
+def test_stale_review_routes_are_exact_mutually_exclusive_and_consistent() -> None:
+    for relative in ("references/review-gate.md", "references/recovery.md"):
+        text = _read(relative)
+        routes = tuple(line for line in text.splitlines() if line in STALE_ROUTES)
+        assert routes == STALE_ROUTES
+    mismatch_route = STALE_ROUTES[0].split(" | ")[1]
+    stale_route = STALE_ROUTES[1].split(" | ")[1]
+    assert "block" not in mismatch_route
+    assert "review" not in stale_route
 
 
 def test_owner_contracts_assign_every_child_and_artifact() -> None:
@@ -166,6 +271,45 @@ def test_owner_contracts_assign_every_child_and_artifact() -> None:
         for child, artifact in pairs:
             assert child in contract
             assert artifact in contract
+
+
+def test_owner_mapping_markers_are_structurally_exact() -> None:
+    marker = re.compile(r"^- Owner mapping：`([^`]+)` -> `([^`]+)`$", re.MULTILINE)
+    for relative, expected in OWNER_MAPPINGS.items():
+        assert tuple(marker.findall(_read(relative))) == expected
+
+
+def test_terminal_governance_choices_are_keyed_to_persisted_status() -> None:
+    terminal = _read("references/terminal-cleanup.md")
+    rows = re.findall(
+        r"^\| `(?P<status>candidate|approved|archived)` \| (?P<choices>[^|]+?) \|$",
+        terminal,
+        re.MULTILINE,
+    )
+    assert rows == [
+        ("candidate", "`promote` / `reject` / 保持不变"),
+        ("approved", "独立退役流程：`archive` / 保持不变"),
+        ("archived", "保持不变"),
+    ]
+    assert "当前没有 `wiki supersede` 命令" in terminal
+    assert "`supersedes` / `conflicts`" in terminal
+
+
+def test_terminal_new_conversation_uses_safe_replay_not_a_fake_checkpoint() -> None:
+    terminal = _read("references/terminal-cleanup.md")
+    assert "当前没有 cleanup checkpoint" in terminal
+    assert "每次 terminal 新会话都从步骤 1 安全幂等重放" in terminal
+    assert "不得假装知道上次中断点" in terminal
+    for required in (
+        "`status` 确认 terminal",
+        "重新展示终态验收",
+        "检测既有 accepted artifacts",
+        "检查当前 candidate/approved/archive 状态",
+        "summary 是纯读",
+        "重新检查 Git status/diff 并再次询问",
+    ):
+        assert required in terminal
+    assert "从未完成的最早人类 gate 恢复" not in terminal
 
 
 def test_each_phase_fixture_parses_as_child_result() -> None:
