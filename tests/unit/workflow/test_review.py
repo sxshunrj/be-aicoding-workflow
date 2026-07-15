@@ -11,7 +11,7 @@ from ai_workflow.contracts.packets import DispatchPacket
 from ai_workflow.errors import AppError
 from ai_workflow.workflow.models import Phase
 from ai_workflow.workflow.service import UNABLE_REASON, WorkflowService
-from ai_workflow.workflow.store import Event
+from ai_workflow.workflow.store import Event, StateStore
 
 
 def _config(repo: Path, *, review_mode: str = "human") -> None:
@@ -279,6 +279,149 @@ def test_status_rejects_run_policy_evidence_tampering(tmp_path: Path) -> None:
     with pytest.raises(AppError, match="run policy") as error:
         service.status(run_id)
     assert error.value.code == "invalid_state"
+
+
+def test_init_policy_write_failure_does_not_publish_state_or_events(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _config(tmp_path)
+    service = WorkflowService(
+        tmp_path,
+        clock=lambda: datetime(2026, 7, 15, 12, 0, 0),
+        id_factory=lambda: "abcdef",
+    )
+    store = service._store("RUN-20260715-120000-abcdef")
+
+    def fail_policy_write(_store, _path, _payload):
+        raise OSError("injected policy write failure")
+
+    monkeypatch.setattr(StateStore, "write_immutable", fail_policy_write)
+
+    with pytest.raises(OSError, match="policy write failure"):
+        service.init(tmp_path, "abc123", "Policy write must precede state")
+
+    assert not store.state_path.exists()
+    assert not store.events_path.exists()
+
+
+def test_init_policy_is_visible_before_state_can_be_loaded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _config(tmp_path)
+    service = WorkflowService(
+        tmp_path,
+        clock=lambda: datetime(2026, 7, 15, 12, 0, 0),
+        id_factory=lambda: "abcdef",
+    )
+    store = service._store("RUN-20260715-120000-abcdef")
+    real_write = StateStore.write_immutable
+    observed = False
+
+    def observe_policy_barrier(policy_store, path, payload):
+        nonlocal observed
+        observed = True
+        with pytest.raises(FileNotFoundError):
+            policy_store.load()
+        assert not policy_store.events_path.exists()
+        created = real_write(policy_store, path, payload)
+        assert path.read_bytes() == payload
+        with pytest.raises(FileNotFoundError):
+            policy_store.load()
+        return created
+
+    monkeypatch.setattr(StateStore, "write_immutable", observe_policy_barrier)
+
+    state = service.init(tmp_path, "abc123", "Observe policy publication barrier")
+
+    assert observed
+    assert service.status(state.run_id).run_id == state.run_id
+    assert store.events_path.read_text(encoding="utf-8") == ""
+
+
+def test_init_reuses_identical_orphan_policy_after_state_create_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _config(tmp_path)
+    service = WorkflowService(
+        tmp_path,
+        clock=lambda: datetime(2026, 7, 15, 12, 0, 0),
+        id_factory=lambda: "abcdef",
+    )
+    run_id = "RUN-20260715-120000-abcdef"
+    store = service._store(run_id)
+    real_create = StateStore.create
+    create_calls = 0
+
+    def fail_first_create(state_store, state):
+        nonlocal create_calls
+        create_calls += 1
+        if create_calls == 1:
+            raise OSError("injected state create failure")
+        return real_create(state_store, state)
+
+    monkeypatch.setattr(StateStore, "create", fail_first_create)
+
+    with pytest.raises(OSError, match="state create failure"):
+        service.init(tmp_path, "abc123", "Retry identical policy")
+
+    expected_policy = service._run_policy_payload(
+        run_id, "abc123", "full", "human"
+    )
+    assert store.policy_path().read_bytes() == expected_policy
+    assert not store.state_path.exists()
+    assert not store.events_path.exists()
+
+    recovered = service.init(tmp_path, "abc123", "Retry identical policy")
+
+    assert service.status(recovered.run_id).run_id == run_id
+    with pytest.raises(AppError) as error:
+        service.init(tmp_path, "abc123", "Retry identical policy")
+    assert error.value.code == "state_exists"
+
+
+def test_init_conflicting_orphan_policy_does_not_publish_state(
+    tmp_path: Path,
+) -> None:
+    _config(tmp_path, review_mode="human")
+    service = WorkflowService(
+        tmp_path,
+        clock=lambda: datetime(2026, 7, 15, 12, 0, 0),
+        id_factory=lambda: "abcdef",
+    )
+    run_id = "RUN-20260715-120000-abcdef"
+    store = service._store(run_id)
+    conflicting = service._run_policy_payload(
+        run_id, "abc123", "full", "auto_accept"
+    )
+    store.run_dir.mkdir(parents=True)
+    store.write_immutable(store.policy_path(), conflicting)
+
+    with pytest.raises(AppError) as error:
+        service.init(tmp_path, "abc123", "Reject conflicting orphan policy")
+
+    assert error.value.code == "immutable_conflict"
+    assert store.policy_path().read_bytes() == conflicting
+    assert not store.state_path.exists()
+    assert not store.events_path.exists()
+
+
+def test_init_preserves_state_exists_for_valid_existing_run(
+    tmp_path: Path,
+) -> None:
+    _config(tmp_path, review_mode="human")
+    service = WorkflowService(
+        tmp_path,
+        clock=lambda: datetime(2026, 7, 15, 12, 0, 0),
+        id_factory=lambda: "abcdef",
+    )
+    existing = service.init(tmp_path, "abc123", "Existing run wins")
+    _config(tmp_path, review_mode="auto_accept")
+
+    with pytest.raises(AppError) as error:
+        service.init(tmp_path, "abc123", "Conflicting retry")
+
+    assert error.value.code == "state_exists"
+    assert service.status(existing.run_id).requirement == "Existing run wins"
 
 
 @pytest.mark.parametrize(

@@ -215,13 +215,6 @@ class WorkflowService:
         self.repo_root = repo_root
         suffix = self._new_id_suffix()
         run_id = f"RUN-{self.clock():%Y%m%d-%H%M%S}-{suffix}"
-        state = RunState.new(
-            run_id,
-            source_revision,
-            requirement,
-            profile,
-            build_run_graph(config),
-        )
         store = self._store(run_id)
         policy_path = store.policy_path()
         policy_payload = self._run_policy_payload(
@@ -230,13 +223,31 @@ class WorkflowService:
             profile,
             config.review_mode,
         )
+        policy_digest = hashlib.sha256(policy_payload).hexdigest()
+        state = RunState.new(
+            run_id,
+            source_revision,
+            requirement,
+            profile,
+            build_run_graph(config),
+        )
         state.artifacts[RUN_POLICY_KEY] = {
             "review_mode": config.review_mode,
             "evidence_path": str(policy_path),
-            "evidence_digest": hashlib.sha256(policy_payload).hexdigest(),
+            "evidence_digest": policy_digest,
         }
+        if store.state_path.exists():
+            raise AppError("state_exists", "workflow state already exists")
+        store.run_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            store.write_immutable(policy_path, policy_payload)
+        except AppError as error:
+            if error.code == "immutable_conflict" and store.state_path.exists():
+                raise AppError(
+                    "state_exists", "workflow state already exists"
+                ) from error
+            raise
         store.create(state)
-        store.write_immutable(policy_path, policy_payload)
         return state
 
     def status(self, run_id: str) -> RunState:
