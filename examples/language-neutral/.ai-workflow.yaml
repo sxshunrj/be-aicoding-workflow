@@ -1,0 +1,13 @@
+schema_version: 1
+repository: language-neutral-example
+services: [example]
+wiki_path: ../../wiki
+commands:
+  build: [bash, verify.sh, build]
+  test: [bash, verify.sh, test]
+max_attempts: 3
+review_mode: human
+knowledge:
+  max_entries: 8
+  max_characters: 12000
+protected_paths: [.git/**, .ai-workflow/**]
