@@ -12,7 +12,7 @@ import shutil
 from ai_workflow.cli import main
 from ai_workflow.config import RepositoryConfig
 from ai_workflow.contracts.artifacts import ArtifactRef, ChildResult, Finding
-from ai_workflow.contracts.packets import PhasePacket
+from ai_workflow.contracts.packets import DispatchPacket
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +32,17 @@ class ProjectTemplate:
             "phases: [spec, plan, implement, verify]\n",
             encoding="utf-8",
         )
+        contracts = target / ".test-skill" / "references" / "agents"
+        contracts.mkdir(parents=True)
+        for name in (
+            "common-phase-contract.md",
+            "spec-writer.md",
+            "planner.md",
+            "coder.md",
+            "test-runner.md",
+            "code-reviewer.md",
+        ):
+            (contracts / name).write_text(f"# {name}\n", encoding="utf-8")
         return target
 
 
@@ -41,17 +52,23 @@ class CliDriver:
 
     def workflow_init(self, *, source_revision: str) -> dict[str, object]:
         return self._data(["workflow", "init", "--repo", str(self.project_root),
-                           "--source-revision", source_revision])
+                           "--source-revision", source_revision, "--requirement",
+                           "Exercise the full workflow lifecycle"])
 
     def workflow_begin(self, run_id: str, phase: str) -> dict[str, object]:
         return self._data(["workflow", "begin", "--repo", str(self.project_root),
-                           "--run-id", run_id, "--phase", phase])
+                           "--run-id", run_id, "--phase", phase, "--skill-dir",
+                           str(self.project_root / ".test-skill")])
 
-    def workflow_submit(self, run_id: str, result_path: Path) -> dict[str, object]:
-        result = Path(result_path)
-        return self._data(["workflow", "submit", "--repo", str(self.project_root),
-                           "--run-id", run_id, "--attempt-id", result.parent.name,
-                           "--result", str(result)])
+    def workflow_stage(self, run_id: str, result_path: Path) -> dict[str, object]:
+        result = ChildResult.load(result_path)
+        return self._data(["workflow", "stage", "--repo", str(self.project_root),
+                           "--run-id", run_id, "--attempt-id", result.attempt_id,
+                           "--child", result.child, "--result", str(result_path)])
+
+    def workflow_finalize(self, run_id: str, attempt_id: str) -> dict[str, object]:
+        return self._data(["workflow", "finalize", "--repo", str(self.project_root),
+                           "--run-id", run_id, "--attempt-id", attempt_id])
 
     def workflow_transition(self, run_id: str, *, accept: bool = False,
                             reruns: dict[str, str] | None = None) -> dict[str, object]:
@@ -103,9 +120,12 @@ class FakeAgent:
         self.project_root = project_root
 
     def run(self, packet_path: Path, finding: str | None = None) -> Path:
-        packet = PhasePacket.load(packet_path)
-        result_path = packet_path.with_name(f"{packet.phase.value}-result.json")
-        artifact_path = packet_path.with_name(f"{packet.phase.value}.md")
+        packet = DispatchPacket.load(packet_path)
+        result_dir = self.project_root / "child-results" / packet.attempt_id
+        result_dir.mkdir(parents=True, exist_ok=True)
+        result_path = result_dir / f"{packet.child}.json"
+        artifact_path = self.project_root / packet.allowed_output_path
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
         if finding is None:
             artifact_text = self._artifact_text(packet)
             result_status = "completed"
@@ -116,20 +136,28 @@ class FakeAgent:
             result_status = "unable_to_complete"
             summary = f"{packet.phase.value} phase found a gap."
             findings = (Finding(f"{packet.phase.value}-gap", "Missing retry branch", finding),)
-        artifact_path.write_text(artifact_text, encoding="utf-8")
-        artifact = ArtifactRef(
-            str(artifact_path.name),
-            self._digest(artifact_path),
-            1,
-            packet.phase,
-            packet.source_revision,
-        )
+        artifact = None
+        if finding is None:
+            artifact_path.write_text(artifact_text, encoding="utf-8")
+            artifact = ArtifactRef(
+                packet.allowed_output_path,
+                self._digest(artifact_path),
+                2,
+                packet.phase,
+                packet.child,
+                packet.source_revision,
+            )
         result = ChildResult(
-            result_status,
-            summary,
-            artifact,
-            findings,
-            (),
+            run_id=packet.run_id,
+            phase=packet.phase,
+            child=packet.child,
+            attempt_id=packet.attempt_id,
+            execution_mode=packet.execution_mode,
+            status=result_status,
+            summary=summary,
+            artifact=artifact,
+            findings=findings,
+            knowledge_citations=(),
         )
         result.write(result_path)
         return result_path
@@ -162,14 +190,14 @@ class FakeAgent:
         proposal_path.write_text(json.dumps(proposal, indent=2) + "\n", encoding="utf-8")
         return proposal_path
 
-    def _artifact_text(self, packet: PhasePacket, *, finding: str | None = None) -> str:
+    def _artifact_text(self, packet: DispatchPacket, *, finding: str | None = None) -> str:
         titles = {
             "spec": "Technical Spec",
             "plan": "Implementation Plan",
             "implement": "Implementation Report",
             "verify": "Verification Report",
         }
-        title = titles[packet.phase.value]
+        title = f"{titles[packet.phase.value]}: {packet.child}"
         suffix = ""
         if finding is not None:
             suffix = f"\n\nFinding: {finding}\n"

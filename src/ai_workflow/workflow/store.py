@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 from uuid import uuid4
 
 import yaml
@@ -25,6 +26,58 @@ class StateStore:
         self.state_path = run_dir / "state.yaml"
         self.events_path = run_dir / "events.jsonl"
         self.events_lock_path = run_dir / "events.lock"
+
+    def attempt_dir(self, attempt_id: str) -> Path:
+        self._validate_component(attempt_id, "attempt ID")
+        return self._safe_path("attempts", attempt_id)
+
+    def staged_path(self, attempt_id: str, child: str) -> Path:
+        self._validate_component(attempt_id, "attempt ID")
+        self._validate_component(child, "child")
+        return self._safe_path("attempts", attempt_id, "staged", f"{child}.json")
+
+    def aggregate_path(self, attempt_id: str) -> Path:
+        self._validate_component(attempt_id, "attempt ID")
+        return self._safe_path("attempts", attempt_id, "phase-result.json")
+
+    def dispatch_path(self, attempt_id: str, child: str) -> Path:
+        self._validate_component(attempt_id, "attempt ID")
+        self._validate_component(child, "child")
+        return self._safe_path("attempts", attempt_id, "dispatch", f"{child}.json")
+
+    def prompt_path(self, attempt_id: str, child: str) -> Path:
+        self._validate_component(attempt_id, "attempt ID")
+        self._validate_component(child, "child")
+        return self._safe_path("attempts", attempt_id, "prompts", f"{child}.md")
+
+    def knowledge_path(self, attempt_id: str, child: str) -> Path:
+        self._validate_component(attempt_id, "attempt ID")
+        self._validate_component(child, "child")
+        return self._safe_path("knowledge-packets", attempt_id, f"{child}.json")
+
+    def write_immutable(self, path: Path, payload: bytes) -> bool:
+        safe_path = self._safe_existing_path(path)
+        safe_path.parent.mkdir(parents=True, exist_ok=True)
+        safe_path = self._safe_existing_path(safe_path)
+        temporary = self._temporary_path(safe_path)
+        try:
+            temporary.write_bytes(payload)
+            try:
+                os.link(temporary, safe_path)
+            except FileExistsError:
+                if safe_path.is_symlink():
+                    raise AppError(
+                        "invalid_storage_path", "workflow storage path must not be a symlink"
+                    )
+                if not safe_path.is_file() or safe_path.read_bytes() != payload:
+                    raise AppError(
+                        "immutable_conflict",
+                        f"immutable workflow file already has different content: {safe_path}",
+                    )
+                return False
+            return True
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def create(self, state: RunState) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -128,3 +181,40 @@ class StateStore:
     @staticmethod
     def _temporary_path(path: Path) -> Path:
         return path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+
+    @staticmethod
+    def _validate_component(value: str, name: str) -> None:
+        if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9_-]+", value) is None:
+            raise AppError(
+                "invalid_storage_path", f"{name} is not a safe workflow path component"
+            )
+
+    def _safe_path(self, *parts: str) -> Path:
+        return self._safe_existing_path(self.run_dir.joinpath(*parts))
+
+    def _safe_existing_path(self, path: Path) -> Path:
+        root = self.run_dir.resolve()
+        try:
+            relative = path.relative_to(self.run_dir)
+        except ValueError as error:
+            raise AppError(
+                "invalid_storage_path", "workflow storage path escapes the run directory"
+            ) from error
+        current = self.run_dir
+        if current.is_symlink():
+            raise AppError(
+                "invalid_storage_path", "workflow storage path must not be a symlink"
+            )
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                raise AppError(
+                    "invalid_storage_path", "workflow storage path must not be a symlink"
+                )
+        try:
+            current.resolve().relative_to(root)
+        except ValueError as error:
+            raise AppError(
+                "invalid_storage_path", "workflow storage path escapes the run directory"
+            ) from error
+        return current

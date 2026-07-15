@@ -31,6 +31,8 @@ def _parser() -> argparse.ArgumentParser:
     init = workflow_commands.add_parser("init")
     init.add_argument("--repo", type=Path, required=True)
     init.add_argument("--source-revision", required=True)
+    init.add_argument("--requirement", required=True)
+    init.add_argument("--profile", default="full")
     for name in ("status", "resume", "abort", "summary"):
         command = workflow_commands.add_parser(name)
         command.add_argument("--repo", type=Path, required=True)
@@ -39,11 +41,17 @@ def _parser() -> argparse.ArgumentParser:
     begin.add_argument("--repo", type=Path, required=True)
     begin.add_argument("--run-id", required=True)
     begin.add_argument("--phase", type=Phase, choices=list(Phase), required=True)
-    submit = workflow_commands.add_parser("submit")
-    submit.add_argument("--repo", type=Path, required=True)
-    submit.add_argument("--run-id", required=True)
-    submit.add_argument("--attempt-id", required=True)
-    submit.add_argument("--result", type=Path, required=True)
+    begin.add_argument("--skill-dir", type=Path, required=True)
+    stage = workflow_commands.add_parser("stage")
+    stage.add_argument("--repo", type=Path, required=True)
+    stage.add_argument("--run-id", required=True)
+    stage.add_argument("--attempt-id", required=True)
+    stage.add_argument("--child", required=True)
+    stage.add_argument("--result", type=Path, required=True)
+    finalize = workflow_commands.add_parser("finalize")
+    finalize.add_argument("--repo", type=Path, required=True)
+    finalize.add_argument("--run-id", required=True)
+    finalize.add_argument("--attempt-id", required=True)
     transition = workflow_commands.add_parser("transition")
     transition.add_argument("--repo", type=Path, required=True)
     transition.add_argument("--run-id", required=True)
@@ -170,13 +178,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             service = WorkflowService(args.repo)
             if args.workflow_command == "init":
-                data = service.init(args.repo, args.source_revision).to_dict()
+                data = service.init(
+                    args.repo,
+                    args.source_revision,
+                    args.requirement,
+                    args.profile,
+                ).to_dict()
             elif args.workflow_command == "status":
                 data = service.status(args.run_id).to_dict()
             elif args.workflow_command == "begin":
-                data = service.begin(args.run_id, args.phase).to_dict()
-            elif args.workflow_command == "submit":
-                data = service.submit(args.run_id, args.attempt_id, args.result).to_dict()
+                data = service.begin(
+                    args.run_id, args.phase, args.skill_dir
+                ).to_dict()
+            elif args.workflow_command == "stage":
+                data = service.stage(
+                    args.run_id, args.attempt_id, args.child, args.result
+                ).to_dict()
+            elif args.workflow_command == "finalize":
+                data = service.finalize(args.run_id, args.attempt_id).to_dict()
             elif args.workflow_command == "summary":
                 data = service.summary(args.run_id).to_dict()
             elif args.workflow_command == "transition":

@@ -22,11 +22,22 @@ def project_template() -> ProjectTemplate:
     return _TemplatePaths(repo_root).language_neutral()
 
 
-def _complete_remaining_phases(app: CliDriver, agent: FakeAgent, run_id: str) -> None:
-    for phase in ("verify",):
-        packet = app.workflow_begin(run_id, phase)
-        result_path = agent.run(Path(packet["packet_path"]))
-        app.workflow_submit(run_id, result_path)
+def _run_phase(
+    app: CliDriver,
+    agent: FakeAgent,
+    run_id: str,
+    phase: str,
+    *,
+    finding_child: str | None = None,
+) -> None:
+    attempt = app.workflow_begin(run_id, phase)
+    for item in attempt["dispatch_plan"]:
+        finding = None
+        if item["child"] == finding_child:
+            finding = "implementation missing retry branch"
+        result_path = agent.run(Path(item["packet_file"]), finding=finding)
+        app.workflow_stage(run_id, result_path)
+    app.workflow_finalize(run_id, attempt["attempt_id"])
 
 
 def test_complete_run_recovery_rerun_and_knowledge_growth(
@@ -39,16 +50,10 @@ def test_complete_run_recovery_rerun_and_knowledge_growth(
 
     run = app.workflow_init(source_revision="abc123")
     for phase in ("spec", "plan", "implement"):
-        packet = app.workflow_begin(run["run_id"], phase)
-        app.workflow_submit(run["run_id"], agent.run(Path(packet["packet_path"])))
+        _run_phase(app, agent, run["run_id"], phase)
+        app.workflow_transition(run["run_id"], accept=True)
 
-    verify_packet = app.workflow_begin(run["run_id"], "verify")
-    finding_result = agent.run(
-        Path(verify_packet["packet_path"]),
-        finding="implementation missing retry branch",
-    )
-    assert finding_result.exists()
-    app.workflow_submit(run["run_id"], finding_result)
+    _run_phase(app, agent, run["run_id"], "verify", finding_child="code_review")
     pending = app.workflow_status(run["run_id"])
     assert pending["current_phase"] == "verify"
     assert pending["status"] == "running"
@@ -60,10 +65,11 @@ def test_complete_run_recovery_rerun_and_knowledge_growth(
     recovered = app.workflow_status(run["run_id"])
     assert recovered["current_phase"] == "implement"
 
-    packet = app.workflow_begin(run["run_id"], "implement")
-    app.workflow_submit(run["run_id"], agent.run(Path(packet["packet_path"])))
+    _run_phase(app, agent, run["run_id"], "implement")
+    app.workflow_transition(run["run_id"], accept=True)
 
-    _complete_remaining_phases(app, agent, run["run_id"])
+    _run_phase(app, agent, run["run_id"], "verify")
+    app.workflow_transition(run["run_id"], accept=True)
 
     candidate = app.wiki_propose(agent.propose_knowledge(run["run_id"]))
     approved = app.wiki_promote(candidate["id"], candidate["digest"], reviewer="alice")

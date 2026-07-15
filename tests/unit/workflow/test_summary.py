@@ -9,9 +9,13 @@ from ai_workflow.workflow.service import WorkflowService
 
 def _run(tmp_path):
     (tmp_path / ".ai-workflow.yaml").write_text("repository: demo\n", encoding="utf-8")
+    contracts = tmp_path / "skill" / "references" / "agents"
+    contracts.mkdir(parents=True)
+    for name in ("common-phase-contract.md", "spec-writer.md"):
+        (contracts / name).write_text(f"# {name}\n", encoding="utf-8")
     service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
-    run = service.init(tmp_path, "abc123")
-    service.begin(run.run_id, Phase.SPEC)
+    run = service.init(tmp_path, "abc123", "Test summary validation")
+    service.begin(run.run_id, Phase.SPEC, contracts.parents[1])
     return service, run.run_id
 
 
@@ -42,9 +46,13 @@ def test_summary_translates_valid_json_event_corruption(tmp_path, event) -> None
     ('{"schema_version":1,"run_id":1,"phase":"spec","attempt_id":"spec-1-abcdef",'
      '"source_revision":"abc123","knowledge_packet":{},"prior_artifacts":[],"rerun_reason":null}'),
 ])
-def test_summary_rejects_malformed_phase_packet(tmp_path, payload) -> None:
+def test_summary_rejects_malformed_dispatch_packet(tmp_path, payload) -> None:
     service, run_id = _run(tmp_path)
-    packet = next((tmp_path / ".ai-workflow" / "runs" / run_id / "attempts").glob("*/phase-packet.json"))
+    packet = next(
+        (tmp_path / ".ai-workflow" / "runs" / run_id / "attempts").glob(
+            "*/dispatch/*.json"
+        )
+    )
     packet.write_text(payload, encoding="utf-8")
 
     with pytest.raises(AppError) as error:
