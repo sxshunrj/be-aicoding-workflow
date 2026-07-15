@@ -55,7 +55,7 @@ class KnowledgeSearcher:
         query_tokens = _tokens(query.text)
         query_has_constraints = bool(
             query.text or query.tags or query.repository or query.services or query.paths
-            or query.languages or query.phase or query.types
+            or query.languages or query.phase
         )
         results: list[SearchResult] = []
         for entry in self.entries:

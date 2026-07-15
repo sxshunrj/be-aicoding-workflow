@@ -31,3 +31,9 @@ def test_filtered_queries_do_not_return_unrelated_broad_scope_entries() -> None:
     broad = entry("KW-rule-005", title="General note")
     results = KnowledgeSearcher([broad]).search(KnowledgeQuery(repository="demo"), SearchLimits(8, 12000))
     assert results == ()
+
+
+def test_type_only_queries_still_return_matching_entries() -> None:
+    rule = entry("KW-rule-006", title="Type match")
+    results = KnowledgeSearcher([rule]).search(KnowledgeQuery(types=("rule",)), SearchLimits(8, 12000))
+    assert [result.entry.id for result in results] == ["KW-rule-006"]
