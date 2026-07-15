@@ -3,14 +3,184 @@ from pathlib import Path
 from ai_workflow.contracts.artifacts import ChildResult
 
 
-def test_skill_never_instructs_agent_to_edit_state_directly() -> None:
-    skill = Path("skills/ai-workflow/SKILL.md").read_text(encoding="utf-8")
-    assert "Never edit state.yaml directly" in skill
-    assert "ai-workflow workflow submit" in skill
-    assert "ai-workflow wiki propose" in skill
+SKILL_DIR = Path("skills/ai-workflow-harness")
+REQUIRED_FILES = {
+    "SKILL.md",
+    "agents/openai.yaml",
+    "references/bootstrap.md",
+    "references/helper-cli.md",
+    "references/subagent-dispatch.md",
+    "references/review-gate.md",
+    "references/recovery.md",
+    "references/terminal-cleanup.md",
+    "references/knowledge-loop.md",
+    "references/agents/common-phase-contract.md",
+    "references/agents/spec-writer.md",
+    "references/agents/planner.md",
+    "references/agents/coder.md",
+    "references/agents/test-runner.md",
+    "references/agents/code-reviewer.md",
+    "references/agents/knowledge-reflector.md",
+}
+CONTROL_SEQUENCE = (
+    "status -> begin -> dispatch -> stage -> barrier -> finalize -> review -> "
+    "transition -> status"
+)
+
+
+def _read(relative: str) -> str:
+    return (SKILL_DIR / relative).read_text(encoding="utf-8")
+
+
+def test_harness_has_only_the_required_progressive_disclosure_files() -> None:
+    files = {
+        path.relative_to(SKILL_DIR).as_posix()
+        for path in SKILL_DIR.rglob("*")
+        if path.is_file()
+    }
+    assert files == REQUIRED_FILES
+
+
+def test_harness_frontmatter_and_main_sections_are_canonical() -> None:
+    skill = _read("SKILL.md")
+    assert skill.startswith(
+        "---\nname: ai-workflow-harness\n"
+        "description: Use when 用户显式要求持久化四阶段 AI 编码工作流、恢复 "
+        "ai-workflow run，或明确要求 child agents 与 review gates 的 ai-workflow 场景。\n"
+        "---\n"
+    )
+    assert "\n---\n\n# AI Workflow Harness\n" in skill
+    for heading in (
+        "## Hard gates",
+        "## Workflow ownership boundary",
+        "## Main loop",
+        "## Running / blocked / terminal routing",
+        "## Reference index",
+    ):
+        assert heading in skill
+    assert len(skill.split()) < 500
+
+
+def test_main_loop_preserves_control_order_and_hard_invariants() -> None:
+    skill = _read("SKILL.md")
+    assert CONTROL_SEQUENCE in skill
+    required_text = (
+        "Harness 绝不执行 child-owned coding、testing、case repair 或 code review",
+        "Never edit state.yaml directly",
+        "dispatch all sibling children before waiting",
+        "silence is not failure",
+        "ChildResult-only completion",
+        "mandatory human gates",
+        "new-conversation status recovery",
+        "terminal reflection",
+        "Git handoff",
+    )
+    for text in required_text:
+        assert text in skill
+
+
+def test_main_skill_links_every_reference_directly() -> None:
+    skill = _read("SKILL.md")
+    for relative in sorted(REQUIRED_FILES):
+        if not relative.startswith("references/"):
+            continue
+        assert f"]({relative})" in skill
+
+
+def test_reference_topics_own_their_required_contracts() -> None:
+    expected = {
+        "references/bootstrap.md": ("scan", "resume", "requirement", "profile", "run_id"),
+        "references/helper-cli.md": ("JSON", "error.code", "caller", "workflow status"),
+        "references/subagent-dispatch.md": ("prompt_file", "dispatch", "wait", "ChildResult"),
+        "references/review-gate.md": ("workflow review", "review-accept", "digest", "transition"),
+        "references/recovery.md": ("status", "attempt", "staged", "review_gate"),
+        "references/terminal-cleanup.md": ("human", "reflection", "governance", "Git handoff"),
+        "references/knowledge-loop.md": ("packet", "knowledge_citations", "raw Wiki Markdown"),
+    }
+    for relative, terms in expected.items():
+        text = _read(relative)
+        for term in terms:
+            assert term in text, f"{relative} must contain {term!r}"
+
+
+def test_common_child_contract_defines_exact_schema_v2_result_and_no_state_rules() -> None:
+    contract = _read("references/agents/common-phase-contract.md")
+    for field in (
+        "schema_version",
+        "run_id",
+        "phase",
+        "child",
+        "attempt_id",
+        "execution_mode",
+        "status",
+        "summary",
+        "artifact",
+        "findings",
+        "knowledge_citations",
+    ):
+        assert field in contract
+    for term in (
+        "completed",
+        "unable_to_complete",
+        "evidence",
+        "ChildResult",
+        "state.yaml",
+        "workflow helper",
+        "rerun_reason",
+    ):
+        assert term in contract
+    assert "allowed_input_paths` 是 repository-relative" in contract
+    assert "`allowed_output_path` 是唯一可 stage 的物理路径" in contract
+
+
+def test_stale_review_recovery_fails_closed_instead_of_looping_review() -> None:
+    recovery = _read("references/recovery.md")
+    assert "stale_review_gate" in recovery
+    assert "workflow block" in recovery
+    assert "禁止循环调用 `review`" in recovery
+
+
+def test_owner_contracts_assign_every_child_and_artifact() -> None:
+    expectations = {
+        "references/agents/spec-writer.md": (("spec", "technical-spec.md"),),
+        "references/agents/planner.md": (
+            ("solution", "implementation-plan.md"),
+            ("test_strategy", "test-strategy.md"),
+        ),
+        "references/agents/coder.md": (("code", "implementation-report.md"),),
+        "references/agents/test-runner.md": (
+            ("build", "build-report.md"),
+            ("unit_test", "unit-test-report.md"),
+            ("integration_test", "integration-test-report.md"),
+        ),
+        "references/agents/code-reviewer.md": (("code_review", "code-review-report.md"),),
+        "references/agents/knowledge-reflector.md": (
+            ("terminal reflection", "knowledge-reflection.json"),
+        ),
+    }
+    for relative, pairs in expectations.items():
+        contract = _read(relative)
+        assert "completed" in contract
+        assert "unable_to_complete" in contract
+        assert "evidence" in contract
+        for child, artifact in pairs:
+            assert child in contract
+            assert artifact in contract
 
 
 def test_each_phase_fixture_parses_as_child_result() -> None:
     for path in sorted(Path("tests/contract/fixtures").glob("*-result.json")):
         result = ChildResult.from_json(path)
         assert result.status in {"completed", "unable_to_complete"}
+
+
+def test_pressure_scenarios_preserve_the_chinese_control_bodies() -> None:
+    scenarios = Path("tests/skill_scenarios")
+    main = (scenarios / "harness-main-agent.md").read_text(encoding="utf-8")
+    child = (scenarios / "harness-child-agent.md").read_text(encoding="utf-8")
+    assert "当前 `plan` phase 需要 `solution` 和\n`test_strategy` 两个 child；二者都已 dispatch" in main
+    assert "`test_strategy` 仍在运行。用户说：“`solution` 很好，现在就继续。”" in main
+    assert "`workflow stage` 以 stale 为由拒绝了你的结果" in child
+    assert "编辑 `.ai-workflow/runs/RUN-X/state.yaml`，替换其中的 attempt ID" in child
+    assert not (scenarios / "harness-main-agent.baseline.md").exists()
+    assert (scenarios / "harness-child-agent.baseline.md").is_file()

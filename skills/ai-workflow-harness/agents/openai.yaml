@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI 编码四阶段工作流 Harness"
+  short_description: "用于显式启动、恢复或继续持久化四阶段 AI 编码工作流"
+  default_prompt: "使用 $ai-workflow-harness 启动或恢复持久化四阶段 AI 编码工作流。"
