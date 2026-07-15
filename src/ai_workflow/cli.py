@@ -1,5 +1,6 @@
 import argparse
 from dataclasses import asdict
+import hashlib
 import json
 from pathlib import Path
 from typing import Sequence
@@ -71,6 +72,16 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--max-characters", type=int, default=12000)
         if name == "packet":
             command.add_argument("--output", type=Path, required=True)
+    propose = wiki_commands.add_parser("propose")
+    propose.add_argument("--wiki", type=Path, required=True)
+    propose.add_argument("--proposal", type=Path, required=True)
+    for name in ("promote", "reject", "archive"):
+        command = wiki_commands.add_parser(name)
+        command.add_argument("--wiki", type=Path, required=True)
+        command.add_argument("--id", required=True)
+        command.add_argument("--reviewer", required=True)
+        command.add_argument("--reason")
+        command.add_argument("--expected-digest", required=True)
     return parser
 
 
@@ -78,6 +89,14 @@ def _config_data(config: RepositoryConfig) -> dict[str, object]:
     data = asdict(config)
     data["wiki_path"] = str(config.wiki_path)
     return data
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _reruns(values: list[str]) -> dict[Phase, str]:
@@ -109,19 +128,45 @@ def main(argv: Sequence[str] | None = None) -> int:
                 report = service.lint()
                 print(json.dumps({"ok": True, "data": report.to_dict()}))
                 return 0 if report.valid else 1
-            query = KnowledgeQuery(args.repository, tuple(args.service), tuple(args.path),
-                                   tuple(args.language), args.phase, tuple(args.type),
-                                   tuple(args.tag), args.text)
-            limits = SearchLimits(args.max_entries, args.max_characters)
-            if args.wiki_command == "search":
+            elif args.wiki_command == "search":
+                query = KnowledgeQuery(args.repository, tuple(args.service), tuple(args.path),
+                                       tuple(args.language), args.phase, tuple(args.type),
+                                       tuple(args.tag), args.text)
+                limits = SearchLimits(args.max_entries, args.max_characters)
                 data = [{"id": item.entry.id, "title": item.entry.title,
                          "score": item.score, "match_reasons": list(item.match_reasons),
                          "warnings": list(item.warnings)}
                         for item in service.search(query, limits)]
-            else:
+            elif args.wiki_command == "packet":
+                query = KnowledgeQuery(args.repository, tuple(args.service), tuple(args.path),
+                                       tuple(args.language), args.phase, tuple(args.type),
+                                       tuple(args.tag), args.text)
+                limits = SearchLimits(args.max_entries, args.max_characters)
                 packet = service.create_packet(query, args.output, limits)
                 data = {"path": str(args.output), "sha256": packet.digest,
                         "selected_ids": list(packet.selected_ids)}
+            elif args.wiki_command == "propose":
+                entry = service.propose(args.proposal)
+                path = service.repository.root / "candidates" / f"{entry.id}.md"
+                data = {"id": entry.id, "status": entry.status.value, "path": str(path),
+                        "digest": _file_digest(path)}
+            elif args.wiki_command == "promote":
+                entry = service.promote(args.id, args.reviewer, args.expected_digest)
+                path = service.repository.root / "approved" / f"{entry.id}.md"
+                data = {"id": entry.id, "status": entry.status.value, "path": str(path),
+                        "digest": _file_digest(path)}
+            elif args.wiki_command == "reject":
+                if args.reason is None:
+                    raise AppError("invalid_arguments", "--reason is required for reject")
+                path = service.reject(args.id, args.reviewer, args.reason, args.expected_digest)
+                data = {"id": args.id, "status": "archived", "path": str(path),
+                        "digest": _file_digest(path)}
+            else:
+                if args.reason is None:
+                    raise AppError("invalid_arguments", "--reason is required for archive")
+                path = service.archive(args.id, args.reviewer, args.reason, args.expected_digest)
+                data = {"id": args.id, "status": "archived", "path": str(path),
+                        "digest": _file_digest(path)}
         else:
             service = WorkflowService(args.repo)
             if args.workflow_command == "init":

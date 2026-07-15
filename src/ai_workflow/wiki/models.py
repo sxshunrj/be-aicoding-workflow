@@ -3,13 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
+import json
 import re
+from pathlib import Path
 from typing import Mapping
 
 from ai_workflow.errors import AppError
 
 
 ID_PATTERN = re.compile(r"KW-[a-z0-9-]+-[0-9]{3,}")
+PROPOSAL_RAW_LOG_LIMIT = 64_000
+PROPOSAL_CONFIDENCE = {"low", "medium", "high"}
 
 
 class KnowledgeStatus(StrEnum):
@@ -136,6 +140,110 @@ class KnowledgeEntry:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateProposal:
+    title: str
+    type: KnowledgeType
+    summary: str
+    body: str
+    scope: KnowledgeScope
+    tags: tuple[str, ...]
+    sources: tuple[dict[str, str], ...]
+    reuse_reason: str
+    confidence: str
+    possible_conflicts: tuple[str, ...]
+    suggested_owners: tuple[str, ...]
+    review_after: date
+    raw_logs: str = ""
+
+    @classmethod
+    def from_json(cls, path: Path) -> "CandidateProposal":
+        try:
+            loaded = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise AppError("wiki_invalid", f"proposal JSON is invalid: {error}") from error
+        if not isinstance(loaded, dict):
+            raise AppError("wiki_invalid", "proposal JSON must be a mapping")
+        required = {
+            "schema_version", "title", "type", "summary", "body", "scope", "tags",
+            "sources", "reuse_reason", "confidence", "possible_conflicts",
+            "suggested_owners", "review_after",
+        }
+        missing = sorted(required - set(loaded))
+        if missing:
+            raise AppError("wiki_invalid", f"proposal JSON is missing required field: {missing[0]}")
+        if loaded.get("schema_version") != 1:
+            raise AppError("wiki_invalid", "proposal JSON must be a schema_version 1 mapping")
+        title = _proposal_text(loaded, "title")
+        summary = _proposal_text(loaded, "summary")
+        body = _proposal_text(loaded, "body")
+        reuse_reason = _proposal_text(loaded, "reuse_reason")
+        confidence = _proposal_text(loaded, "confidence").casefold()
+        if confidence not in PROPOSAL_CONFIDENCE:
+            raise AppError("wiki_invalid", "confidence must be one of: low, medium, high")
+        raw_logs = loaded.get("raw_logs", "")
+        if raw_logs is None:
+            raw_logs = ""
+        if not isinstance(raw_logs, str):
+            raise AppError("wiki_invalid", "raw logs must be a string")
+        if len(raw_logs) > PROPOSAL_RAW_LOG_LIMIT:
+            raise AppError("wiki_invalid", "raw logs exceed the configured size")
+        raw_scope = loaded.get("scope")
+        if not isinstance(raw_scope, dict):
+            raise AppError("wiki_invalid", "scope must be a mapping")
+        scope = KnowledgeScope(**{
+            name: _proposal_strings(raw_scope.get(name, []), f"scope.{name}")
+            for name in ("repos", "services", "paths", "languages", "phases")
+        })
+        tags = _proposal_strings(loaded.get("tags"), "tags")
+        sources = _proposal_sources(loaded.get("sources"))
+        if not sources:
+            raise AppError("wiki_invalid", "candidate proposal evidence must not be empty")
+        possible_conflicts = _proposal_strings(loaded.get("possible_conflicts"), "possible_conflicts")
+        suggested_owners = _proposal_strings(loaded.get("suggested_owners"), "suggested_owners", required=True)
+        review_after = _date(loaded.get("review_after"), "review_after")
+        assert review_after is not None
+        try:
+            kind = KnowledgeType(_proposal_text(loaded, "type"))
+        except ValueError as error:
+            raise AppError("wiki_invalid", "unknown knowledge type") from error
+        return cls(
+            title=title,
+            type=kind,
+            summary=summary,
+            body=body,
+            scope=scope,
+            tags=tags,
+            sources=tuple(sources),
+            reuse_reason=reuse_reason,
+            confidence=confidence,
+            possible_conflicts=possible_conflicts,
+            suggested_owners=suggested_owners,
+            review_after=review_after,
+            raw_logs=raw_logs,
+        )
+
+    def to_entry(self, entry_id: str, created_at: date) -> KnowledgeEntry:
+        return KnowledgeEntry(
+            entry_id,
+            self.title,
+            self.type,
+            KnowledgeStatus.CANDIDATE,
+            self.summary,
+            self.scope,
+            self.tags,
+            self.suggested_owners,
+            (),
+            created_at,
+            None,
+            self.review_after,
+            self.sources,
+            (),
+            self.possible_conflicts,
+            self.body,
+        )
+
+
 def validate_entry_id(entry_id: object) -> str:
     if not isinstance(entry_id, str) or ID_PATTERN.fullmatch(entry_id) is None:
         raise AppError("wiki_invalid", "knowledge id is invalid")
@@ -155,3 +263,35 @@ def _date(value: object, name: str, optional: bool = False) -> date | None:
         except ValueError:
             pass
     raise AppError("wiki_invalid", f"{name} must be an ISO date")
+
+
+def _proposal_text(metadata: Mapping[str, object], name: str) -> str:
+    value = metadata.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise AppError("wiki_invalid", f"{name} must not be empty")
+    return value.strip()
+
+
+def _proposal_strings(value: object, name: str, *, required: bool = False) -> tuple[str, ...]:
+    if value is None and not required:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+        raise AppError("wiki_invalid", f"{name} must be a list of non-empty strings")
+    result = tuple(item.strip() for item in value)
+    if required and not result:
+        raise AppError("wiki_invalid", f"{name} must not be empty")
+    return result
+
+
+def _proposal_sources(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        raise AppError("wiki_invalid", "sources must be a list")
+    sources: list[dict[str, str]] = []
+    for source in value:
+        if not isinstance(source, dict) or source.get("kind") not in {"run", "human"}:
+            raise AppError("wiki_invalid", "source must have a run or human kind and ref")
+        reference = source.get("ref")
+        if not isinstance(reference, str) or not reference.strip():
+            raise AppError("wiki_invalid", "source must have a run or human kind and ref")
+        sources.append({"kind": str(source["kind"]), "ref": reference.strip()})
+    return sources

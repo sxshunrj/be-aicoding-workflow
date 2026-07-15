@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import fields
 from contextlib import contextmanager
+import hashlib
 import fcntl
 import os
 from pathlib import Path
@@ -47,6 +48,18 @@ class WikiRepository:
         taxonomy = self.root / "taxonomy.yaml"
         if taxonomy.is_symlink() or not taxonomy.is_file():
             raise AppError("wiki_invalid", "taxonomy.yaml is missing or unsafe")
+
+    @property
+    def approved_dir(self) -> Path:
+        return self.root / "approved"
+
+    @property
+    def candidates_dir(self) -> Path:
+        return self.root / "candidates"
+
+    @property
+    def archive_dir(self) -> Path:
+        return self.root / "archive"
 
     def taxonomy(self) -> tuple[set[str], set[str]]:
         self.validate_layout()
@@ -108,6 +121,13 @@ class WikiRepository:
         validate_entry_id(entry.id)
         return _serialize(entry)
 
+    def digest(self, entry: KnowledgeEntry) -> str:
+        return hashlib.sha256(self.serialize(entry).encode("utf-8")).hexdigest()
+
+    def path_digest(self, path: Path) -> str:
+        safe = self._safe_file(Path(path), must_exist=True)
+        return hashlib.sha256(safe.read_bytes()).hexdigest()
+
     def write_candidate(self, entry: KnowledgeEntry) -> Path:
         self.validate_layout()
         validate_entry_id(entry.id)
@@ -140,6 +160,55 @@ class WikiRepository:
             finally:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)
+
+    def move_with_content(self, source: Path, target: Path, content: str) -> Path:
+        self.validate_layout()
+        source_path = self._safe_file(Path(source), must_exist=True)
+        target_path = self._safe_file(Path(target))
+        with self._lock():
+            if source_path == target_path or os.path.lexists(target_path):
+                raise AppError("wiki_conflict", f"target knowledge entry already exists: {target_path.name}")
+            temporary: Path | None = None
+            try:
+                descriptor, name = tempfile.mkstemp(
+                    prefix=f".{target_path.name}.", suffix=".tmp", dir=target_path.parent
+                )
+                temporary = Path(name)
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    stream.write(content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.link(temporary, target_path)
+                temporary.unlink()
+                try:
+                    source_path.unlink()
+                except OSError as error:
+                    if source_path.exists():
+                        target_path.unlink(missing_ok=True)
+                        raise AppError("wiki_invalid", f"cannot move knowledge entry: {error}") from error
+                    raise AppError(
+                        "wiki_invalid",
+                        f"knowledge entry moved but durability is uncertain: {error}",
+                    ) from error
+                _fsync_directory(target_path.parent)
+                if source_path.parent != target_path.parent:
+                    _fsync_directory(source_path.parent)
+                return target_path
+            except OSError as error:
+                if source_path.exists():
+                    target_path.unlink(missing_ok=True)
+                raise AppError("wiki_invalid", f"cannot move knowledge entry: {error}") from error
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+
+    def file_digest(self, path: Path) -> str:
+        safe = self._safe_file(Path(path), must_exist=True)
+        digest = hashlib.sha256()
+        with safe.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def move(
         self,
@@ -187,6 +256,80 @@ class WikiRepository:
                     f"knowledge entry moved but durability is uncertain: {error}",
                 ) from error
             return target_path
+
+    def replace_and_move(
+        self,
+        entry: KnowledgeEntry,
+        source: KnowledgeStatus | str,
+        target: KnowledgeStatus | str,
+        *,
+        expected_digest: str | None = None,
+    ) -> Path:
+        self.validate_layout()
+        validate_entry_id(entry.id)
+        source_status, target_status = _status(source), _status(target)
+        if entry.status is not target_status:
+            raise AppError("wiki_invalid", "entry status does not match target lifecycle")
+        allowed_types, allowed_phases = self.taxonomy()
+        if entry.type.value not in allowed_types or set(entry.scope.phases) - allowed_phases:
+            raise AppError("wiki_invalid", "knowledge entry is not allowed by taxonomy")
+        source_path = self._safe_file(
+            self.root / DIRECTORY[source_status] / f"{entry.id}.md", must_exist=True
+        )
+        target_path = self._safe_file(self.root / DIRECTORY[target_status] / f"{entry.id}.md")
+        with self._lock():
+            current = self._safe_file(
+                self.root / DIRECTORY[source_status] / f"{entry.id}.md", must_exist=True
+            )
+            if expected_digest is not None and self.file_digest(current) != expected_digest:
+                raise AppError("wiki_conflict", f"{source_status.value} changed since review")
+            if source_path == target_path or os.path.lexists(target_path):
+                raise AppError("wiki_conflict", f"target knowledge entry already exists: {entry.id}")
+            locations = self._id_locations(entry.id)
+            if any(path != source_path for path in locations):
+                raise AppError("wiki_conflict", f"duplicate knowledge id exists: {entry.id}")
+            data = self.serialize(entry)
+            temporary: Path | None = None
+            try:
+                descriptor, name = tempfile.mkstemp(
+                    prefix=f".{entry.id}.", suffix=".tmp", dir=target_path.parent
+                )
+                temporary = Path(name)
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, target_path)
+                temporary = None
+                try:
+                    current.unlink()
+                except OSError as error:
+                    if current.exists():
+                        target_path.unlink(missing_ok=True)
+                        raise AppError("wiki_invalid", f"cannot move knowledge entry: {error}") from error
+                    raise AppError(
+                        "wiki_invalid",
+                        f"knowledge entry moved but durability is uncertain: {error}",
+                    ) from error
+                try:
+                    _fsync_directory(target_path.parent)
+                    if current.parent != target_path.parent:
+                        _fsync_directory(current.parent)
+                except OSError as error:
+                    raise AppError(
+                        "wiki_invalid",
+                        f"knowledge entry moved but durability is uncertain: {error}",
+                    ) from error
+                return target_path
+            except OSError as error:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+                if target_path.exists():
+                    target_path.unlink(missing_ok=True)
+                raise AppError("wiki_invalid", f"cannot move knowledge entry: {error}") from error
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
 
     def _safe_file(self, path: Path, *, must_exist: bool = False) -> Path:
         if path.is_symlink():
