@@ -5,13 +5,26 @@ import threading
 import pytest
 
 from ai_workflow.errors import AppError
-from ai_workflow.workflow.models import RunState
+from ai_workflow.workflow.graph import RunGraphNode
+from ai_workflow.workflow.models import Phase, RunState
 from ai_workflow.workflow.store import Event, StateStore
+
+
+def new_state(run_id: str = "RUN-001", revision: str = "abc123") -> RunState:
+    graph = {
+        "spec.spec": RunGraphNode("spec.spec", Phase.SPEC, "spec"),
+        "plan.solution": RunGraphNode("plan.solution", Phase.PLAN, "solution"),
+        "implement.code": RunGraphNode("implement.code", Phase.IMPLEMENT, "code"),
+        "verify.code_review": RunGraphNode(
+            "verify.code_review", Phase.VERIFY, "code_review"
+        ),
+    }
+    return RunState.new(run_id, revision, "Test persistence", "full", graph)
 
 
 def test_state_round_trip_and_event_append(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "run")
-    state = RunState.new("RUN-001", "abc123")
+    state = new_state()
     store.create(state)
 
     loaded = store.load()
@@ -28,7 +41,7 @@ def test_state_round_trip_and_event_append(tmp_path: Path) -> None:
 
 def test_rejects_stale_state_write(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "run")
-    store.create(RunState.new("RUN-001", "abc123"))
+    store.create(new_state())
     current = store.load()
     store.save(0, current, Event(type="first", data={}))
 
@@ -41,16 +54,16 @@ def test_rejects_stale_state_write(tmp_path: Path) -> None:
 
 def test_create_initializes_empty_log_and_refuses_existing_state(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "run")
-    store.create(RunState.new("RUN-001", "abc123"))
+    store.create(new_state())
 
     assert store.events_path.read_text(encoding="utf-8") == ""
     with pytest.raises(AppError):
-        store.create(RunState.new("RUN-002", "def456"))
+        store.create(new_state("RUN-002", "def456"))
 
 
 def test_saved_event_is_compact_json_with_new_version(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "run")
-    state = RunState.new("RUN-001", "abc123")
+    state = new_state()
     store.create(state)
     store.save(0, state, Event(type="first", data={"accepted": True}))
 
@@ -65,7 +78,7 @@ def test_saved_event_is_compact_json_with_new_version(tmp_path: Path) -> None:
 
 def test_invalid_event_does_not_advance_persisted_state(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "run")
-    state = RunState.new("RUN-001", "abc123")
+    state = new_state()
     store.create(state)
 
     with pytest.raises(TypeError, match="plain serialization value"):
@@ -79,7 +92,7 @@ def test_tuple_event_value_is_rejected_instead_of_coerced_to_json_list(
     tmp_path: Path,
 ) -> None:
     store = StateStore(tmp_path / "run")
-    state = RunState.new("RUN-001", "abc123")
+    state = new_state()
     store.create(state)
 
     with pytest.raises(TypeError, match="plain serialization value"):
@@ -90,7 +103,7 @@ def test_tuple_event_value_is_rejected_instead_of_coerced_to_json_list(
 
 def test_event_lock_prevents_append_loss_during_tail_normalization(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "run")
-    state = RunState.new("RUN-001", "abc123")
+    state = new_state()
     store.create(state)
     store.save(0, state, Event("base", {}))
     store.events_path.write_bytes(store.events_path.read_bytes().removesuffix(b"\n"))
@@ -114,7 +127,7 @@ def test_event_lock_prevents_append_loss_during_tail_normalization(tmp_path: Pat
 
 def test_malformed_tail_rejects_save_before_state_replacement(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "run")
-    state = RunState.new("RUN-001", "abc123")
+    state = new_state()
     store.create(state)
     store.events_path.write_bytes(b'{"incomplete"')
 
