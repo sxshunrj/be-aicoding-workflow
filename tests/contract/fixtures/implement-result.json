@@ -1,8 +1,20 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "run_id": "RUN-20260715-120000-abcdef",
+  "phase": "implement",
+  "child": "code",
+  "attempt_id": "implement-1-abcdef",
+  "execution_mode": "fresh",
   "status": "completed",
   "summary": "Implementation phase completed.",
-  "artifact": null,
+  "artifact": {
+    "path": "implementation.md",
+    "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "schema_version": 2,
+    "phase": "implement",
+    "child": "code",
+    "source_revision": "abc123"
+  },
   "findings": [],
   "knowledge_citations": []
 }

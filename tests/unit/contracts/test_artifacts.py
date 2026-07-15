@@ -9,21 +9,26 @@ from ai_workflow.workflow.models import Phase
 
 def test_child_result_round_trips_versioned_json(tmp_path) -> None:
     result = ChildResult(
+        run_id="RUN-20260715-120000-abcdef",
+        phase=Phase.SPEC,
+        child="spec",
+        attempt_id="spec-1-abcdef",
+        execution_mode="fresh",
         status="completed",
         summary="specification ready",
-        artifact=ArtifactRef("spec.md", "a" * 64, 1, Phase.SPEC, "abc123"),
+        artifact=ArtifactRef("spec.md", "a" * 64, 2, Phase.SPEC, "spec", "abc123"),
         findings=(Finding("F-1", "important", "detail"),),
     )
     path = tmp_path / "result.json"
     result.write(path)
 
     assert ChildResult.load(path) == result
-    assert json.loads(path.read_text())["schema_version"] == 1
+    assert json.loads(path.read_text())["schema_version"] == 2
 
 
 def test_child_result_rejects_unknown_schema_version(tmp_path) -> None:
     path = tmp_path / "result.json"
-    path.write_text('{"schema_version":2}', encoding="utf-8")
+    path.write_text('{"schema_version":3}', encoding="utf-8")
 
     with pytest.raises(ValueError, match="unsupported schema_version"):
         ChildResult.load(path)
