@@ -113,7 +113,11 @@ class DispatchPacket:
 
     @classmethod
     def load(cls, path: Path | str) -> "DispatchPacket":
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return cls.from_bytes(Path(path).read_bytes())
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> "DispatchPacket":
+        data = json.loads(payload.decode("utf-8"))
         if not isinstance(data, dict):
             raise ValueError("dispatch packet must be an object")
         _require_schema_version(data)

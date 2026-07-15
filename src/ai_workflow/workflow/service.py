@@ -261,26 +261,31 @@ class WorkflowService:
             history = self._mapping(
                 state.artifacts, "attempt_history", "attempt history"
             )
-            history[attempt_id] = {
+            owner: dict[str, object] = {
                 "phase": phase.value,
                 "number": number,
                 "nodes": [node.key for node in effective],
                 "skill_dir": str(resolved_skill),
             }
             state.status = NodeStatus.RUNNING.value
-            dispatch_plan = self._create_dispatch_plan(
+            dispatch_plan, dispatch_evidence = self._create_dispatch_plan(
                 state, effective, attempt_id, resolved_skill, store, config
             )
-            event_data = {
-                "phase": phase.value,
-                "attempt": number,
-                "attempt_id": attempt_id,
-                "dispatch_plan": [item.to_dict() for item in dispatch_plan],
-            }
+            begun_at = self.clock().isoformat()
+            owner.update(
+                {
+                    "begun_version": state.version + 1,
+                    "begun_at": begun_at,
+                    "dispatch_plan": [item.to_dict() for item in dispatch_plan],
+                    "dispatch_evidence": dispatch_evidence,
+                }
+            )
+            history[attempt_id] = owner
+            event_data = self._phase_begun_event_data(attempt_id, owner)
             store.save_locked(
                 state.version,
                 state,
-                Event("phase_begun", event_data, self.clock().isoformat()),
+                Event("phase_begun", event_data, begun_at),
             )
             return PhaseAttempt(
                 run_id, phase.value, number, attempt_id, dispatch_plan
@@ -319,6 +324,19 @@ class WorkflowService:
                 state, attempt_id, child, require_current=True
             )
             phase = Phase(owner["phase"])
+            self._ensure_phase_begun_event_locked(
+                store, state, attempt_id, owner
+            )
+            _, allowed_citations, evidence = (
+                self._load_anchored_dispatch_evidence(
+                    store,
+                    state,
+                    attempt_id,
+                    child,
+                    owner,
+                    node_key,
+                )
+            )
             staged_results = self._mapping(
                 state.artifacts, "staged_results", "staged result metadata"
             )
@@ -337,26 +355,29 @@ class WorkflowService:
                     result_digest,
                     raw_result,
                     previous,
+                    owner,
+                    node_key,
+                    evidence,
+                    allowed_citations,
                 )
 
             self._validate_result_owner(
                 state, result, run_id, attempt_id, phase, child
             )
-            packet = self._load_dispatch_packet(store, attempt_id, child)
-            self._validate_dispatch_owner(
-                packet, state, run_id, attempt_id, phase, child
-            )
-            if result.execution_mode != packet.execution_mode:
+            if result.execution_mode != evidence["execution_mode"]:
                 raise AppError(
                     "invalid_result",
                     "child result execution mode does not match dispatch packet",
                 )
             if result.artifact is not None:
                 self._validate_artifact(
-                    state, node_key, result.artifact, packet.allowed_output_path
+                    state,
+                    node_key,
+                    result.artifact,
+                    evidence["allowed_output_path"],
                 )
             self._validate_knowledge_citations(
-                store, packet, result.knowledge_citations
+                allowed_citations, result.knowledge_citations
             )
             staged_path = store.staged_path(attempt_id, child)
             try:
@@ -691,10 +712,11 @@ class WorkflowService:
         skill_dir: Path,
         store: StateStore,
         config: RepositoryConfig,
-    ) -> tuple[DispatchItem, ...]:
+    ) -> tuple[tuple[DispatchItem, ...], dict[str, object]]:
         prior = self._artifact_refs(state)
         allowed_inputs = self._allowed_input_paths(config, prior)
         items: list[DispatchItem] = []
+        evidence: dict[str, object] = {}
         contracts = skill_dir / "references" / "agents"
         for node in nodes:
             knowledge_path = store.knowledge_path(attempt_id, node.child)
@@ -771,6 +793,23 @@ class WorkflowService:
                 raise
             prompt_path = store.prompt_path(attempt_id, node.child)
             render_prompt_file(packet, prompt_path)
+            knowledge_payload = knowledge_path.read_bytes()
+            prompt_payload = prompt_path.read_bytes()
+            evidence[node.child] = {
+                "node": node.key,
+                "packet_path": str(packet_path),
+                "packet_digest": hashlib.sha256(packet_payload).hexdigest(),
+                "prompt_path": str(prompt_path),
+                "prompt_digest": hashlib.sha256(prompt_payload).hexdigest(),
+                "knowledge_path": str(knowledge_path),
+                "knowledge_digest": hashlib.sha256(knowledge_payload).hexdigest(),
+                "knowledge_content_digest": knowledge.digest,
+                "allowed_output_path": output,
+                "execution_mode": packet.execution_mode,
+                "rerun_reason": packet.rerun_reason,
+                "owner_contract_path": packet.owner_contract_path,
+                "common_contract_path": packet.common_contract_path,
+            }
             items.append(
                 DispatchItem(
                     node=node.key,
@@ -780,12 +819,13 @@ class WorkflowService:
                     packet_file=str(packet_path),
                 )
             )
-        return tuple(items)
+        return tuple(items), evidence
 
     def _current_attempt(
         self, state: RunState, attempt_id: str, store: StateStore
     ) -> PhaseAttempt:
         owner = self._attempt_owner(state, attempt_id, require_current=True)
+        self._ensure_phase_begun_event_locked(store, state, attempt_id, owner)
         raw_nodes = owner["nodes"]
         assert isinstance(raw_nodes, list)
         staged_results = state.artifacts.get("staged_results", {})
@@ -799,7 +839,27 @@ class WorkflowService:
         plan: list[DispatchItem] = []
         for key in raw_nodes:
             node = state.run_graph[key]
+            _, allowed_citations, evidence = self._load_anchored_dispatch_evidence(
+                store,
+                state,
+                attempt_id,
+                node.child,
+                owner,
+                key,
+                validate_graph_mode=node.child not in attempt_results,
+            )
             if node.child in attempt_results:
+                self._validate_staged_evidence(
+                    store,
+                    state,
+                    attempt_id,
+                    node.child,
+                    attempt_results[node.child],
+                    owner,
+                    key,
+                    evidence,
+                    allowed_citations,
+                )
                 plan.append(
                     DispatchItem(
                         node=key,
@@ -810,33 +870,18 @@ class WorkflowService:
                     )
                 )
                 continue
-            packet_path = store.dispatch_path(attempt_id, node.child)
-            packet = self._load_dispatch_packet(store, attempt_id, node.child)
-            self._validate_dispatch_owner(
-                packet,
-                state,
-                state.run_id,
-                attempt_id,
-                node.phase,
-                node.child,
-            )
-            prompt_path = store.prompt_path(attempt_id, node.child)
-            try:
-                render_prompt_file(packet, prompt_path)
-            except AppError as error:
-                raise AppError(
-                    "invalid_state", "dispatch prompt is malformed"
-                ) from error
             action: Literal["dispatch", "rerun"] = (
-                "rerun" if packet.execution_mode == "rerun" else "dispatch"
+                "rerun"
+                if evidence["execution_mode"] == "rerun"
+                else "dispatch"
             )
             plan.append(
                 DispatchItem(
                     node=key,
                     child=node.child,
                     action=action,
-                    prompt_file=str(prompt_path),
-                    packet_file=str(packet_path),
+                    prompt_file=evidence["prompt_path"],
+                    packet_file=evidence["packet_path"],
                 )
             )
         return PhaseAttempt(
@@ -856,9 +901,24 @@ class WorkflowService:
         result_digest: str,
         raw_result: bytes,
         previous: object,
+        owner: dict[str, object],
+        node_key: str,
+        evidence: dict[str, object],
+        allowed_citations: tuple[str, ...],
     ) -> StagedChild:
         if not isinstance(previous, dict):
             raise AppError("invalid_state", "staged result metadata is invalid")
+        self._validate_staged_evidence(
+            store,
+            state,
+            attempt_id,
+            child,
+            previous,
+            owner,
+            node_key,
+            evidence,
+            allowed_citations,
+        )
         if previous.get("result_digest") != result_digest:
             raise AppError(
                 "result_conflict", "child already has a different staged result"
@@ -936,6 +996,63 @@ class WorkflowService:
         return state
 
     @staticmethod
+    def _phase_begun_event_data(
+        attempt_id: str, owner: dict[str, object]
+    ) -> dict[str, object]:
+        return {
+            "phase": owner["phase"],
+            "attempt": owner["number"],
+            "attempt_id": attempt_id,
+            "dispatch_plan": owner["dispatch_plan"],
+            "attempt_metadata": owner,
+        }
+
+    def _ensure_phase_begun_event_locked(
+        self,
+        store: StateStore,
+        state: RunState,
+        attempt_id: str,
+        owner: dict[str, object],
+    ) -> None:
+        expected = self._phase_begun_event_data(attempt_id, owner)
+        events = self._read_events(
+            state.run_id,
+            recover_incomplete_tail=True,
+            store=store,
+            event_lock_held=True,
+        )
+        related = [
+            event
+            for event in events
+            if event.get("type") == "phase_begun"
+            and isinstance(event.get("data"), dict)
+            and (
+                event["data"].get("attempt_id") == attempt_id
+                or (
+                    event["data"].get("phase") == owner["phase"]
+                    and event["data"].get("attempt") == owner["number"]
+                )
+            )
+        ]
+        if related:
+            if any(
+                event.get("data") != expected
+                or event.get("timestamp") != owner["begun_at"]
+                or type(event.get("version")) is not int
+                or event["version"] < owner["begun_version"]
+                for event in related
+            ):
+                raise AppError(
+                    "invalid_state", "phase begun evidence is malformed"
+                )
+            return
+        store.save_locked(
+            state.version,
+            state,
+            Event("phase_begun", expected, owner["begun_at"]),
+        )
+
+    @staticmethod
     def _staged_child(record: dict[str, object]) -> StagedChild:
         return StagedChild(
             run_id=record["run_id"],
@@ -947,13 +1064,80 @@ class WorkflowService:
             result_digest=record["result_digest"],
         )
 
-    def _load_dispatch_packet(
-        self, store: StateStore, attempt_id: str, child: str
-    ) -> DispatchPacket:
+    def _load_anchored_dispatch_evidence(
+        self,
+        store: StateStore,
+        state: RunState,
+        attempt_id: str,
+        child: str,
+        owner: dict[str, object],
+        node_key: str,
+        *,
+        validate_graph_mode: bool = True,
+    ) -> tuple[DispatchPacket, tuple[str, ...], dict[str, object]]:
+        raw_evidence = owner.get("dispatch_evidence")
+        evidence = (
+            raw_evidence.get(child)
+            if isinstance(raw_evidence, dict)
+            else None
+        )
+        if not isinstance(evidence, dict):
+            raise AppError(
+                "invalid_state", "dispatch packet evidence is malformed"
+            )
+        node = state.run_graph[node_key]
+        contracts = Path(owner["skill_dir"]) / "references" / "agents"
+        expected_output = (
+            f"artifacts/{node.phase.value}-{child.replace('_', '-')}.md"
+        )
+        expected_mode = (
+            "rerun" if node.validity is NodeValidity.RERUN else "fresh"
+        )
+        expected_reason = node.reason if expected_mode == "rerun" else None
+        packet_path = store.dispatch_path(attempt_id, child)
+        prompt_path = store.prompt_path(attempt_id, child)
+        knowledge_path = store.knowledge_path(attempt_id, child)
+        expected_owner_contract = str(
+            (contracts / OWNER_CONTRACT[node_key]).resolve()
+        )
+        expected_common_contract = str(
+            (contracts / "common-phase-contract.md").resolve()
+        )
+        if (
+            evidence.get("node") != node_key
+            or evidence.get("packet_path") != str(packet_path)
+            or evidence.get("prompt_path") != str(prompt_path)
+            or evidence.get("knowledge_path") != str(knowledge_path)
+            or evidence.get("allowed_output_path") != expected_output
+            or (
+                validate_graph_mode
+                and evidence.get("execution_mode") != expected_mode
+            )
+            or (
+                validate_graph_mode
+                and evidence.get("rerun_reason") != expected_reason
+            )
+            or evidence.get("owner_contract_path")
+            != expected_owner_contract
+            or evidence.get("common_contract_path")
+            != expected_common_contract
+        ):
+            raise AppError(
+                "invalid_state", "dispatch packet evidence is malformed"
+            )
+
         try:
-            packet = DispatchPacket.load(store.dispatch_path(attempt_id, child))
+            packet_payload = packet_path.read_bytes()
+            if (
+                hashlib.sha256(packet_payload).hexdigest()
+                != evidence["packet_digest"]
+            ):
+                raise ValueError("dispatch packet digest does not match")
+            packet = DispatchPacket.from_bytes(packet_payload)
         except AppError:
-            raise
+            raise AppError(
+                "invalid_state", "dispatch packet evidence is malformed"
+            ) from None
         except (
             OSError,
             UnicodeError,
@@ -963,9 +1147,166 @@ class WorkflowService:
             ValueError,
         ) as error:
             raise AppError(
-                "invalid_state", "child dispatch packet is malformed"
+                "invalid_state", "dispatch packet evidence is malformed"
             ) from error
-        return packet
+        try:
+            self._validate_dispatch_owner(
+                packet,
+                state,
+                state.run_id,
+                attempt_id,
+                node.phase,
+                child,
+            )
+        except AppError as error:
+            raise AppError(
+                "invalid_state", "dispatch packet evidence is malformed"
+            ) from error
+        if (
+            packet.allowed_output_path != evidence["allowed_output_path"]
+            or packet.execution_mode != evidence["execution_mode"]
+            or packet.rerun_reason != evidence["rerun_reason"]
+            or packet.owner_contract_path != evidence["owner_contract_path"]
+            or packet.common_contract_path != evidence["common_contract_path"]
+            or packet.knowledge_packet.get("path")
+            != evidence["knowledge_path"]
+            or packet.knowledge_packet.get("sha256")
+            != evidence["knowledge_content_digest"]
+        ):
+            raise AppError(
+                "invalid_state", "dispatch packet evidence is malformed"
+            )
+
+        try:
+            prompt_payload = prompt_path.read_bytes()
+            if (
+                hashlib.sha256(prompt_payload).hexdigest()
+                != evidence["prompt_digest"]
+            ):
+                raise ValueError("dispatch prompt digest does not match")
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            raise AppError(
+                "invalid_state", "dispatch prompt evidence is malformed"
+            ) from error
+
+        try:
+            knowledge_payload = knowledge_path.read_bytes()
+            if (
+                hashlib.sha256(knowledge_payload).hexdigest()
+                != evidence["knowledge_digest"]
+            ):
+                raise ValueError("knowledge packet byte digest does not match")
+            knowledge = json.loads(knowledge_payload.decode("utf-8"))
+            if not isinstance(knowledge, dict):
+                raise ValueError("knowledge packet must be an object")
+            unsigned = {
+                key: value
+                for key, value in knowledge.items()
+                if key != "digest"
+            }
+            content_digest = hashlib.sha256(
+                json.dumps(
+                    unsigned, sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
+            if (
+                knowledge.get("digest")
+                != evidence["knowledge_content_digest"]
+                or content_digest != evidence["knowledge_content_digest"]
+            ):
+                raise ValueError("knowledge packet content digest does not match")
+            selected_ids = knowledge["selected_ids"]
+            if not isinstance(selected_ids, list) or not all(
+                isinstance(item, str) and item for item in selected_ids
+            ):
+                raise ValueError("selected knowledge IDs are invalid")
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            raise AppError(
+                "invalid_state", "knowledge packet evidence is malformed"
+            ) from error
+        return packet, tuple(selected_ids), evidence
+
+    def _validate_staged_evidence(
+        self,
+        store: StateStore,
+        state: RunState,
+        attempt_id: str,
+        child: str,
+        record: object,
+        owner: dict[str, object],
+        node_key: str,
+        evidence: dict[str, object],
+        allowed_citations: tuple[str, ...],
+    ) -> ChildResult:
+        if not isinstance(record, dict):
+            raise AppError(
+                "invalid_state", "staged result evidence is malformed"
+            )
+        try:
+            staged_path = store.staged_path(attempt_id, child)
+            payload = staged_path.read_bytes()
+            if (
+                hashlib.sha256(payload).hexdigest()
+                != record["result_digest"]
+            ):
+                raise ValueError("staged result digest does not match")
+            result = ChildResult.from_bytes(payload)
+            phase = Phase(owner["phase"])
+            self._validate_result_owner(
+                state,
+                result,
+                state.run_id,
+                attempt_id,
+                phase,
+                child,
+            )
+            if (
+                result.execution_mode != evidence["execution_mode"]
+                or result.status != record.get("status")
+                or (
+                    None
+                    if result.artifact is None
+                    else result.artifact.to_dict()
+                )
+                != record.get("artifact")
+                or list(result.knowledge_citations)
+                != record.get("knowledge_citations")
+            ):
+                raise ValueError("staged result metadata does not match")
+            if result.artifact is not None:
+                node = state.run_graph[node_key]
+                if (
+                    result.artifact.phase is not node.phase
+                    or result.artifact.child != child
+                    or result.artifact.source_revision
+                    != state.source_revision
+                    or result.artifact.path
+                    != evidence["allowed_output_path"]
+                ):
+                    raise ValueError("staged artifact ownership does not match")
+            self._validate_knowledge_citations(
+                allowed_citations, result.knowledge_citations
+            )
+        except (
+            AppError,
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            raise AppError(
+                "invalid_state", "staged result evidence is malformed"
+            ) from error
+        return result
 
     def _validate_result_owner(
         self,
@@ -1088,48 +1429,9 @@ class WorkflowService:
 
     def _validate_knowledge_citations(
         self,
-        store: StateStore,
-        dispatch: DispatchPacket,
+        allowed: tuple[str, ...],
         citations: tuple[str, ...],
     ) -> None:
-        reference = dispatch.knowledge_packet
-        try:
-            packet_path = Path(reference["path"])
-            expected_digest = reference["sha256"]
-            expected_path = store.knowledge_path(
-                dispatch.attempt_id, dispatch.child
-            )
-            if packet_path != expected_path:
-                raise ValueError("knowledge packet path does not match child")
-            payload = json.loads(packet_path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("knowledge packet must be an object")
-            unsigned = {key: value for key, value in payload.items() if key != "digest"}
-            actual_digest = hashlib.sha256(
-                json.dumps(
-                    unsigned, sort_keys=True, separators=(",", ":")
-                ).encode()
-            ).hexdigest()
-            if (
-                payload.get("digest") != expected_digest
-                or actual_digest != expected_digest
-            ):
-                raise ValueError("knowledge packet digest does not match")
-            allowed = payload["selected_ids"]
-            if not isinstance(allowed, list) or not all(
-                isinstance(item, str) for item in allowed
-            ):
-                raise ValueError("selected knowledge IDs are invalid")
-        except (
-            OSError,
-            KeyError,
-            TypeError,
-            ValueError,
-            json.JSONDecodeError,
-        ) as error:
-            raise AppError(
-                "invalid_state", "child knowledge packet is malformed"
-            ) from error
         unknown = sorted(set(citations) - set(allowed))
         if unknown:
             raise AppError(
@@ -1304,7 +1606,7 @@ class WorkflowService:
             raise AppError(
                 "invalid_state", "workflow state is malformed"
             ) from error
-        self._validate_state(state, run_id)
+        self._validate_state(state, run_id, store)
         return state
 
     def _load_locked(self, store: StateStore, run_id: str) -> RunState:
@@ -1326,11 +1628,13 @@ class WorkflowService:
             raise AppError(
                 "invalid_state", "workflow state is malformed"
             ) from error
-        self._validate_state(state, run_id)
+        self._validate_state(state, run_id, store)
         return state
 
     @staticmethod
-    def _validate_state(state: RunState, requested_run_id: str) -> None:
+    def _validate_state(
+        state: RunState, requested_run_id: str, store: StateStore
+    ) -> None:
         if state.run_id != requested_run_id:
             raise AppError(
                 "invalid_state",
@@ -1371,7 +1675,17 @@ class WorkflowService:
             if (
                 match is None
                 or not isinstance(owner, dict)
-                or set(owner) != {"phase", "number", "nodes", "skill_dir"}
+                or set(owner)
+                != {
+                    "phase",
+                    "number",
+                    "nodes",
+                    "skill_dir",
+                    "begun_version",
+                    "begun_at",
+                    "dispatch_plan",
+                    "dispatch_evidence",
+                }
                 or owner.get("phase") != match.group(1)
                 or owner.get("number") != int(match.group(2))
                 or not isinstance(owner.get("nodes"), list)
@@ -1380,12 +1694,28 @@ class WorkflowService:
                 or len(owner["nodes"]) != len(set(owner["nodes"]))
                 or not isinstance(owner.get("skill_dir"), str)
                 or not owner["skill_dir"]
+                or not Path(owner["skill_dir"]).is_absolute()
+                or type(owner.get("begun_version")) is not int
+                or not 1 <= owner["begun_version"] <= state.version
+                or not isinstance(owner.get("begun_at"), str)
+                or not isinstance(owner.get("dispatch_plan"), list)
+                or not isinstance(owner.get("dispatch_evidence"), dict)
             ):
                 raise AppError("invalid_state", "attempt history is invalid")
+            try:
+                datetime.fromisoformat(owner["begun_at"])
+            except ValueError as error:
+                raise AppError(
+                    "invalid_state", "attempt history is invalid"
+                ) from error
             if any(
                 key not in state.run_graph
                 or state.run_graph[key].phase.value != owner["phase"]
                 for key in owner["nodes"]
+            ):
+                raise AppError("invalid_state", "attempt history is invalid")
+            if not WorkflowService._valid_dispatch_metadata(
+                owner, state, attempt_id, store
             ):
                 raise AppError("invalid_state", "attempt history is invalid")
             pairs.add((owner["phase"], owner["number"]))
@@ -1426,7 +1756,7 @@ class WorkflowService:
                 if (
                     child not in owned_children
                     or not WorkflowService._valid_staged_record(
-                        record, state, attempt_id, child
+                        record, state, attempt_id, child, store
                     )
                 ):
                     raise AppError(
@@ -1436,7 +1766,7 @@ class WorkflowService:
         if not isinstance(aggregates, dict) or any(
             attempt_id not in history
             or not WorkflowService._valid_aggregate_record(
-                record, state, attempt_id
+                record, state, attempt_id, store
             )
             for attempt_id, record in aggregates.items()
         ):
@@ -1484,8 +1814,99 @@ class WorkflowService:
             )
 
     @staticmethod
+    def _valid_dispatch_metadata(
+        owner: dict[str, object],
+        state: RunState,
+        attempt_id: str,
+        store: StateStore,
+    ) -> bool:
+        evidence_keys = {
+            "node",
+            "packet_path",
+            "packet_digest",
+            "prompt_path",
+            "prompt_digest",
+            "knowledge_path",
+            "knowledge_digest",
+            "knowledge_content_digest",
+            "allowed_output_path",
+            "execution_mode",
+            "rerun_reason",
+            "owner_contract_path",
+            "common_contract_path",
+        }
+        evidence = owner["dispatch_evidence"]
+        plan = owner["dispatch_plan"]
+        nodes = owner["nodes"]
+        assert isinstance(evidence, dict)
+        assert isinstance(plan, list)
+        assert isinstance(nodes, list)
+        children = {state.run_graph[key].child: key for key in nodes}
+        if set(evidence) != set(children) or len(plan) != len(children):
+            return False
+        expected_plan: list[dict[str, object]] = []
+        contracts = Path(owner["skill_dir"]) / "references" / "agents"
+        for key in nodes:
+            node = state.run_graph[key]
+            child = node.child
+            item = evidence.get(child)
+            if not isinstance(item, dict) or set(item) != evidence_keys:
+                return False
+            try:
+                packet_path = store.dispatch_path(attempt_id, child)
+                prompt_path = store.prompt_path(attempt_id, child)
+                knowledge_path = store.knowledge_path(attempt_id, child)
+            except AppError:
+                return False
+            mode = item.get("execution_mode")
+            reason = item.get("rerun_reason")
+            if (
+                item.get("node") != key
+                or item.get("packet_path") != str(packet_path)
+                or item.get("prompt_path") != str(prompt_path)
+                or item.get("knowledge_path") != str(knowledge_path)
+                or item.get("allowed_output_path")
+                != f"artifacts/{node.phase.value}-{child.replace('_', '-')}.md"
+                or mode not in {"fresh", "rerun"}
+                or (mode == "fresh" and reason is not None)
+                or (
+                    mode == "rerun"
+                    and (not isinstance(reason, str) or not reason.strip())
+                )
+                or item.get("owner_contract_path")
+                != str((contracts / OWNER_CONTRACT[key]).resolve())
+                or item.get("common_contract_path")
+                != str((contracts / "common-phase-contract.md").resolve())
+                or any(
+                    not isinstance(item.get(name), str)
+                    or DIGEST_PATTERN.fullmatch(item[name]) is None
+                    for name in (
+                        "packet_digest",
+                        "prompt_digest",
+                        "knowledge_digest",
+                        "knowledge_content_digest",
+                    )
+                )
+            ):
+                return False
+            expected_plan.append(
+                {
+                    "node": key,
+                    "child": child,
+                    "action": "rerun" if mode == "rerun" else "dispatch",
+                    "prompt_file": str(prompt_path),
+                    "packet_file": str(packet_path),
+                }
+            )
+        return plan == expected_plan
+
+    @staticmethod
     def _valid_staged_record(
-        record: object, state: RunState, attempt_id: str, child: str
+        record: object,
+        state: RunState,
+        attempt_id: str,
+        child: str,
+        store: StateStore,
     ) -> bool:
         expected = {
             "run_id",
@@ -1513,7 +1934,8 @@ class WorkflowService:
             or record.get("phase") != node.phase.value
             or record.get("status")
             not in {"completed", "unable_to_complete"}
-            or not isinstance(record.get("result_path"), str)
+            or record.get("result_path")
+            != str(store.staged_path(attempt_id, child))
             or not isinstance(record.get("result_digest"), str)
             or DIGEST_PATTERN.fullmatch(record["result_digest"]) is None
             or type(record.get("staged_version")) is not int
@@ -1546,7 +1968,10 @@ class WorkflowService:
 
     @staticmethod
     def _valid_aggregate_record(
-        record: object, state: RunState, attempt_id: str
+        record: object,
+        state: RunState,
+        attempt_id: str,
+        store: StateStore,
     ) -> bool:
         expected = {
             "run_id",
@@ -1568,7 +1993,8 @@ class WorkflowService:
             not in {"completed", "unable_to_complete"}
             or not isinstance(record.get("children"), list)
             or not all(isinstance(item, dict) for item in record["children"])
-            or not isinstance(record.get("aggregate_path"), str)
+            or record.get("aggregate_path")
+            != str(store.aggregate_path(attempt_id))
             or not isinstance(record.get("aggregate_digest"), str)
             or DIGEST_PATTERN.fullmatch(record["aggregate_digest"]) is None
             or type(record.get("finalized_version")) is not int

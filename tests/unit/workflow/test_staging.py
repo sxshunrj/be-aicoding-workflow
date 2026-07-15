@@ -163,6 +163,70 @@ def test_begin_writes_per_child_dispatch_packets_prompts_and_knowledge(
         )
 
 
+def test_begin_anchors_child_evidence_in_state_and_event(tmp_path: Path) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    store = service._store(run.run_id)
+    state = service.status(run.run_id)
+    owner = state.artifacts["attempt_history"][attempt.attempt_id]
+    evidence = owner["dispatch_evidence"]["spec"]
+    packet_path = store.dispatch_path(attempt.attempt_id, "spec")
+    prompt_path = store.prompt_path(attempt.attempt_id, "spec")
+    knowledge_path = store.knowledge_path(attempt.attempt_id, "spec")
+
+    assert evidence["node"] == "spec.spec"
+    assert evidence["packet_path"] == str(packet_path)
+    assert evidence["packet_digest"] == hashlib.sha256(
+        packet_path.read_bytes()
+    ).hexdigest()
+    assert evidence["prompt_path"] == str(prompt_path)
+    assert evidence["prompt_digest"] == hashlib.sha256(
+        prompt_path.read_bytes()
+    ).hexdigest()
+    assert evidence["knowledge_path"] == str(knowledge_path)
+    assert evidence["knowledge_digest"] == hashlib.sha256(
+        knowledge_path.read_bytes()
+    ).hexdigest()
+    assert evidence["allowed_output_path"] == "artifacts/spec-spec.md"
+    assert evidence["execution_mode"] == "fresh"
+    events = [
+        json.loads(line) for line in store.events_path.read_text().splitlines()
+    ]
+    begun = next(event for event in events if event["type"] == "phase_begun")
+    assert begun["data"]["attempt_metadata"] == owner
+
+
+def test_begin_retry_repairs_missing_phase_begun_event_once(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    events_path = service._store(run.run_id).events_path
+    real_open = Path.open
+    failed = False
+
+    def fail_event_append(path, mode="r", *args, **kwargs):
+        nonlocal failed
+        if path == events_path and mode == "a" and not failed:
+            failed = True
+            raise OSError("injected begin event append failure")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_event_append)
+    with pytest.raises(OSError, match="injected begin"):
+        service.begin(run.run_id, Phase.SPEC, skill_dir)
+
+    repaired = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    repaired_version = service.status(run.run_id).version
+    stable = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    begun = [event for event in events if event["type"] == "phase_begun"]
+
+    assert repaired == stable
+    assert service.status(run.run_id).version == repaired_version
+    assert len(begun) == 1
+    assert begun[0]["data"]["attempt_id"] == repaired.attempt_id
+
+
 def test_begin_reuses_current_attempt_and_marks_staged_child(tmp_path: Path) -> None:
     service, run, skill_dir = _service(tmp_path)
     _set_current_phase(service, run.run_id, Phase.PLAN)
@@ -183,6 +247,56 @@ def test_begin_reuses_current_attempt_and_marks_staged_child(tmp_path: Path) -> 
     assert actions["test_strategy"].action == "dispatch"
 
 
+@pytest.mark.parametrize("tamper", ["missing", "bytes", "ownership"])
+def test_begin_never_reports_tampered_staged_evidence_as_healthy(
+    tmp_path: Path, tamper: str
+) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    result_path = _result(
+        tmp_path, run.run_id, attempt.attempt_id, Phase.SPEC, "spec"
+    )
+    service.stage(run.run_id, attempt.attempt_id, "spec", result_path)
+    store = service._store(run.run_id)
+    staged_path = store.staged_path(attempt.attempt_id, "spec")
+    if tamper == "missing":
+        staged_path.unlink()
+    elif tamper == "bytes":
+        staged_path.write_text("{}", encoding="utf-8")
+    else:
+        payload = json.loads(staged_path.read_text(encoding="utf-8"))
+        payload["run_id"] = "RUN-20260715-120000-bbbbbb"
+        tampered = (json.dumps(payload, indent=2) + "\n").encode()
+        staged_path.write_bytes(tampered)
+        state_path = store.state_path
+        state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+        record = state["artifacts"]["staged_results"][attempt.attempt_id]["spec"]
+        record["result_digest"] = hashlib.sha256(tampered).hexdigest()
+        state_path.write_text(
+            yaml.safe_dump(state, sort_keys=False), encoding="utf-8"
+        )
+
+    with pytest.raises(AppError, match="staged result evidence"):
+        service.begin(run.run_id, Phase.SPEC, skill_dir)
+
+
+def test_begin_validates_anchored_dispatch_for_already_staged_child(
+    tmp_path: Path,
+) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    result_path = _result(
+        tmp_path, run.run_id, attempt.attempt_id, Phase.SPEC, "spec"
+    )
+    service.stage(run.run_id, attempt.attempt_id, "spec", result_path)
+    Path(attempt.dispatch_plan[0].prompt_file).write_text(
+        "tampered after stage\n", encoding="utf-8"
+    )
+
+    with pytest.raises(AppError, match="dispatch prompt evidence"):
+        service.begin(run.run_id, Phase.SPEC, skill_dir)
+
+
 def test_begin_rejects_tampered_current_dispatch_prompt(tmp_path: Path) -> None:
     service, run, skill_dir = _service(tmp_path)
     attempt = service.begin(run.run_id, Phase.SPEC, skill_dir)
@@ -191,6 +305,150 @@ def test_begin_rejects_tampered_current_dispatch_prompt(tmp_path: Path) -> None:
 
     with pytest.raises(AppError, match="dispatch prompt"):
         service.begin(run.run_id, Phase.SPEC, skill_dir)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda packet, tmp_path: packet.update(
+            allowed_output_path="artifacts/tampered.md"
+        ),
+        lambda packet, tmp_path: packet.update(
+            execution_mode="rerun", rerun_reason="tampered mode"
+        ),
+        lambda packet, tmp_path: packet.update(
+            owner_contract_path=str(tmp_path / "other-owner.md")
+        ),
+        lambda packet, tmp_path: packet["knowledge_packet"].update(
+            path=str(tmp_path / "other-knowledge.json")
+        ),
+        lambda packet, tmp_path: packet["knowledge_packet"].update(
+            sha256="a" * 64
+        ),
+    ],
+    ids=[
+        "output-path",
+        "execution-mode",
+        "owner-contract",
+        "knowledge-path",
+        "knowledge-content-digest",
+    ],
+)
+def test_stage_rejects_semantic_dispatch_tampering(
+    tmp_path: Path, mutation
+) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    packet_path = Path(attempt.dispatch_plan[0].packet_file)
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    mutation(packet, tmp_path)
+    packet_path.write_text(json.dumps(packet), encoding="utf-8")
+    result = _result(
+        tmp_path, run.run_id, attempt.attempt_id, Phase.SPEC, "spec"
+    )
+
+    with pytest.raises(AppError, match="dispatch packet evidence"):
+        service.stage(run.run_id, attempt.attempt_id, "spec", result)
+
+
+def test_stage_rejects_byte_only_dispatch_tampering(tmp_path: Path) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    packet_path = Path(attempt.dispatch_plan[0].packet_file)
+    packet_path.write_bytes(packet_path.read_bytes() + b"\n")
+    result = _result(
+        tmp_path, run.run_id, attempt.attempt_id, Phase.SPEC, "spec"
+    )
+
+    with pytest.raises(AppError, match="dispatch packet evidence"):
+        service.stage(run.run_id, attempt.attempt_id, "spec", result)
+
+
+def test_stage_rejects_tampered_prompt_bytes(tmp_path: Path) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    Path(attempt.dispatch_plan[0].prompt_file).write_text(
+        "tampered prompt\n", encoding="utf-8"
+    )
+    result = _result(
+        tmp_path, run.run_id, attempt.attempt_id, Phase.SPEC, "spec"
+    )
+
+    with pytest.raises(AppError, match="dispatch prompt evidence"):
+        service.stage(run.run_id, attempt.attempt_id, "spec", result)
+
+
+def test_stage_rejects_byte_only_knowledge_tampering(tmp_path: Path) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    packet = DispatchPacket.load(attempt.dispatch_plan[0].packet_file)
+    knowledge_path = Path(packet.knowledge_packet["path"])
+    knowledge_path.write_bytes(knowledge_path.read_bytes() + b"\n")
+    result = _result(
+        tmp_path, run.run_id, attempt.attempt_id, Phase.SPEC, "spec"
+    )
+
+    with pytest.raises(AppError, match="knowledge packet evidence"):
+        service.stage(run.run_id, attempt.attempt_id, "spec", result)
+
+
+def test_stage_rejects_coordinated_packet_and_citation_injection(
+    tmp_path: Path,
+) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    packet_path = Path(attempt.dispatch_plan[0].packet_file)
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    knowledge_path = Path(packet["knowledge_packet"]["path"])
+    knowledge = json.loads(knowledge_path.read_text(encoding="utf-8"))
+    knowledge["selected_ids"] = ["KW-injected-001"]
+    unsigned = {key: value for key, value in knowledge.items() if key != "digest"}
+    injected_digest = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    knowledge["digest"] = injected_digest
+    knowledge_path.write_text(
+        json.dumps(knowledge, indent=2) + "\n", encoding="utf-8"
+    )
+    packet["knowledge_packet"]["sha256"] = injected_digest
+    packet_path.write_text(json.dumps(packet, indent=2) + "\n", encoding="utf-8")
+    result = _result(
+        tmp_path,
+        run.run_id,
+        attempt.attempt_id,
+        Phase.SPEC,
+        "spec",
+        citations=("KW-injected-001",),
+    )
+
+    with pytest.raises(AppError, match="dispatch packet evidence"):
+        service.stage(run.run_id, attempt.attempt_id, "spec", result)
+
+
+def test_stage_rejects_state_anchor_that_disagrees_with_begun_event(
+    tmp_path: Path,
+) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    packet_path = Path(attempt.dispatch_plan[0].packet_file)
+    packet_path.write_bytes(packet_path.read_bytes() + b"\n")
+    store = service._store(run.run_id)
+    state = yaml.safe_load(store.state_path.read_text(encoding="utf-8"))
+    evidence = state["artifacts"]["attempt_history"][attempt.attempt_id][
+        "dispatch_evidence"
+    ]["spec"]
+    evidence["packet_digest"] = hashlib.sha256(
+        packet_path.read_bytes()
+    ).hexdigest()
+    store.state_path.write_text(
+        yaml.safe_dump(state, sort_keys=False), encoding="utf-8"
+    )
+    result = _result(
+        tmp_path, run.run_id, attempt.attempt_id, Phase.SPEC, "spec"
+    )
+
+    with pytest.raises(AppError, match="phase begun evidence"):
+        service.stage(run.run_id, attempt.attempt_id, "spec", result)
 
 
 def test_stage_rejects_wrong_child_result_and_stale_attempt(tmp_path: Path) -> None:
@@ -267,7 +525,7 @@ def test_stage_rejects_dispatch_packet_owned_by_another_requirement(
         tmp_path, run.run_id, attempt.attempt_id, Phase.SPEC, "spec"
     )
 
-    with pytest.raises(AppError, match="dispatch packet ownership"):
+    with pytest.raises(AppError, match="dispatch packet evidence"):
         service.stage(run.run_id, attempt.attempt_id, "spec", result)
 
 
@@ -416,6 +674,47 @@ def test_status_rejects_aggregate_phase_that_does_not_match_attempt(
     state_path = service._store(run.run_id).state_path
     state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
     state["artifacts"]["phase_aggregates"][attempt.attempt_id]["phase"] = "plan"
+    state_path.write_text(
+        yaml.safe_dump(state, sort_keys=False), encoding="utf-8"
+    )
+
+    with pytest.raises(AppError, match="phase aggregate metadata"):
+        service.status(run.run_id)
+
+
+def test_status_rejects_noncanonical_staged_result_path(tmp_path: Path) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    result = _result(
+        tmp_path, run.run_id, attempt.attempt_id, Phase.SPEC, "spec"
+    )
+    service.stage(run.run_id, attempt.attempt_id, "spec", result)
+    state_path = service._store(run.run_id).state_path
+    state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    state["artifacts"]["staged_results"][attempt.attempt_id]["spec"][
+        "result_path"
+    ] = str(tmp_path / "other-result.json")
+    state_path.write_text(
+        yaml.safe_dump(state, sort_keys=False), encoding="utf-8"
+    )
+
+    with pytest.raises(AppError, match="staged result metadata"):
+        service.status(run.run_id)
+
+
+def test_status_rejects_noncanonical_aggregate_path(tmp_path: Path) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    result = _result(
+        tmp_path, run.run_id, attempt.attempt_id, Phase.SPEC, "spec"
+    )
+    service.stage(run.run_id, attempt.attempt_id, "spec", result)
+    service.finalize(run.run_id, attempt.attempt_id)
+    state_path = service._store(run.run_id).state_path
+    state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    state["artifacts"]["phase_aggregates"][attempt.attempt_id][
+        "aggregate_path"
+    ] = str(tmp_path / "other-aggregate.json")
     state_path.write_text(yaml.safe_dump(state, sort_keys=False), encoding="utf-8")
 
     with pytest.raises(AppError, match="phase aggregate metadata"):
