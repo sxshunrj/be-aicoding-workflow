@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from typing import Literal
 
+from ai_workflow.errors import AppError
 from ai_workflow.workflow.models import Phase
 
 
@@ -13,6 +14,15 @@ def _keys(data: dict[str, object], expected: set[str], name: str) -> None:
     missing, unknown = expected - set(data), set(data) - expected
     if missing or unknown:
         raise ValueError(f"invalid {name} keys; missing={sorted(missing)}, unknown={sorted(unknown)}")
+
+
+def _require_schema_version(data: dict[str, object]) -> None:
+    version = data.get("schema_version")
+    if type(version) is not int or version != SCHEMA_VERSION:
+        raise AppError(
+            "unsupported_schema_version",
+            f"unsupported schema_version: {version!r}",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,13 +63,12 @@ class ArtifactRef:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "ArtifactRef":
+        _require_schema_version(data)
         _keys(
             data,
             {"path", "sha256", "schema_version", "phase", "child", "source_revision"},
             "artifact",
         )
-        if data["schema_version"] != SCHEMA_VERSION:
-            raise ValueError(f"unsupported schema_version: {data['schema_version']!r}")
         if not isinstance(data["path"], str) or not data["path"].strip():
             raise ValueError("artifact path is invalid")
         if not isinstance(data["source_revision"], str) or not data["source_revision"].strip():
@@ -127,10 +136,7 @@ class ChildResult:
         data = json.loads(payload.decode("utf-8"))
         if not isinstance(data, dict):
             raise ValueError("child result must be an object")
-        if "schema_version" not in data:
-            raise ValueError("schema_version is required")
-        if data["schema_version"] != SCHEMA_VERSION:
-            raise ValueError(f"unsupported schema_version: {data['schema_version']!r}")
+        _require_schema_version(data)
         _keys(
             data,
             {

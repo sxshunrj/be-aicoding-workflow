@@ -4,6 +4,7 @@ import pytest
 
 from ai_workflow.contracts.artifacts import ArtifactRef, ChildResult, Finding
 from ai_workflow.contracts.packets import PhasePacket
+from ai_workflow.errors import AppError
 from ai_workflow.workflow.models import Phase
 
 
@@ -30,16 +31,20 @@ def test_child_result_rejects_unknown_schema_version(tmp_path) -> None:
     path = tmp_path / "result.json"
     path.write_text('{"schema_version":3}', encoding="utf-8")
 
-    with pytest.raises(ValueError, match="unsupported schema_version"):
+    with pytest.raises(AppError) as error:
         ChildResult.load(path)
+    assert error.value.code == "unsupported_schema_version"
+    assert str(error.value) == "unsupported schema_version: 3"
 
 
 def test_child_result_rejects_missing_schema_version_as_contract_error(tmp_path) -> None:
     path = tmp_path / "result.json"
     path.write_text('{"status":"completed"}', encoding="utf-8")
 
-    with pytest.raises(ValueError, match="schema_version is required"):
+    with pytest.raises(AppError) as error:
         ChildResult.load(path)
+    assert error.value.code == "unsupported_schema_version"
+    assert str(error.value) == "unsupported schema_version: None"
 
 
 def test_phase_packet_round_trips_versioned_json(tmp_path) -> None:

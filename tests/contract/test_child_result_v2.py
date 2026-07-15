@@ -3,6 +3,7 @@ import json
 import pytest
 
 from ai_workflow.contracts.artifacts import ChildResult
+from ai_workflow.errors import AppError
 from ai_workflow.workflow.models import Phase
 
 
@@ -46,6 +47,63 @@ def test_completed_result_parses_and_round_trips_exact_schema_v2_keys() -> None:
     assert result.artifact is not None
     assert result.artifact.child == "spec"
     assert result.to_dict() == payload
+
+
+def test_legacy_result_rejects_schema_before_legacy_shape() -> None:
+    payload = {
+        "schema_version": 1,
+        "status": "completed",
+        "summary": "Legacy specification completed.",
+        "artifact": {
+            "path": "technical-spec.md",
+            "sha256": "a" * 64,
+            "schema_version": 1,
+            "phase": "spec",
+            "source_revision": "abc123",
+        },
+        "findings": [],
+        "knowledge_citations": [],
+    }
+
+    with pytest.raises(AppError) as error:
+        _parse(payload)
+    assert error.value.code == "unsupported_schema_version"
+    assert str(error.value) == "unsupported schema_version: 1"
+
+
+def test_nested_legacy_artifact_rejects_schema_before_legacy_shape() -> None:
+    payload = _payload()
+    artifact = payload["artifact"]
+    assert isinstance(artifact, dict)
+    artifact["schema_version"] = 1
+    del artifact["child"]
+
+    with pytest.raises(AppError) as error:
+        _parse(payload)
+    assert error.value.code == "unsupported_schema_version"
+    assert str(error.value) == "unsupported schema_version: 1"
+
+
+@pytest.mark.parametrize("version", [None, "2", 2.0, True])
+def test_result_requires_integer_schema_version(version: object) -> None:
+    payload = _payload()
+    payload["schema_version"] = version
+
+    with pytest.raises(AppError) as error:
+        _parse(payload)
+    assert error.value.code == "unsupported_schema_version"
+    assert str(error.value) == f"unsupported schema_version: {version!r}"
+
+
+def test_result_requires_schema_version_before_exact_keys() -> None:
+    payload = _payload()
+    del payload["schema_version"]
+    del payload["child"]
+
+    with pytest.raises(AppError) as error:
+        _parse(payload)
+    assert error.value.code == "unsupported_schema_version"
+    assert str(error.value) == "unsupported schema_version: None"
 
 
 @pytest.mark.parametrize("key", ["run_id", "attempt_id", "execution_mode"])

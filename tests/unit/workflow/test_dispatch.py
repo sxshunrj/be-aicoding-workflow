@@ -64,7 +64,7 @@ def test_dispatch_packet_round_trips_schema_v2(tmp_path: Path) -> None:
     }
 
 
-@pytest.mark.parametrize("mutation", ["unknown", "missing", "schema"])
+@pytest.mark.parametrize("mutation", ["unknown", "missing"])
 def test_dispatch_packet_rejects_invalid_top_level_contract(
     tmp_path: Path, mutation: str
 ) -> None:
@@ -73,11 +73,51 @@ def test_dispatch_packet_rejects_invalid_top_level_contract(
         payload["unexpected"] = True
     elif mutation == "missing":
         del payload["child"]
-    else:
-        payload["schema_version"] = 1
 
     with pytest.raises(ValueError):
         DispatchPacket.load(_write_packet(tmp_path, payload))
+
+
+def test_legacy_dispatch_rejects_schema_before_legacy_shape(tmp_path: Path) -> None:
+    payload = {
+        "schema_version": 1,
+        "run_id": "RUN-20260715-120000-abcdef",
+        "phase": "verify",
+        "attempt_id": "verify-1-abcdef",
+        "source_revision": "abc123",
+        "knowledge_packet": {},
+        "prior_artifacts": [],
+        "rerun_reason": None,
+    }
+
+    with pytest.raises(AppError) as error:
+        DispatchPacket.load(_write_packet(tmp_path, payload))
+    assert error.value.code == "unsupported_schema_version"
+    assert str(error.value) == "unsupported schema_version: 1"
+
+
+@pytest.mark.parametrize("version", [None, "2", 2.0, True])
+def test_dispatch_requires_integer_schema_version(
+    tmp_path: Path, version: object
+) -> None:
+    payload = _packet(tmp_path).to_dict()
+    payload["schema_version"] = version
+
+    with pytest.raises(AppError) as error:
+        DispatchPacket.load(_write_packet(tmp_path, payload))
+    assert error.value.code == "unsupported_schema_version"
+    assert str(error.value) == f"unsupported schema_version: {version!r}"
+
+
+def test_dispatch_requires_schema_version_before_exact_keys(tmp_path: Path) -> None:
+    payload = _packet(tmp_path).to_dict()
+    del payload["schema_version"]
+    del payload["child"]
+
+    with pytest.raises(AppError) as error:
+        DispatchPacket.load(_write_packet(tmp_path, payload))
+    assert error.value.code == "unsupported_schema_version"
+    assert str(error.value) == "unsupported schema_version: None"
 
 
 @pytest.mark.parametrize(

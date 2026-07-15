@@ -3,7 +3,11 @@ import json
 from pathlib import Path
 from pathlib import PurePosixPath
 
-from ai_workflow.contracts.artifacts import ArtifactRef, SCHEMA_VERSION
+from ai_workflow.contracts.artifacts import (
+    ArtifactRef,
+    SCHEMA_VERSION,
+    _require_schema_version,
+)
 from ai_workflow.workflow.models import Phase
 
 
@@ -112,6 +116,7 @@ class DispatchPacket:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("dispatch packet must be an object")
+        _require_schema_version(data)
         expected = {
             "schema_version",
             "run_id",
@@ -132,8 +137,6 @@ class DispatchPacket:
         }
         if set(data) != expected:
             raise ValueError("dispatch packet keys are invalid")
-        if data["schema_version"] != SCHEMA_VERSION:
-            raise ValueError(f"unsupported schema_version: {data['schema_version']!r}")
         for key in ("run_id", "child", "attempt_id", "source_revision", "requirement"):
             if not isinstance(data[key], str) or not data[key].strip():
                 raise ValueError(f"dispatch packet {key} is invalid")
