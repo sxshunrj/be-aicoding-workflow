@@ -9,7 +9,24 @@ from ai_workflow.wiki.service import WikiService
 class Repository:
     def paths(self): return ["one"]
     def read(self, path):
-        return KnowledgeEntry("KW-rule-001", "Retry", KnowledgeType.RULE, KnowledgeStatus.APPROVED, "Use retries", KnowledgeScope(), ("retry",), ("owner",), ("reviewer",), date(2025,1,1), date(2025,1,2), date(2030,1,1), ({"kind":"human","ref":"x"},), (), (), "bounded body")
+        return KnowledgeEntry(
+            "KW-rule-001",
+            "Retry",
+            KnowledgeType.RULE,
+            KnowledgeStatus.APPROVED,
+            "Use retries",
+            KnowledgeScope(),
+            ("retry",),
+            ("owner",),
+            ("reviewer",),
+            date(2025, 1, 1),
+            date(2025, 1, 2),
+            date(2030, 1, 1),
+            ({"kind": "human", "ref": "x"},),
+            (),
+            (),
+            "bounded body " * 80,
+        )
 
 
 def test_packet_is_bounded_and_digest_matches_canonical_content(tmp_path) -> None:
@@ -19,4 +36,5 @@ def test_packet_is_bounded_and_digest_matches_canonical_content(tmp_path) -> Non
     assert packet.selected_ids == ("KW-rule-001",)
     assert payload["digest"] == packet.digest
     assert len(output.read_text()) <= 5000
-
+    assert len(payload["entries"][0]["content"]) < len("bounded body " * 80)
+    assert "use retries" in payload["entries"][0]["content"].casefold()

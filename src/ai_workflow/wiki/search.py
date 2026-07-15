@@ -53,15 +53,18 @@ class KnowledgeSearcher:
 
     def search(self, query: KnowledgeQuery, limits: SearchLimits) -> tuple[SearchResult, ...]:
         query_tokens = _tokens(query.text)
+        query_has_constraints = bool(
+            query.text or query.tags or query.repository or query.services or query.paths
+            or query.languages or query.phase or query.types
+        )
         results: list[SearchResult] = []
         for entry in self.entries:
             if entry.status is not KnowledgeStatus.APPROVED:
                 continue
             if query.types and entry.type.value not in query.types:
                 continue
-            score, reasons = self._score(entry, query, query_tokens)
-            if score == 0 and (query.text or query.tags or query.repository or query.services
-                               or query.paths or query.languages or query.phase):
+            score, reasons, matched = self._score(entry, query, query_tokens)
+            if query_has_constraints and not matched:
                 continue
             warnings = []
             if entry.review_after < self.today():
@@ -73,9 +76,10 @@ class KnowledgeSearcher:
 
     @staticmethod
     def _score(entry: KnowledgeEntry, query: KnowledgeQuery,
-               query_tokens: set[str]) -> tuple[int, list[str]]:
+               query_tokens: set[str]) -> tuple[int, list[str], bool]:
         score = 0
         reasons: list[str] = []
+        matched = False
         checks = ((query.repository, entry.scope.repos, "repository"),
                   (query.services, entry.scope.services, "service"),
                   (query.paths, entry.scope.paths, "path"),
@@ -87,10 +91,12 @@ class KnowledgeSearcher:
                 if value and value.casefold() in {item.casefold() for item in available}:
                     score += 40
                     reasons.append(f"{label}:{value}")
+                    matched = True
         for tag in query.tags:
             if tag.casefold() in {item.casefold() for item in entry.tags}:
                 score += 30
                 reasons.append(f"tag:{tag}")
+                matched = True
         title = query_tokens & _tokens(entry.title)
         summary = query_tokens & _tokens(entry.summary)
         body = query_tokens & _tokens(entry.body)
@@ -98,8 +104,9 @@ class KnowledgeSearcher:
                                        ("body", body, 2)):
             score += points * len(matches)
             reasons.extend(f"{label}:{token}" for token in sorted(matches))
+            matched = matched or bool(matches)
         scope = entry.scope
         if not (scope.repos or scope.services or scope.paths or scope.languages or scope.phases):
             score += 1
             reasons.append("broad-scope")
-        return score, reasons
+        return score, reasons, matched

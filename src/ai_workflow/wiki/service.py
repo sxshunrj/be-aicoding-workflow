@@ -20,6 +20,26 @@ class LintReport:
         return {"valid": self.valid, "issues": list(self.issues)}
 
 
+def _excerpt(text: str, query: str, limit: int = 240) -> str:
+    normalized = " ".join(text.split()).strip()
+    if not normalized:
+        return ""
+    tokens = [token for token in query.casefold().split() if token]
+    lowered = normalized.casefold()
+    start = 0
+    for token in tokens:
+        index = lowered.find(token)
+        if index != -1:
+            start = max(0, index - 60)
+            break
+    excerpt = normalized[start:start + limit]
+    if start > 0:
+        excerpt = f"...{excerpt}"
+    if start + limit < len(normalized):
+        excerpt = f"{excerpt.rstrip()}..."
+    return excerpt
+
+
 class WikiService:
     def __init__(self, repository: WikiRepository, *, today=date.today) -> None:
         self.repository = repository
@@ -35,8 +55,9 @@ class WikiService:
         selected_ids: list[str] = []
         for result in self.search(query, limits):
             entry = result.entry
+            content_source = f"{entry.summary} {entry.body}".strip()
             item = {"id": entry.id, "title": entry.title, "type": entry.type.value,
-                    "summary": entry.summary, "content": entry.body,
+                    "summary": entry.summary, "content": _excerpt(content_source, query.text),
                     "match_reasons": list(result.match_reasons),
                     "warnings": list(result.warnings),
                     "paths": list(entry.scope.paths)}

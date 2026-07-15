@@ -26,3 +26,8 @@ def test_search_warns_using_injected_date_and_is_deterministic() -> None:
     result = KnowledgeSearcher([stale], today=lambda: date(2026, 7, 14)).search(KnowledgeQuery(text="retry"), SearchLimits(8, 12000))[0]
     assert result.warnings == ("review overdue since 2026-01-01", "conflicts with KW-rule-005")
 
+
+def test_filtered_queries_do_not_return_unrelated_broad_scope_entries() -> None:
+    broad = entry("KW-rule-005", title="General note")
+    results = KnowledgeSearcher([broad]).search(KnowledgeQuery(repository="demo"), SearchLimits(8, 12000))
+    assert results == ()
