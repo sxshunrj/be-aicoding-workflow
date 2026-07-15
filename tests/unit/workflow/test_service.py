@@ -1,5 +1,6 @@
 from datetime import datetime
 import hashlib
+import json
 from pathlib import Path
 import shutil
 
@@ -200,6 +201,177 @@ def test_blocked_run_can_be_aborted_but_cannot_be_reviewed(tmp_path: Path) -> No
 
     with pytest.raises(AppError, match="terminal run"):
         service.review(state.run_id, {})
+
+
+def test_block_retry_recovers_missing_event_and_rejects_different_reason(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+    state = service.init(tmp_path, "abc123", "Recover block event")
+    store = service._store(state.run_id)
+    real_open = Path.open
+    failed = False
+
+    def fail_event_append(path, mode="r", *args, **kwargs):
+        nonlocal failed
+        if path == store.events_path and mode == "a" and not failed:
+            failed = True
+            raise OSError("injected block event failure")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_event_append)
+    with pytest.raises(OSError, match="block event failure"):
+        service.block(state.run_id, "wait for user")
+    persisted_version = WorkflowService(tmp_path).status(state.run_id).version
+
+    recovered = WorkflowService(tmp_path).block(state.run_id, "wait for user")
+    stable = WorkflowService(tmp_path).block(state.run_id, "wait for user")
+    events = [
+        json.loads(line) for line in store.events_path.read_text().splitlines()
+    ]
+
+    assert recovered.status == stable.status == "blocked"
+    assert WorkflowService(tmp_path).status(state.run_id).version == persisted_version
+    assert recovered.artifacts["_lifecycle_operation"]["input"] == {
+        "reason": "wait for user"
+    }
+    assert sum(event["type"] == "run_blocked" for event in events) == 1
+    with pytest.raises(AppError, match="lifecycle.*conflict") as error:
+        WorkflowService(tmp_path).block(state.run_id, "different reason")
+    assert error.value.code == "lifecycle_conflict"
+
+
+def test_resume_retry_recovers_missing_event_without_reapplying_reruns(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+    state = service.init(tmp_path, "abc123", "Recover resume event")
+    service.block(state.run_id, "wait for user")
+    store = service._store(state.run_id)
+    reruns = {"spec.spec": "requirements changed"}
+    real_open = Path.open
+    failed = False
+
+    def fail_event_append(path, mode="r", *args, **kwargs):
+        nonlocal failed
+        if path == store.events_path and mode == "a" and not failed:
+            failed = True
+            raise OSError("injected resume event failure")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_event_append)
+    with pytest.raises(OSError, match="resume event failure"):
+        service.resume(state.run_id, reruns)
+    persisted = WorkflowService(tmp_path).status(state.run_id)
+
+    recovered = WorkflowService(tmp_path).resume(state.run_id, reruns)
+    stable = WorkflowService(tmp_path).resume(state.run_id, reruns)
+    events = [
+        json.loads(line) for line in store.events_path.read_text().splitlines()
+    ]
+
+    assert recovered.version == stable.version == persisted.version
+    assert recovered.run_graph["spec.spec"].reason == "requirements changed"
+    assert recovered.artifacts["_lifecycle_operation"]["input"] == {
+        "reruns": [["spec.spec", "requirements changed"]]
+    }
+    assert sum(event["type"] == "run_resumed" for event in events) == 1
+    with pytest.raises(AppError, match="lifecycle.*conflict") as error:
+        WorkflowService(tmp_path).resume(
+            state.run_id, {"spec.spec": "different reason"}
+        )
+    assert error.value.code == "lifecycle_conflict"
+
+
+def test_abort_retry_recovers_missing_event_for_parameterless_intent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+    state = service.init(tmp_path, "abc123", "Recover abort event")
+    service.block(state.run_id, "human chose abort")
+    store = service._store(state.run_id)
+    real_open = Path.open
+    failed = False
+
+    def fail_event_append(path, mode="r", *args, **kwargs):
+        nonlocal failed
+        if path == store.events_path and mode == "a" and not failed:
+            failed = True
+            raise OSError("injected abort event failure")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_event_append)
+    with pytest.raises(OSError, match="abort event failure"):
+        service.abort(state.run_id)
+    persisted_version = WorkflowService(tmp_path).status(state.run_id).version
+
+    recovered = WorkflowService(tmp_path).abort(state.run_id)
+    stable = WorkflowService(tmp_path).abort(state.run_id)
+    events = [
+        json.loads(line) for line in store.events_path.read_text().splitlines()
+    ]
+
+    assert recovered.status == stable.status == "aborted"
+    assert WorkflowService(tmp_path).status(state.run_id).version == persisted_version
+    assert recovered.artifacts["_lifecycle_operation"]["input"] == {}
+    assert sum(event["type"] == "run_aborted" for event in events) == 1
+
+
+@pytest.mark.parametrize("operation", ["block", "resume", "abort"])
+@pytest.mark.parametrize(
+    "corruption", ["duplicate", "duplicate_wrong_version", "conflicting"]
+)
+def test_lifecycle_retry_rejects_duplicate_or_conflicting_event(
+    tmp_path: Path, operation: str, corruption: str
+) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+    state = service.init(tmp_path, "abc123", "Reject lifecycle corruption")
+    if operation == "block":
+        service.block(state.run_id, "wait for user")
+        event_type = "run_blocked"
+        retry = lambda: service.block(state.run_id, "wait for user")
+    elif operation == "resume":
+        service.block(state.run_id, "wait for user")
+        service.resume(state.run_id, {"spec.spec": "requirements changed"})
+        event_type = "run_resumed"
+        retry = lambda: service.resume(
+            state.run_id, {"spec.spec": "requirements changed"}
+        )
+    else:
+        service.abort(state.run_id)
+        event_type = "run_aborted"
+        retry = lambda: service.abort(state.run_id)
+    store = service._store(state.run_id)
+    events = [
+        json.loads(line) for line in store.events_path.read_text().splitlines()
+    ]
+    original = next(event for event in events if event["type"] == event_type)
+    if corruption in {"duplicate", "duplicate_wrong_version"}:
+        store.append_event(
+            original["version"]
+            if corruption == "duplicate"
+            else original["version"] + 100,
+            Event(event_type, original["data"], original["timestamp"]),
+        )
+    else:
+        for event in events:
+            if event is original:
+                event["data"]["result"]["phase"] = "verify"
+        store.events_path.write_text(
+            "".join(
+                json.dumps(event, separators=(",", ":")) + "\n"
+                for event in events
+            ),
+            encoding="utf-8",
+        )
+
+    with pytest.raises(AppError, match="lifecycle event evidence") as error:
+        retry()
+    assert error.value.code == "invalid_state"
 
 
 def test_verify_can_rerun_implement_then_return_to_verify(tmp_path: Path) -> None:

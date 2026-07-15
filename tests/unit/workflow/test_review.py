@@ -194,23 +194,91 @@ def test_auto_accept_is_limited_to_non_verify_phases(tmp_path: Path) -> None:
         verify_service.transition(verify_run)
 
 
-def test_configured_human_review_cannot_be_bypassed_by_older_auto_gate(
+@pytest.mark.parametrize(
+    ("initial_mode", "changed_mode", "expected_decision"),
+    [
+        ("human", "auto_accept", "human_review"),
+        ("auto_accept", "human", "accept"),
+    ],
+)
+def test_run_review_policy_is_immutable_after_disk_config_changes(
     tmp_path: Path,
+    initial_mode: str,
+    changed_mode: str,
+    expected_decision: str,
+) -> None:
+    service, run_id = _new_finalized(tmp_path, review_mode=initial_mode)
+    _config(tmp_path, review_mode=changed_mode)
+
+    decision = service.review(run_id, {})
+
+    assert decision.decision == expected_decision
+    if decision.decision == "human_review":
+        with pytest.raises(AppError, match="review gate"):
+            service.transition(run_id)
+        service.record_review_acceptance(run_id, decision.digest)
+    assert service.transition(run_id).current_phase == "plan"
+
+
+def test_transition_does_not_reread_live_review_config(
+    tmp_path: Path, monkeypatch
 ) -> None:
     service, run_id = _new_finalized(tmp_path, review_mode="auto_accept")
-    automatic = service.review(run_id, {})
-    assert automatic.decision == "accept"
-    _config(tmp_path, review_mode="human")
+    decision = service.review(run_id, {})
+    assert decision.decision == "accept"
 
-    with pytest.raises(AppError, match="human review") as error:
-        service.transition(run_id)
-    assert error.value.code == "review_gate_required"
+    def fail_live_config_read(_repo):
+        raise AssertionError("transition must use immutable run policy")
 
-    human = service.review(run_id, {})
-    assert human.decision == "human_review"
-    assert human.digest != automatic.digest
-    service.record_review_acceptance(run_id, human.digest)
+    monkeypatch.setattr(
+        "ai_workflow.config.RepositoryConfig.load", fail_live_config_read
+    )
+
     assert service.transition(run_id).current_phase == "plan"
+
+
+def test_status_rejects_state_only_run_policy_tampering(tmp_path: Path) -> None:
+    service, run_id = _new_finalized(tmp_path)
+    state_path = service._store(run_id).state_path
+    data = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    data["artifacts"]["_run_policy"]["review_mode"] = "auto_accept"
+    state_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(AppError, match="run policy") as error:
+        service.status(run_id)
+    assert error.value.code == "invalid_state"
+
+
+def test_status_rejects_run_policy_replay_from_another_run(tmp_path: Path) -> None:
+    first_repo = tmp_path / "first"
+    second_repo = tmp_path / "second"
+    first, first_run = _new_finalized(first_repo, review_mode="human")
+    second, second_run = _new_finalized(second_repo, review_mode="auto_accept")
+    first_path = first._store(first_run).state_path
+    second_path = second._store(second_run).state_path
+    first_data = yaml.safe_load(first_path.read_text(encoding="utf-8"))
+    second_data = yaml.safe_load(second_path.read_text(encoding="utf-8"))
+    first_data["artifacts"]["_run_policy"] = second_data["artifacts"][
+        "_run_policy"
+    ]
+    first_path.write_text(
+        yaml.safe_dump(first_data, sort_keys=False), encoding="utf-8"
+    )
+
+    with pytest.raises(AppError, match="run policy") as error:
+        first.status(first_run)
+    assert error.value.code == "invalid_state"
+
+
+def test_status_rejects_run_policy_evidence_tampering(tmp_path: Path) -> None:
+    service, run_id = _new_finalized(tmp_path)
+    state = service.status(run_id)
+    evidence_path = Path(state.artifacts["_run_policy"]["evidence_path"])
+    evidence_path.write_text('{"review_mode":"auto_accept"}\n', encoding="utf-8")
+
+    with pytest.raises(AppError, match="run policy") as error:
+        service.status(run_id)
+    assert error.value.code == "invalid_state"
 
 
 @pytest.mark.parametrize(

@@ -56,6 +56,9 @@ class StateStore:
         self._validate_component(child, "child")
         return self._safe_path("knowledge-packets", attempt_id, f"{child}.json")
 
+    def policy_path(self) -> Path:
+        return self._safe_path("run-policy.json")
+
     def write_immutable(self, path: Path, payload: bytes) -> bool:
         try:
             relative = path.relative_to(self.run_dir)

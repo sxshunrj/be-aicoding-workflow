@@ -38,6 +38,13 @@ ATTEMPT_ID_PATTERN = re.compile(
 DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
 BLOCKED_STATE_KEY = "_blocked_state"
 LAST_TRANSITION_KEY = "_last_transition"
+RUN_POLICY_KEY = "_run_policy"
+LIFECYCLE_OPERATION_KEY = "_lifecycle_operation"
+LIFECYCLE_EVENT_TYPES = {
+    "block": "run_blocked",
+    "resume": "run_resumed",
+    "abort": "run_aborted",
+}
 RUN_STATUSES = {
     NodeStatus.PENDING.value,
     NodeStatus.RUNNING.value,
@@ -215,7 +222,21 @@ class WorkflowService:
             profile,
             build_run_graph(config),
         )
-        self._store(run_id).create(state)
+        store = self._store(run_id)
+        policy_path = store.policy_path()
+        policy_payload = self._run_policy_payload(
+            run_id,
+            source_revision,
+            profile,
+            config.review_mode,
+        )
+        state.artifacts[RUN_POLICY_KEY] = {
+            "review_mode": config.review_mode,
+            "evidence_path": str(policy_path),
+            "evidence_digest": hashlib.sha256(policy_payload).hexdigest(),
+        }
+        store.create(state)
+        store.write_immutable(policy_path, policy_payload)
         return state
 
     def status(self, run_id: str) -> RunState:
@@ -694,10 +715,11 @@ class WorkflowService:
             self._ensure_last_transition_event_locked(store, state)
             self._finalized_phase(state)
             proposed, effective = self._review_reruns(state, reruns)
+            review_mode, policy_digest = self._run_policy(state, store)
             decision_name: Literal["human_review", "accept"] = (
                 "human_review"
                 if state.current_phase == Phase.VERIFY.value
-                or self._config().review_mode == "human"
+                or review_mode == "human"
                 else "accept"
             )
             existing = state.artifacts.get("review_gate")
@@ -733,6 +755,7 @@ class WorkflowService:
             proposed_at = self.clock().isoformat()
             gate = {
                 **decision.to_dict(),
+                "policy_digest": policy_digest,
                 "proposed_at": proposed_at,
                 "accepted_version": None,
                 "accepted_at": None,
@@ -830,14 +853,6 @@ class WorkflowService:
             self._ensure_review_event_locked(
                 store, state, "review_proposed", gate
             )
-            if (
-                decision.decision == "accept"
-                and self._config().review_mode == "human"
-            ):
-                raise AppError(
-                    "review_gate_required",
-                    "current configuration requires a persisted human review decision",
-                )
             if decision.decision == "human_review":
                 if accepted_version is None:
                     raise AppError(
@@ -902,23 +917,32 @@ class WorkflowService:
         store = self._store(run_id)
         with store.event_lock():
             state = self._load_locked(store, run_id)
-            self._active(state)
-            self._ensure_last_transition_event_locked(store, state)
-            self._ensure_active_review_events_locked(store, state)
             if not isinstance(reason, str) or not reason.strip():
                 raise AppError(
                     "invalid_transition", "block reason must not be empty"
                 )
+            operation_input = {"reason": reason}
+            if self._recover_lifecycle_retry_locked(
+                store, state, "block", operation_input
+            ):
+                return state
+            self._active(state)
+            self._ensure_last_transition_event_locked(store, state)
+            self._ensure_active_review_events_locked(store, state)
+            prior = self._lifecycle_snapshot(state)
             state.artifacts.pop("review_gate", None)
             state.artifacts[BLOCKED_STATE_KEY] = {
                 "run": state.status,
                 "phase": state.current_phase,
             }
             state.status = NodeStatus.BLOCKED.value
-            store.save_locked(
-                state.version,
+            self._save_lifecycle_operation_locked(
+                store,
                 state,
-                Event("run_blocked", {"reason": reason}, self.clock().isoformat()),
+                operation="block",
+                operation_input=operation_input,
+                effects={},
+                prior=prior,
             )
             return state
 
@@ -928,10 +952,17 @@ class WorkflowService:
         store = self._store(run_id)
         with store.event_lock():
             state = self._load_locked(store, run_id)
+            operation_input = self._canonical_resume_input(reruns)
+            if self._recover_lifecycle_retry_locked(
+                store, state, "resume", operation_input
+            ):
+                return state
             if state.status != NodeStatus.BLOCKED.value:
                 raise AppError(
                     "invalid_transition", "only a blocked run can be resumed"
                 )
+            self._ensure_last_transition_event_locked(store, state)
+            prior_snapshot = self._lifecycle_snapshot(state)
             prior = state.artifacts.pop(BLOCKED_STATE_KEY, None)
             if (
                 not isinstance(prior, dict)
@@ -962,18 +993,15 @@ class WorkflowService:
                 for phase in tuple(current_attempts):
                     if PHASE_ORDER.index(Phase(phase)) >= earliest_index:
                         current_attempts.pop(phase, None)
-            elif reruns is not None and not isinstance(reruns, dict):
-                raise AppError(
-                    "invalid_transition", "rerun proposals must be a node mapping"
-                )
-            store.save_locked(
-                state.version,
+            self._save_lifecycle_operation_locked(
+                store,
                 state,
-                Event(
-                    "run_resumed",
-                    {"reruns": effective},
-                    self.clock().isoformat(),
-                ),
+                operation="resume",
+                operation_input=operation_input,
+                effects={
+                    "reruns": [list(item) for item in sorted(effective.items())]
+                },
+                prior=prior_snapshot,
             )
             return state
 
@@ -981,19 +1009,28 @@ class WorkflowService:
         store = self._store(run_id)
         with store.event_lock():
             state = self._load_locked(store, run_id)
+            operation_input: dict[str, object] = {}
+            if self._recover_lifecycle_retry_locked(
+                store, state, "abort", operation_input
+            ):
+                return state
             if state.status in {"completed", "aborted"}:
                 raise AppError(
                     "invalid_transition", "terminal run cannot be changed"
                 )
             self._ensure_last_transition_event_locked(store, state)
             self._ensure_active_review_events_locked(store, state)
+            prior = self._lifecycle_snapshot(state)
             state.artifacts.pop(BLOCKED_STATE_KEY, None)
             state.artifacts.pop("review_gate", None)
             state.status = "aborted"
-            store.save_locked(
-                state.version,
+            self._save_lifecycle_operation_locked(
+                store,
                 state,
-                Event("run_aborted", {}, self.clock().isoformat()),
+                operation="abort",
+                operation_input=operation_input,
+                effects={},
+                prior=prior,
             )
             return state
 
@@ -1988,6 +2025,61 @@ class WorkflowService:
         return proposed, tuple(sorted(effective.items()))
 
     @staticmethod
+    def _run_policy_payload(
+        run_id: str,
+        source_revision: str,
+        profile: str,
+        review_mode: str,
+    ) -> bytes:
+        data = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "source_revision": source_revision,
+            "profile": profile,
+            "review_mode": review_mode,
+        }
+        return (
+            json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+
+    @staticmethod
+    def _run_policy(
+        state: RunState, store: StateStore
+    ) -> tuple[str, str]:
+        value = state.artifacts.get(RUN_POLICY_KEY)
+        if (
+            not isinstance(value, dict)
+            or set(value)
+            != {"review_mode", "evidence_path", "evidence_digest"}
+            or value.get("review_mode") not in {"human", "auto_accept"}
+            or not isinstance(value.get("evidence_path"), str)
+            or not isinstance(value.get("evidence_digest"), str)
+            or DIGEST_PATTERN.fullmatch(value["evidence_digest"]) is None
+        ):
+            raise AppError("invalid_state", "run policy metadata is invalid")
+        try:
+            evidence_path = store.policy_path()
+            evidence_payload = evidence_path.read_bytes()
+        except (AppError, OSError) as error:
+            raise AppError(
+                "invalid_state", "run policy evidence is invalid"
+            ) from error
+        expected_payload = WorkflowService._run_policy_payload(
+            state.run_id,
+            state.source_revision,
+            state.profile,
+            value["review_mode"],
+        )
+        expected_digest = hashlib.sha256(expected_payload).hexdigest()
+        if (
+            value["evidence_path"] != str(evidence_path)
+            or value["evidence_digest"] != expected_digest
+            or evidence_payload != expected_payload
+        ):
+            raise AppError("invalid_state", "run policy evidence is invalid")
+        return value["review_mode"], expected_digest
+
+    @staticmethod
     def _review_gate(
         state: RunState, value: object
     ) -> tuple[ReviewDecision, int | None]:
@@ -2004,7 +2096,12 @@ class WorkflowService:
             not isinstance(value, dict)
             or set(value)
             != decision_keys
-            | {"proposed_at", "accepted_version", "accepted_at"}
+            | {
+                "policy_digest",
+                "proposed_at",
+                "accepted_version",
+                "accepted_at",
+            }
         ):
             raise AppError("invalid_state", "review gate metadata is invalid")
         try:
@@ -2033,6 +2130,20 @@ class WorkflowService:
             or (decision.decision == "accept" and phase is Phase.VERIFY)
         ):
             raise AppError("invalid_state", "review gate metadata is invalid")
+        policy = state.artifacts.get(RUN_POLICY_KEY)
+        expected_decision = (
+            "human_review"
+            if phase is Phase.VERIFY
+            or isinstance(policy, dict)
+            and policy.get("review_mode") == "human"
+            else "accept"
+        )
+        if (
+            not isinstance(policy, dict)
+            or value.get("policy_digest") != policy.get("evidence_digest")
+            or decision.decision != expected_decision
+        ):
+            raise AppError("invalid_state", "review gate policy is invalid")
         try:
             expected_proposed, expected_effective = WorkflowService._review_reruns(
                 state, dict(decision.proposed_reruns)
@@ -2203,6 +2314,330 @@ class WorkflowService:
             self._ensure_review_event_locked(
                 store, state, "review_accepted", gate
             )
+
+    @staticmethod
+    def _canonical_resume_input(
+        reruns: dict[str, str] | None,
+    ) -> dict[str, object]:
+        if reruns is None:
+            reruns = {}
+        if not isinstance(reruns, dict):
+            raise AppError(
+                "invalid_transition", "rerun proposals must be a node mapping"
+            )
+        items: list[list[str]] = []
+        for key, reason in reruns.items():
+            if not isinstance(key, str) or not key:
+                raise AppError(
+                    "invalid_transition", f"unknown rerun node: {key}"
+                )
+            if not isinstance(reason, str) or not reason.strip():
+                raise AppError(
+                    "invalid_transition", "rerun reason must not be empty"
+                )
+            if reason.strip() == UNABLE_REASON:
+                raise AppError(
+                    "invalid_transition",
+                    "rerun reason must be actionable and not use the unable placeholder",
+                )
+            items.append([key, reason])
+        return {"reruns": sorted(items)}
+
+    @staticmethod
+    def _lifecycle_snapshot(state: RunState) -> dict[str, object]:
+        blocked = state.artifacts.get(BLOCKED_STATE_KEY)
+        return {
+            "status": state.status,
+            "phase": state.current_phase,
+            "blocked_state": blocked.copy() if isinstance(blocked, dict) else None,
+        }
+
+    @staticmethod
+    def _valid_lifecycle_snapshot(value: object) -> bool:
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"status", "phase", "blocked_state"}
+            or value.get("status") not in RUN_STATUSES
+        ):
+            return False
+        try:
+            Phase(value["phase"])
+        except (TypeError, ValueError):
+            return False
+        blocked = value["blocked_state"]
+        if value["status"] == NodeStatus.BLOCKED.value:
+            return (
+                isinstance(blocked, dict)
+                and set(blocked) == {"run", "phase"}
+                and blocked.get("run")
+                in {NodeStatus.PENDING.value, NodeStatus.RUNNING.value}
+                and blocked.get("phase") == value["phase"]
+            )
+        return blocked is None
+
+    @staticmethod
+    def _lifecycle_rerun_pairs(
+        value: object, state: RunState
+    ) -> tuple[tuple[str, str], ...] | None:
+        if not isinstance(value, list):
+            return None
+        pairs: list[tuple[str, str]] = []
+        for item in value:
+            if (
+                not isinstance(item, list)
+                or len(item) != 2
+                or not isinstance(item[0], str)
+                or item[0] not in state.run_graph
+                or not isinstance(item[1], str)
+                or not item[1].strip()
+                or item[1].strip() == UNABLE_REASON
+            ):
+                return None
+            pairs.append((item[0], item[1]))
+        result = tuple(pairs)
+        if result != tuple(sorted(result)) or len(dict(result)) != len(result):
+            return None
+        return result
+
+    @staticmethod
+    def _lifecycle_operation(
+        state: RunState, value: object
+    ) -> dict[str, object]:
+        expected_keys = {
+            "operation",
+            "run_id",
+            "input",
+            "effects",
+            "prior",
+            "prior_version",
+            "result",
+            "state_version",
+            "timestamp",
+        }
+        if not isinstance(value, dict) or set(value) != expected_keys:
+            raise AppError(
+                "invalid_state", "lifecycle operation metadata is invalid"
+            )
+        operation = value["operation"]
+        operation_input = value["input"]
+        effects = value["effects"]
+        prior = value["prior"]
+        result = value["result"]
+        prior_version = value["prior_version"]
+        state_version = value["state_version"]
+        if (
+            operation not in LIFECYCLE_EVENT_TYPES
+            or value["run_id"] != state.run_id
+            or type(prior_version) is not int
+            or prior_version < 0
+            or type(state_version) is not int
+            or state_version != prior_version + 1
+            or state_version > state.version
+            or not isinstance(value["timestamp"], str)
+            or not WorkflowService._valid_lifecycle_snapshot(prior)
+            or not WorkflowService._valid_lifecycle_snapshot(result)
+        ):
+            raise AppError(
+                "invalid_state", "lifecycle operation metadata is invalid"
+            )
+        try:
+            datetime.fromisoformat(value["timestamp"])
+        except ValueError as error:
+            raise AppError(
+                "invalid_state", "lifecycle operation metadata is invalid"
+            ) from error
+        assert isinstance(prior, dict)
+        assert isinstance(result, dict)
+        if operation == "block":
+            valid_operation = (
+                isinstance(operation_input, dict)
+                and set(operation_input) == {"reason"}
+                and isinstance(operation_input.get("reason"), str)
+                and bool(operation_input["reason"].strip())
+                and effects == {}
+                and prior["status"]
+                in {NodeStatus.PENDING.value, NodeStatus.RUNNING.value}
+                and result["status"] == NodeStatus.BLOCKED.value
+                and result["phase"] == prior["phase"]
+                and result["blocked_state"]
+                == {"run": prior["status"], "phase": prior["phase"]}
+            )
+        elif operation == "resume":
+            input_pairs = (
+                WorkflowService._lifecycle_rerun_pairs(
+                    operation_input.get("reruns"), state
+                )
+                if isinstance(operation_input, dict)
+                and set(operation_input) == {"reruns"}
+                else None
+            )
+            effect_pairs = (
+                WorkflowService._lifecycle_rerun_pairs(
+                    effects.get("reruns"), state
+                )
+                if isinstance(effects, dict) and set(effects) == {"reruns"}
+                else None
+            )
+            blocked_state = prior["blocked_state"]
+            valid_operation = (
+                input_pairs is not None
+                and effect_pairs is not None
+                and all(item in effect_pairs for item in input_pairs)
+                and prior["status"] == NodeStatus.BLOCKED.value
+                and isinstance(blocked_state, dict)
+                and result["blocked_state"] is None
+            )
+            if valid_operation and effect_pairs:
+                expected_phase = min(
+                    (state.run_graph[key].phase for key, _ in effect_pairs),
+                    key=PHASE_ORDER.index,
+                ).value
+                valid_operation = (
+                    result["status"] == NodeStatus.PENDING.value
+                    and result["phase"] == expected_phase
+                )
+            elif valid_operation:
+                valid_operation = (
+                    result["status"] == blocked_state["run"]
+                    and result["phase"] == prior["phase"]
+                )
+        else:
+            valid_operation = (
+                operation_input == {}
+                and effects == {}
+                and prior["status"] not in {"completed", "aborted"}
+                and result
+                == {
+                    "status": "aborted",
+                    "phase": prior["phase"],
+                    "blocked_state": None,
+                }
+            )
+        if not valid_operation or (
+            state.version == state_version
+            and WorkflowService._lifecycle_snapshot(state) != result
+        ):
+            raise AppError(
+                "invalid_state", "lifecycle operation metadata is invalid"
+            )
+        return value
+
+    def _ensure_lifecycle_event_locked(
+        self,
+        store: StateStore,
+        state: RunState,
+        record: dict[str, object],
+    ) -> None:
+        event_type = LIFECYCLE_EVENT_TYPES[record["operation"]]
+        events = self._read_events(
+            state.run_id,
+            recover_incomplete_tail=True,
+            store=store,
+            event_lock_held=True,
+        )
+        matching = [
+            event
+            for event in events
+            if event["version"] == record["state_version"]
+            or (
+                event["data"].get("run_id") == record["run_id"]
+                and event["data"].get("operation") == record["operation"]
+                and event["data"].get("state_version")
+                == record["state_version"]
+            )
+        ]
+        if len(matching) > 1:
+            raise AppError(
+                "invalid_state", "lifecycle event evidence is malformed"
+            )
+        if matching:
+            event = matching[0]
+            if (
+                event["type"] != event_type
+                or event["version"] != record["state_version"]
+                or event["data"] != record
+                or event.get("timestamp") != record["timestamp"]
+            ):
+                raise AppError(
+                    "invalid_state", "lifecycle event evidence is malformed"
+                )
+            return
+        if (
+            state.version != record["state_version"]
+            or self._lifecycle_snapshot(state) != record["result"]
+        ):
+            raise AppError(
+                "invalid_state", "lifecycle event evidence is missing"
+            )
+        store.append_event_locked(
+            record["state_version"],
+            Event(event_type, record, record["timestamp"]),
+        )
+
+    def _recover_lifecycle_retry_locked(
+        self,
+        store: StateStore,
+        state: RunState,
+        operation: str,
+        operation_input: dict[str, object],
+    ) -> bool:
+        value = state.artifacts.get(LIFECYCLE_OPERATION_KEY)
+        if value is None:
+            return False
+        record = self._lifecycle_operation(state, value)
+        self._ensure_lifecycle_event_locked(store, state, record)
+        is_current = (
+            state.version == record["state_version"]
+            and self._lifecycle_snapshot(state) == record["result"]
+        )
+        if is_current and record["operation"] == operation:
+            if record["input"] != operation_input:
+                raise AppError(
+                    "lifecycle_conflict",
+                    "lifecycle operation input conflicts with the persisted intent",
+                    exit_status=4,
+                )
+            return True
+        return False
+
+    def _save_lifecycle_operation_locked(
+        self,
+        store: StateStore,
+        state: RunState,
+        *,
+        operation: str,
+        operation_input: dict[str, object],
+        effects: dict[str, object],
+        prior: dict[str, object],
+    ) -> None:
+        timestamp = self.clock().isoformat()
+        record = {
+            "operation": operation,
+            "run_id": state.run_id,
+            "input": operation_input,
+            "effects": effects,
+            "prior": prior,
+            "prior_version": state.version,
+            "result": self._lifecycle_snapshot(state),
+            "state_version": state.version + 1,
+            "timestamp": timestamp,
+        }
+        events = self._read_events(
+            state.run_id,
+            recover_incomplete_tail=True,
+            store=store,
+            event_lock_held=True,
+        )
+        if any(event["version"] == record["state_version"] for event in events):
+            raise AppError(
+                "invalid_state", "lifecycle event evidence is malformed"
+            )
+        state.artifacts[LIFECYCLE_OPERATION_KEY] = record
+        store.save_locked(
+            state.version,
+            state,
+            Event(LIFECYCLE_EVENT_TYPES[operation], record, timestamp),
+        )
 
     @staticmethod
     def _last_transition(
@@ -2487,6 +2922,7 @@ class WorkflowService:
             )
         if state.status not in RUN_STATUSES:
             raise AppError("invalid_state", "run status is invalid")
+        WorkflowService._run_policy(state, store)
         if "accepted_results" in state.artifacts or "rerun_reasons" in state.artifacts:
             raise AppError(
                 "invalid_state", "legacy result metadata is not supported"
@@ -2656,6 +3092,9 @@ class WorkflowService:
             raise AppError(
                 "invalid_state", "unexpected blocked lifecycle metadata"
             )
+        lifecycle_operation = state.artifacts.get(LIFECYCLE_OPERATION_KEY)
+        if lifecycle_operation is not None:
+            WorkflowService._lifecycle_operation(state, lifecycle_operation)
 
     @staticmethod
     def _valid_dispatch_metadata(
