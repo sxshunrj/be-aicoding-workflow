@@ -85,6 +85,10 @@ class ChildResult:
         return cls.from_bytes(path.read_bytes())
 
     @classmethod
+    def from_json(cls, path: Path) -> "ChildResult":
+        return cls.load(path)
+
+    @classmethod
     def from_bytes(cls, payload: bytes) -> "ChildResult":
         data = json.loads(payload.decode("utf-8"))
         if not isinstance(data, dict):

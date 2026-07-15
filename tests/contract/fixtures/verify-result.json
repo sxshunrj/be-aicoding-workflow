@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "status": "unable_to_complete",
+  "summary": "Verification phase was blocked by a human review gate.",
+  "artifact": null,
+  "findings": [],
+  "knowledge_citations": []
+}

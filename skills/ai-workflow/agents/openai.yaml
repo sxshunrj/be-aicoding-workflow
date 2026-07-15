@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Workflow"
+  short_description: "Coordinate deterministic AI coding runs"
+  default_prompt: "Use $ai-workflow to drive a workflow run, phase packet, or wiki lifecycle task end to end."
