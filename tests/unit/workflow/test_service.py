@@ -79,6 +79,17 @@ def _finalize_phase(
     return attempt
 
 
+def _review_transition(
+    service: WorkflowService,
+    run_id: str,
+    reruns: dict[str, str] | None = None,
+):
+    decision = service.review(run_id, reruns or {})
+    if decision.decision == "human_review":
+        service.record_review_acceptance(run_id, decision.digest)
+    return service.transition(run_id)
+
+
 def test_init_uses_injected_clock_and_id_factory(tmp_path: Path) -> None:
     _config(tmp_path)
     service = WorkflowService(
@@ -140,10 +151,55 @@ def test_resume_restores_prior_lifecycle_state(
         service.begin(state.run_id, Phase.SPEC, _skill_dir(tmp_path))
 
     service.block(state.run_id, "waiting")
+    blocked = service.status(state.run_id)
     resumed = service.resume(state.run_id)
 
+    assert blocked.artifacts["_blocked_state"] == {
+        "run": expected,
+        "phase": "spec",
+    }
     assert resumed.status == expected
     assert resumed.run_graph["spec.spec"].validity is NodeValidity.PENDING
+
+
+def test_resume_can_apply_actionable_node_reruns(tmp_path: Path) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+    state = service.init(tmp_path, "abc123", "Test blocked reruns")
+    _finalize_phase(service, tmp_path, state.run_id, Phase.SPEC)
+    state = _review_transition(service, state.run_id)
+    service.begin(state.run_id, Phase.PLAN, _skill_dir(tmp_path))
+    service.block(state.run_id, "waiting for corrected requirements")
+
+    resumed = service.resume(
+        state.run_id, {"spec.spec": "requirements changed after review"}
+    )
+
+    assert resumed.status == "pending"
+    assert resumed.current_phase == "spec"
+    assert resumed.run_graph["spec.spec"].validity is NodeValidity.RERUN
+    assert (
+        resumed.run_graph["spec.spec"].reason
+        == "requirements changed after review"
+    )
+    assert "plan" not in resumed.artifacts["current_attempts"]
+
+
+def test_blocked_run_can_be_aborted_but_cannot_be_reviewed(tmp_path: Path) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+    state = service.init(tmp_path, "abc123", "Test blocked abort")
+    service.block(state.run_id, "human decision required")
+
+    with pytest.raises(AppError, match="blocked run"):
+        service.review(state.run_id, {})
+
+    aborted = service.abort(state.run_id)
+    assert aborted.status == "aborted"
+    assert "_blocked_state" not in aborted.artifacts
+
+    with pytest.raises(AppError, match="terminal run"):
+        service.review(state.run_id, {})
 
 
 def test_verify_can_rerun_implement_then_return_to_verify(tmp_path: Path) -> None:
@@ -152,15 +208,17 @@ def test_verify_can_rerun_implement_then_return_to_verify(tmp_path: Path) -> Non
     state = service.init(tmp_path, "abc123", "Test reruns")
     for phase in (Phase.SPEC, Phase.PLAN, Phase.IMPLEMENT):
         _finalize_phase(service, tmp_path, state.run_id, phase)
-        state = service.transition(state.run_id, True, {})
+        state = _review_transition(service, state.run_id)
     _finalize_phase(service, tmp_path, state.run_id, Phase.VERIFY)
 
-    state = service.transition(
-        state.run_id, False, {Phase.IMPLEMENT: "missing branch"}
+    state = _review_transition(
+        service,
+        state.run_id,
+        {"implement.code": "missing branch"},
     )
     assert state.run_graph["verify.code_review"].validity is NodeValidity.PENDING
-    service.begin(state.run_id, Phase.IMPLEMENT, _skill_dir(tmp_path))
-    state = service.transition(state.run_id, True, {})
+    _finalize_phase(service, tmp_path, state.run_id, Phase.IMPLEMENT)
+    state = _review_transition(service, state.run_id)
     attempt = service.begin(state.run_id, Phase.VERIFY, _skill_dir(tmp_path))
 
     assert attempt.number == 2
@@ -172,7 +230,7 @@ def test_failed_submission_can_be_followed_by_rerun_transition(tmp_path: Path) -
     state = service.init(tmp_path, "abc123", "Test unable result")
     for phase in (Phase.SPEC, Phase.PLAN, Phase.IMPLEMENT):
         _finalize_phase(service, tmp_path, state.run_id, phase)
-        state = service.transition(state.run_id, True, {})
+        state = _review_transition(service, state.run_id)
     _finalize_phase(
         service,
         tmp_path,
@@ -184,7 +242,14 @@ def test_failed_submission_can_be_followed_by_rerun_transition(tmp_path: Path) -
     assert state.status == "running"
     assert state.current_phase == "verify"
 
-    state = service.transition(state.run_id, False, {Phase.IMPLEMENT: "missing branch"})
+    state = _review_transition(
+        service,
+        state.run_id,
+        {
+            "implement.code": "missing branch",
+            "verify.code_review": "repeat review after implementing the branch",
+        },
+    )
     assert state.current_phase == "implement"
 
 
@@ -194,7 +259,9 @@ def test_rerun_transition_requires_a_started_attempt(tmp_path: Path) -> None:
     state = service.init(tmp_path, "abc123", "Test transition guard")
 
     with pytest.raises(AppError, match="must be finalized"):
-        service.transition(state.run_id, False, {Phase.SPEC: "retry"})
+        service.review(state.run_id, {"spec.spec": "retry"})
+    with pytest.raises(AppError, match="must be finalized"):
+        service.transition(state.run_id)
 
 
 def test_status_rejects_symlinked_run_directory(tmp_path: Path) -> None:

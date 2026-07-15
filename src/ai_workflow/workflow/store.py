@@ -282,10 +282,13 @@ class StateStore:
         self._append_event_payload_locked(event_payload)
 
     def append_event(self, version: int, event: Event) -> None:
-        payload = self._serialize_event(version, event)
         with self.event_lock():
-            self.normalize_event_tail_locked(recover_malformed=False)
-            self._append_event_payload_locked(payload)
+            self.append_event_locked(version, event)
+
+    def append_event_locked(self, version: int, event: Event) -> None:
+        payload = self._serialize_event(version, event)
+        self.normalize_event_tail_locked(recover_malformed=False)
+        self._append_event_payload_locked(payload)
 
     @contextmanager
     def event_lock(self):

@@ -79,3 +79,5 @@ class StateMachine:
     def _require_changeable(state: RunState) -> None:
         if state.status in TERMINAL_STATUSES:
             raise AppError("invalid_transition", "terminal run cannot be changed")
+        if state.status == NodeStatus.BLOCKED.value:
+            raise AppError("invalid_transition", "blocked run cannot be changed")

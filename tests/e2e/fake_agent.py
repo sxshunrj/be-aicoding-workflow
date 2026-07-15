@@ -70,18 +70,44 @@ class CliDriver:
         return self._data(["workflow", "finalize", "--repo", str(self.project_root),
                            "--run-id", run_id, "--attempt-id", attempt_id])
 
-    def workflow_transition(self, run_id: str, *, accept: bool = False,
-                            reruns: dict[str, str] | None = None) -> dict[str, object]:
-        argv = ["workflow", "transition", "--repo", str(self.project_root), "--run-id", run_id]
+    def workflow_review_transition(
+        self, run_id: str, *, reruns: dict[str, str] | None = None
+    ) -> dict[str, object]:
+        argv = [
+            "workflow",
+            "review",
+            "--repo",
+            str(self.project_root),
+            "--run-id",
+            run_id,
+        ]
         reruns = reruns or {}
-        if reruns:
-            for phase, reason in reruns.items():
-                argv.extend(["--rerun", f"{phase}={reason}"])
-        elif accept:
-            argv.append("--accept")
-        else:
-            raise ValueError("transition requires accept or reruns")
-        return self._data(argv)
+        for node, reason in reruns.items():
+            argv.extend(["--rerun", f"{node}={reason}"])
+        decision = self._data(argv)
+        if decision["decision"] == "human_review":
+            self._data(
+                [
+                    "workflow",
+                    "review-accept",
+                    "--repo",
+                    str(self.project_root),
+                    "--run-id",
+                    run_id,
+                    "--expected-digest",
+                    decision["digest"],
+                ]
+            )
+        return self._data(
+            [
+                "workflow",
+                "transition",
+                "--repo",
+                str(self.project_root),
+                "--run-id",
+                run_id,
+            ]
+        )
 
     def workflow_status(self, run_id: str) -> dict[str, object]:
         return self._data(["workflow", "status", "--repo", str(self.project_root),

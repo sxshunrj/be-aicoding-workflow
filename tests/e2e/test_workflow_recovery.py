@@ -52,3 +52,11 @@ def test_service_recovers_staged_and_finalized_phase_from_disk(tmp_path: Path) -
         is NodeValidity.VALID
     )
     assert recovered.finalize(run.run_id, attempt.attempt_id) == expected
+
+    decision = recovered.review(run.run_id, {})
+    assert WorkflowService(tmp_path).review(run.run_id, {}) == decision
+    WorkflowService(tmp_path).record_review_acceptance(run.run_id, decision.digest)
+
+    transitioned = WorkflowService(tmp_path).transition(run.run_id)
+    assert transitioned.current_phase == "plan"
+    assert "review_gate" not in transitioned.artifacts

@@ -33,10 +33,14 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--source-revision", required=True)
     init.add_argument("--requirement", required=True)
     init.add_argument("--profile", default="full")
-    for name in ("status", "resume", "abort", "summary"):
+    for name in ("status", "abort", "summary"):
         command = workflow_commands.add_parser(name)
         command.add_argument("--repo", type=Path, required=True)
         command.add_argument("--run-id", required=True)
+    resume = workflow_commands.add_parser("resume")
+    resume.add_argument("--repo", type=Path, required=True)
+    resume.add_argument("--run-id", required=True)
+    resume.add_argument("--rerun", action="append", default=[])
     begin = workflow_commands.add_parser("begin")
     begin.add_argument("--repo", type=Path, required=True)
     begin.add_argument("--run-id", required=True)
@@ -55,8 +59,14 @@ def _parser() -> argparse.ArgumentParser:
     transition = workflow_commands.add_parser("transition")
     transition.add_argument("--repo", type=Path, required=True)
     transition.add_argument("--run-id", required=True)
-    transition.add_argument("--accept", action="store_true")
-    transition.add_argument("--rerun", action="append", default=[])
+    review = workflow_commands.add_parser("review")
+    review.add_argument("--repo", type=Path, required=True)
+    review.add_argument("--run-id", required=True)
+    review.add_argument("--rerun", action="append", default=[])
+    review_accept = workflow_commands.add_parser("review-accept")
+    review_accept.add_argument("--repo", type=Path, required=True)
+    review_accept.add_argument("--run-id", required=True)
+    review_accept.add_argument("--expected-digest", required=True)
     block = workflow_commands.add_parser("block")
     block.add_argument("--repo", type=Path, required=True)
     block.add_argument("--run-id", required=True)
@@ -107,21 +117,19 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _reruns(values: list[str]) -> dict[Phase, str]:
-    reruns: dict[Phase, str] = {}
+def _reruns(values: list[str]) -> dict[str, str]:
+    reruns: dict[str, str] = {}
     for value in values:
         if "=" not in value:
-            raise AppError("invalid_arguments", "--rerun must use PHASE=REASON")
+            raise AppError("invalid_arguments", "--rerun must use NODE=REASON")
         name, reason = value.split("=", 1)
-        try:
-            phase = Phase(name)
-        except ValueError as error:
-            raise AppError("invalid_arguments", f"unknown rerun phase: {name}") from error
+        if not name.strip():
+            raise AppError("invalid_arguments", "rerun node must not be empty")
         if not reason.strip():
             raise AppError("invalid_arguments", "rerun reason must not be empty")
-        if phase in reruns:
-            raise AppError("invalid_arguments", f"duplicate rerun phase: {name}")
-        reruns[phase] = reason
+        if name in reruns:
+            raise AppError("invalid_arguments", f"duplicate rerun node: {name}")
+        reruns[name] = reason
     return reruns
 
 
@@ -198,18 +206,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 data = service.finalize(args.run_id, args.attempt_id).to_dict()
             elif args.workflow_command == "summary":
                 data = service.summary(args.run_id).to_dict()
+            elif args.workflow_command == "review":
+                data = service.review(
+                    args.run_id, _reruns(args.rerun)
+                ).to_dict()
+            elif args.workflow_command == "review-accept":
+                data = service.record_review_acceptance(
+                    args.run_id, args.expected_digest
+                ).to_dict()
             elif args.workflow_command == "transition":
-                reruns = _reruns(args.rerun)
-                if args.accept == bool(reruns):
-                    raise AppError(
-                        "invalid_arguments",
-                        "transition requires exactly one of --accept or --rerun",
-                    )
-                data = service.transition(args.run_id, args.accept, reruns).to_dict()
+                data = service.transition(args.run_id).to_dict()
             elif args.workflow_command == "block":
                 data = service.block(args.run_id, args.reason).to_dict()
             elif args.workflow_command == "resume":
-                data = service.resume(args.run_id).to_dict()
+                data = service.resume(
+                    args.run_id, _reruns(args.rerun)
+                ).to_dict()
             else:
                 data = service.abort(args.run_id).to_dict()
         envelope: dict[str, object] = {"ok": True, "data": data}

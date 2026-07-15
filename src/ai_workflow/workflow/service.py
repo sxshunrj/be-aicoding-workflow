@@ -21,8 +21,9 @@ from ai_workflow.contracts.packets import DispatchPacket
 from ai_workflow.errors import AppError
 from ai_workflow.workflow.dispatch import OWNER_CONTRACT, render_prompt_file
 from ai_workflow.workflow.graph import NodeValidity, build_run_graph
-from ai_workflow.workflow.machine import StateMachine, phase_nodes
+from ai_workflow.workflow.machine import PHASE_ORDER, StateMachine, phase_nodes
 from ai_workflow.workflow.models import NodeStatus, Phase, RunState
+from ai_workflow.workflow.review import ReviewDecision, UNABLE_REASON
 from ai_workflow.workflow.store import Event, StateStore
 from ai_workflow.wiki.repository import WikiRepository
 from ai_workflow.wiki.search import KnowledgeQuery, SearchLimits
@@ -36,9 +37,7 @@ ATTEMPT_ID_PATTERN = re.compile(
 )
 DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
 BLOCKED_STATE_KEY = "_blocked_state"
-UNABLE_REASON = (
-    "child unable to complete; workflow must provide an actionable reason"
-)
+LAST_TRANSITION_KEY = "_last_transition"
 RUN_STATUSES = {
     NodeStatus.PENDING.value,
     NodeStatus.RUNNING.value,
@@ -227,6 +226,7 @@ class WorkflowService:
         with store.event_lock():
             state = self._load_locked(store, run_id)
             self._active(state)
+            self._ensure_last_transition_event_locked(store, state)
             if state.current_phase != phase.value:
                 raise AppError("invalid_transition", "cannot skip workflow phases")
             current_attempts = self._mapping(
@@ -686,69 +686,316 @@ class WorkflowService:
             tuple(sorted(cited)),
         )
 
-    def transition(
-        self, run_id: str, accepted: bool, reruns: dict[Phase, str]
-    ) -> RunState:
-        state = self._load(run_id)
-        self._active(state)
-        current_attempts = state.artifacts.get("current_attempts", {})
-        aggregates = state.artifacts.get("phase_aggregates", {})
-        attempt_id = (
-            current_attempts.get(state.current_phase)
-            if isinstance(current_attempts, dict)
-            else None
-        )
-        if not isinstance(aggregates, dict) or attempt_id not in aggregates:
-            raise AppError(
-                "invalid_transition", "current phase must be finalized before transition"
+    def review(self, run_id: str, reruns: dict[str, str]) -> ReviewDecision:
+        store = self._store(run_id)
+        with store.event_lock():
+            state = self._load_locked(store, run_id)
+            self._active(state)
+            self._ensure_last_transition_event_locked(store, state)
+            self._finalized_phase(state)
+            proposed, effective = self._review_reruns(state, reruns)
+            decision_name: Literal["human_review", "accept"] = (
+                "human_review"
+                if state.current_phase == Phase.VERIFY.value
+                or self._config().review_mode == "human"
+                else "accept"
             )
-        if not accepted or reruns:
-            raise AppError(
-                "review_gate_required",
-                "rerun and review-gate transitions are handled by the next workflow layer",
+            existing = state.artifacts.get("review_gate")
+            if existing is not None:
+                previous, accepted_version = self._review_gate(state, existing)
+                self._ensure_active_review_events_locked(store, state)
+                current_gate_version = (
+                    accepted_version
+                    if accepted_version is not None
+                    else previous.state_version
+                )
+                if state.version != current_gate_version:
+                    raise AppError(
+                        "stale_review_gate",
+                        "review gate is stale; create a new workflow decision",
+                        exit_status=4,
+                    )
+                if (
+                    previous.decision == decision_name
+                    and previous.proposed_reruns == proposed
+                    and previous.effective_reruns == effective
+                ):
+                    return previous
+
+            decision = ReviewDecision.create(
+                decision=decision_name,
+                run_id=run_id,
+                phase=state.current_phase,
+                state_version=state.version + 1,
+                proposed_reruns=proposed,
+                effective_reruns=effective,
             )
-        self.machine.advance(state)
-        if isinstance(current_attempts, dict):
-            current_attempts.pop(Phase(aggregates[attempt_id]["phase"]).value, None)
-        self._save(
-            state, "workflow_transitioned", {"accepted": True, "reruns": {}}
-        )
-        return state
+            proposed_at = self.clock().isoformat()
+            gate = {
+                **decision.to_dict(),
+                "proposed_at": proposed_at,
+                "accepted_version": None,
+                "accepted_at": None,
+            }
+            self._assert_no_related_review_event_locked(
+                store, state, "review_proposed", decision
+            )
+            state.artifacts["review_gate"] = gate
+            store.save_locked(
+                state.version,
+                state,
+                Event("review_proposed", gate, proposed_at),
+            )
+            return decision
+
+    def record_review_acceptance(
+        self, run_id: str, expected_digest: str
+    ) -> ReviewDecision:
+        store = self._store(run_id)
+        with store.event_lock():
+            state = self._load_locked(store, run_id)
+            self._active(state)
+            self._ensure_last_transition_event_locked(store, state)
+            self._finalized_phase(state)
+            gate = state.artifacts.get("review_gate")
+            if gate is None:
+                raise AppError(
+                    "review_gate_required",
+                    "a persisted review gate is required before acceptance",
+                )
+            decision, accepted_version = self._review_gate(state, gate)
+            if expected_digest != decision.digest:
+                raise AppError(
+                    "review_gate_mismatch",
+                    "expected digest does not match the persisted review gate",
+                    exit_status=4,
+                )
+            self._ensure_review_event_locked(
+                store, state, "review_proposed", gate
+            )
+            if decision.decision == "accept":
+                if state.version != decision.state_version:
+                    raise AppError(
+                        "stale_review_gate",
+                        "review gate is stale; create a new workflow decision",
+                        exit_status=4,
+                    )
+                return decision
+            if accepted_version is not None:
+                self._ensure_review_event_locked(
+                    store, state, "review_accepted", gate
+                )
+                if state.version != accepted_version:
+                    raise AppError(
+                        "stale_review_gate",
+                        "accepted review gate is stale",
+                        exit_status=4,
+                    )
+                return decision
+            if state.version != decision.state_version:
+                raise AppError(
+                    "stale_review_gate",
+                    "review gate is stale; create a new workflow decision",
+                    exit_status=4,
+                )
+            assert isinstance(gate, dict)
+            accepted_at = self.clock().isoformat()
+            gate["accepted_version"] = state.version + 1
+            gate["accepted_at"] = accepted_at
+            self._assert_no_related_review_event_locked(
+                store, state, "review_accepted", decision
+            )
+            store.save_locked(
+                state.version,
+                state,
+                Event("review_accepted", gate.copy(), accepted_at),
+            )
+            return decision
+
+    def transition(self, run_id: str) -> RunState:
+        store = self._store(run_id)
+        with store.event_lock():
+            state = self._load_locked(store, run_id)
+            if self._ensure_last_transition_event_locked(store, state):
+                return state
+            self._active(state)
+            current_attempts, _, attempt_id = self._finalized_phase(state)
+            gate = state.artifacts.get("review_gate")
+            if gate is None:
+                raise AppError(
+                    "review_gate_required",
+                    "a persisted accepted review gate is required for transition",
+                )
+            decision, accepted_version = self._review_gate(state, gate)
+            self._ensure_review_event_locked(
+                store, state, "review_proposed", gate
+            )
+            if (
+                decision.decision == "accept"
+                and self._config().review_mode == "human"
+            ):
+                raise AppError(
+                    "review_gate_required",
+                    "current configuration requires a persisted human review decision",
+                )
+            if decision.decision == "human_review":
+                if accepted_version is None:
+                    raise AppError(
+                        "review_gate_required",
+                        "review gate requires explicit human acceptance",
+                    )
+                self._ensure_review_event_locked(
+                    store, state, "review_accepted", gate
+                )
+                expected_version = accepted_version
+            else:
+                expected_version = decision.state_version
+            if state.version != expected_version:
+                raise AppError(
+                    "stale_review_gate",
+                    "accepted review gate is stale",
+                    exit_status=4,
+                )
+
+            effective = dict(decision.effective_reruns)
+            transitioned_phase = state.current_phase
+            if effective:
+                earliest = min(
+                    (state.run_graph[key].phase for key in effective),
+                    key=PHASE_ORDER.index,
+                )
+                earliest_index = PHASE_ORDER.index(earliest)
+                self.machine.apply_reruns(state, effective)
+                for phase in tuple(current_attempts):
+                    if PHASE_ORDER.index(Phase(phase)) >= earliest_index:
+                        current_attempts.pop(phase, None)
+            else:
+                self.machine.advance(state)
+                current_attempts.pop(transitioned_phase, None)
+            state.artifacts.pop("review_gate", None)
+            transitioned_at = self.clock().isoformat()
+            event_data = {
+                "accepted": True,
+                "decision": decision.decision,
+                "digest": decision.digest,
+                "phase": transitioned_phase,
+                "state_version": decision.state_version,
+                "attempt_id": attempt_id,
+                "reruns": effective,
+                "transitioned_version": state.version + 1,
+                "transitioned_at": transitioned_at,
+                "result_phase": state.current_phase,
+                "result_status": state.status,
+            }
+            state.artifacts[LAST_TRANSITION_KEY] = event_data
+            self._assert_no_related_transition_event_locked(
+                store, state, event_data
+            )
+            store.save_locked(
+                state.version,
+                state,
+                Event("workflow_transitioned", event_data, transitioned_at),
+            )
+            return state
 
     def block(self, run_id: str, reason: str) -> RunState:
-        state = self._load(run_id)
-        self._active(state)
-        if not isinstance(reason, str) or not reason.strip():
-            raise AppError("invalid_transition", "block reason must not be empty")
-        state.artifacts[BLOCKED_STATE_KEY] = {"run": state.status}
-        state.status = NodeStatus.BLOCKED.value
-        self._save(state, "run_blocked", {"reason": reason})
-        return state
+        store = self._store(run_id)
+        with store.event_lock():
+            state = self._load_locked(store, run_id)
+            self._active(state)
+            self._ensure_last_transition_event_locked(store, state)
+            self._ensure_active_review_events_locked(store, state)
+            if not isinstance(reason, str) or not reason.strip():
+                raise AppError(
+                    "invalid_transition", "block reason must not be empty"
+                )
+            state.artifacts.pop("review_gate", None)
+            state.artifacts[BLOCKED_STATE_KEY] = {
+                "run": state.status,
+                "phase": state.current_phase,
+            }
+            state.status = NodeStatus.BLOCKED.value
+            store.save_locked(
+                state.version,
+                state,
+                Event("run_blocked", {"reason": reason}, self.clock().isoformat()),
+            )
+            return state
 
-    def resume(self, run_id: str) -> RunState:
-        state = self._load(run_id)
-        if state.status != NodeStatus.BLOCKED.value:
-            raise AppError(
-                "invalid_transition", "only a blocked run can be resumed"
+    def resume(
+        self, run_id: str, reruns: dict[str, str] | None = None
+    ) -> RunState:
+        store = self._store(run_id)
+        with store.event_lock():
+            state = self._load_locked(store, run_id)
+            if state.status != NodeStatus.BLOCKED.value:
+                raise AppError(
+                    "invalid_transition", "only a blocked run can be resumed"
+                )
+            prior = state.artifacts.pop(BLOCKED_STATE_KEY, None)
+            if (
+                not isinstance(prior, dict)
+                or set(prior) != {"run", "phase"}
+                or prior.get("run")
+                not in {NodeStatus.PENDING.value, NodeStatus.RUNNING.value}
+                or prior.get("phase") != state.current_phase
+            ):
+                raise AppError(
+                    "invalid_state", "blocked lifecycle metadata is invalid"
+                )
+            state.status = prior["run"]
+            effective: dict[str, str] = {}
+            if reruns:
+                _, effective_items = self._review_reruns(state, reruns)
+                effective = dict(effective_items)
+                earliest = min(
+                    (state.run_graph[key].phase for key in effective),
+                    key=PHASE_ORDER.index,
+                )
+                earliest_index = PHASE_ORDER.index(earliest)
+                self.machine.apply_reruns(state, effective)
+                current_attempts = self._mapping(
+                    state.artifacts,
+                    "current_attempts",
+                    "current attempt metadata",
+                )
+                for phase in tuple(current_attempts):
+                    if PHASE_ORDER.index(Phase(phase)) >= earliest_index:
+                        current_attempts.pop(phase, None)
+            elif reruns is not None and not isinstance(reruns, dict):
+                raise AppError(
+                    "invalid_transition", "rerun proposals must be a node mapping"
+                )
+            store.save_locked(
+                state.version,
+                state,
+                Event(
+                    "run_resumed",
+                    {"reruns": effective},
+                    self.clock().isoformat(),
+                ),
             )
-        prior = state.artifacts.pop(BLOCKED_STATE_KEY, None)
-        if not isinstance(prior, dict) or prior.get("run") not in {
-            NodeStatus.PENDING.value,
-            NodeStatus.RUNNING.value,
-        }:
-            raise AppError(
-                "invalid_state", "blocked lifecycle metadata is invalid"
-            )
-        state.status = prior["run"]
-        self._save(state, "run_resumed", {})
-        return state
+            return state
 
     def abort(self, run_id: str) -> RunState:
-        state = self._load(run_id)
-        self._active(state)
-        state.status = "aborted"
-        self._save(state, "run_aborted", {})
-        return state
+        store = self._store(run_id)
+        with store.event_lock():
+            state = self._load_locked(store, run_id)
+            if state.status in {"completed", "aborted"}:
+                raise AppError(
+                    "invalid_transition", "terminal run cannot be changed"
+                )
+            self._ensure_last_transition_event_locked(store, state)
+            self._ensure_active_review_events_locked(store, state)
+            state.artifacts.pop(BLOCKED_STATE_KEY, None)
+            state.artifacts.pop("review_gate", None)
+            state.status = "aborted"
+            store.save_locked(
+                state.version,
+                state,
+                Event("run_aborted", {}, self.clock().isoformat()),
+            )
+            return state
 
     def _create_dispatch_plan(
         self,
@@ -1665,6 +1912,471 @@ class WorkflowService:
             )
         return owner, matching[0]
 
+    @staticmethod
+    def _finalized_phase(
+        state: RunState,
+    ) -> tuple[dict[str, object], dict[str, object], str]:
+        current_attempts = state.artifacts.get("current_attempts", {})
+        aggregates = state.artifacts.get("phase_aggregates", {})
+        attempt_id = (
+            current_attempts.get(state.current_phase)
+            if isinstance(current_attempts, dict)
+            else None
+        )
+        if (
+            not isinstance(current_attempts, dict)
+            or not isinstance(aggregates, dict)
+            or not isinstance(attempt_id, str)
+            or attempt_id not in aggregates
+        ):
+            raise AppError(
+                "invalid_transition",
+                "current phase must be finalized before review or transition",
+            )
+        return current_attempts, aggregates, attempt_id
+
+    @staticmethod
+    def _review_reruns(
+        state: RunState, reruns: dict[str, str]
+    ) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
+        if not isinstance(reruns, dict):
+            raise AppError(
+                "invalid_transition", "rerun proposals must be a node mapping"
+            )
+        try:
+            current_index = PHASE_ORDER.index(Phase(state.current_phase))
+        except ValueError as error:
+            raise AppError("invalid_transition", "current phase is invalid") from error
+        for key, reason in reruns.items():
+            node = state.run_graph.get(key) if isinstance(key, str) else None
+            if node is None:
+                raise AppError(
+                    "invalid_transition", f"unknown rerun node: {key}"
+                )
+            if PHASE_ORDER.index(node.phase) > current_index:
+                raise AppError(
+                    "invalid_transition", "cannot rerun a forward phase node"
+                )
+            if not isinstance(reason, str) or not reason.strip():
+                raise AppError(
+                    "invalid_transition", "rerun reason must not be empty"
+                )
+            if reason.strip() == UNABLE_REASON:
+                raise AppError(
+                    "invalid_transition",
+                    "rerun reason must be actionable and not use the unable placeholder",
+                )
+
+        proposed = tuple(sorted(reruns.items()))
+        effective = {
+            key: node.reason
+            for key, node in state.run_graph.items()
+            if node.validity is NodeValidity.RERUN
+            and PHASE_ORDER.index(node.phase) <= current_index
+        }
+        effective.update(reruns)
+        if any(
+            not isinstance(reason, str)
+            or not reason.strip()
+            or reason.strip() == UNABLE_REASON
+            for reason in effective.values()
+        ):
+            raise AppError(
+                "invalid_transition",
+                "every rerun requires an actionable reason replacing the unable placeholder",
+            )
+        return proposed, tuple(sorted(effective.items()))
+
+    @staticmethod
+    def _review_gate(
+        state: RunState, value: object
+    ) -> tuple[ReviewDecision, int | None]:
+        decision_keys = {
+            "decision",
+            "run_id",
+            "phase",
+            "state_version",
+            "proposed_reruns",
+            "effective_reruns",
+            "digest",
+        }
+        if (
+            not isinstance(value, dict)
+            or set(value)
+            != decision_keys
+            | {"proposed_at", "accepted_version", "accepted_at"}
+        ):
+            raise AppError("invalid_state", "review gate metadata is invalid")
+        try:
+            decision = ReviewDecision.from_dict(
+                {key: value[key] for key in decision_keys}
+            )
+            phase = Phase(decision.phase)
+        except (KeyError, TypeError, ValueError) as error:
+            raise AppError(
+                "invalid_state", "review gate metadata is invalid"
+            ) from error
+        if (
+            decision.run_id != state.run_id
+            or decision.phase != state.current_phase
+            or decision.state_version > state.version
+            or DIGEST_PATTERN.fullmatch(decision.digest) is None
+            or decision.proposed_reruns
+            != tuple(sorted(decision.proposed_reruns))
+            or decision.effective_reruns
+            != tuple(sorted(decision.effective_reruns))
+            or len(dict(decision.proposed_reruns))
+            != len(decision.proposed_reruns)
+            or len(dict(decision.effective_reruns))
+            != len(decision.effective_reruns)
+            or any(key not in dict(decision.effective_reruns) for key, _ in decision.proposed_reruns)
+            or (decision.decision == "accept" and phase is Phase.VERIFY)
+        ):
+            raise AppError("invalid_state", "review gate metadata is invalid")
+        try:
+            expected_proposed, expected_effective = WorkflowService._review_reruns(
+                state, dict(decision.proposed_reruns)
+            )
+        except AppError as error:
+            raise AppError(
+                "invalid_state", "review gate metadata is invalid"
+            ) from error
+        if (
+            expected_proposed != decision.proposed_reruns
+            or expected_effective != decision.effective_reruns
+        ):
+            raise AppError("invalid_state", "review gate metadata is invalid")
+
+        proposed_at = value["proposed_at"]
+        if not isinstance(proposed_at, str):
+            raise AppError("invalid_state", "review gate metadata is invalid")
+        try:
+            datetime.fromisoformat(proposed_at)
+        except ValueError as error:
+            raise AppError(
+                "invalid_state", "review gate metadata is invalid"
+            ) from error
+
+        accepted_version = value["accepted_version"]
+        accepted_at = value["accepted_at"]
+        if decision.decision == "accept":
+            if accepted_version is not None or accepted_at is not None:
+                raise AppError(
+                    "invalid_state", "review gate metadata is invalid"
+                )
+            return decision, None
+        if accepted_version is None and accepted_at is None:
+            return decision, None
+        if (
+            type(accepted_version) is not int
+            or accepted_version != decision.state_version + 1
+            or accepted_version > state.version
+            or not isinstance(accepted_at, str)
+        ):
+            raise AppError("invalid_state", "review gate metadata is invalid")
+        try:
+            datetime.fromisoformat(accepted_at)
+        except ValueError as error:
+            raise AppError(
+                "invalid_state", "review gate metadata is invalid"
+            ) from error
+        return decision, accepted_version
+
+    @staticmethod
+    def _review_event_related(
+        data: dict[str, object], decision: ReviewDecision
+    ) -> bool:
+        return data.get("digest") == decision.digest or (
+            data.get("run_id") == decision.run_id
+            and data.get("phase") == decision.phase
+            and data.get("state_version") == decision.state_version
+        )
+
+    @staticmethod
+    def _review_event_record(
+        event_type: str, gate: dict[str, object]
+    ) -> tuple[dict[str, object], str, int]:
+        if event_type == "review_proposed":
+            record = gate.copy()
+            record["accepted_version"] = None
+            record["accepted_at"] = None
+            timestamp = gate["proposed_at"]
+            version = gate["state_version"]
+        elif event_type == "review_accepted":
+            record = gate.copy()
+            timestamp = gate["accepted_at"]
+            version = gate["accepted_version"]
+        else:
+            raise ValueError("unsupported review event type")
+        assert isinstance(timestamp, str)
+        assert type(version) is int
+        return record, timestamp, version
+
+    def _ensure_review_event_locked(
+        self,
+        store: StateStore,
+        state: RunState,
+        event_type: str,
+        gate: object,
+    ) -> None:
+        decision, accepted_version = self._review_gate(state, gate)
+        if event_type == "review_accepted" and accepted_version is None:
+            raise AppError(
+                "invalid_state", "review acceptance event evidence is malformed"
+            )
+        assert isinstance(gate, dict)
+        expected, timestamp, version = self._review_event_record(event_type, gate)
+        events = self._read_events(
+            state.run_id,
+            recover_incomplete_tail=True,
+            store=store,
+            event_lock_held=True,
+        )
+        matching = [
+            event
+            for event in events
+            if event["type"] == event_type
+            and self._review_event_related(event["data"], decision)
+        ]
+        evidence_name = (
+            "review proposal event"
+            if event_type == "review_proposed"
+            else "review acceptance event"
+        )
+        if len(matching) > 1:
+            raise AppError(
+                "invalid_state", f"{evidence_name} evidence is malformed"
+            )
+        if matching:
+            event = matching[0]
+            if (
+                event["data"] != expected
+                or event.get("timestamp") != timestamp
+                or event["version"] != version
+            ):
+                raise AppError(
+                    "invalid_state", f"{evidence_name} evidence is malformed"
+                )
+            return
+        store.append_event_locked(
+            version, Event(event_type, expected, timestamp)
+        )
+
+    def _assert_no_related_review_event_locked(
+        self,
+        store: StateStore,
+        state: RunState,
+        event_type: str,
+        decision: ReviewDecision,
+    ) -> None:
+        events = self._read_events(
+            state.run_id,
+            recover_incomplete_tail=True,
+            store=store,
+            event_lock_held=True,
+        )
+        if any(
+            event["type"] == event_type
+            and self._review_event_related(event["data"], decision)
+            for event in events
+        ):
+            evidence_name = (
+                "review proposal event"
+                if event_type == "review_proposed"
+                else "review acceptance event"
+            )
+            raise AppError(
+                "invalid_state", f"{evidence_name} evidence is malformed"
+            )
+
+    def _ensure_active_review_events_locked(
+        self, store: StateStore, state: RunState
+    ) -> None:
+        gate = state.artifacts.get("review_gate")
+        if gate is None:
+            return
+        _, accepted_version = self._review_gate(state, gate)
+        self._ensure_review_event_locked(
+            store, state, "review_proposed", gate
+        )
+        if accepted_version is not None:
+            self._ensure_review_event_locked(
+                store, state, "review_accepted", gate
+            )
+
+    @staticmethod
+    def _last_transition(
+        state: RunState, value: object
+    ) -> dict[str, object]:
+        expected_keys = {
+            "accepted",
+            "decision",
+            "digest",
+            "phase",
+            "state_version",
+            "attempt_id",
+            "reruns",
+            "transitioned_version",
+            "transitioned_at",
+            "result_phase",
+            "result_status",
+        }
+        if not isinstance(value, dict) or set(value) != expected_keys:
+            raise AppError(
+                "invalid_state", "last transition metadata is invalid"
+            )
+        try:
+            phase = Phase(value["phase"])
+            result_phase = Phase(value["result_phase"])
+            phase_index = PHASE_ORDER.index(phase)
+            timestamp = datetime.fromisoformat(value["transitioned_at"])
+        except (TypeError, ValueError) as error:
+            raise AppError(
+                "invalid_state", "last transition metadata is invalid"
+            ) from error
+        del timestamp
+        decision = value["decision"]
+        state_version = value["state_version"]
+        transitioned_version = value["transitioned_version"]
+        reruns = value["reruns"]
+        aggregates = state.artifacts.get("phase_aggregates", {})
+        attempt_id = value["attempt_id"]
+        if (
+            value["accepted"] is not True
+            or decision not in {"human_review", "accept"}
+            or not isinstance(value["digest"], str)
+            or DIGEST_PATTERN.fullmatch(value["digest"]) is None
+            or type(state_version) is not int
+            or state_version < 1
+            or type(transitioned_version) is not int
+            or transitioned_version > state.version
+            or transitioned_version
+            != state_version + (2 if decision == "human_review" else 1)
+            or not isinstance(attempt_id, str)
+            or not isinstance(aggregates, dict)
+            or attempt_id not in aggregates
+            or aggregates[attempt_id].get("phase") != phase.value
+            or not isinstance(reruns, dict)
+            or any(
+                key not in state.run_graph
+                or PHASE_ORDER.index(state.run_graph[key].phase) > phase_index
+                or not isinstance(reason, str)
+                or not reason.strip()
+                or reason.strip() == UNABLE_REASON
+                for key, reason in reruns.items()
+            )
+            or value["result_status"]
+            not in {NodeStatus.PENDING.value, "completed"}
+        ):
+            raise AppError(
+                "invalid_state", "last transition metadata is invalid"
+            )
+        if reruns:
+            expected_result_phase = min(
+                (state.run_graph[key].phase for key in reruns),
+                key=PHASE_ORDER.index,
+            )
+            expected_result_status = NodeStatus.PENDING.value
+        elif phase is Phase.VERIFY:
+            expected_result_phase = Phase.VERIFY
+            expected_result_status = "completed"
+        else:
+            expected_result_phase = PHASE_ORDER[phase_index + 1]
+            expected_result_status = NodeStatus.PENDING.value
+        if (
+            result_phase is not expected_result_phase
+            or value["result_status"] != expected_result_status
+            or (
+                state.version == transitioned_version
+                and (
+                    state.current_phase != result_phase.value
+                    or state.status != expected_result_status
+                )
+            )
+        ):
+            raise AppError(
+                "invalid_state", "last transition metadata is invalid"
+            )
+        return value
+
+    @staticmethod
+    def _transition_event_related(
+        data: dict[str, object], record: dict[str, object]
+    ) -> bool:
+        return data.get("digest") == record["digest"] or (
+            data.get("transitioned_version") == record["transitioned_version"]
+            and data.get("phase") == record["phase"]
+        )
+
+    def _ensure_last_transition_event_locked(
+        self, store: StateStore, state: RunState
+    ) -> bool:
+        value = state.artifacts.get(LAST_TRANSITION_KEY)
+        if value is None:
+            return False
+        record = self._last_transition(state, value)
+        events = self._read_events(
+            state.run_id,
+            recover_incomplete_tail=True,
+            store=store,
+            event_lock_held=True,
+        )
+        matching = [
+            event
+            for event in events
+            if event["type"] == "workflow_transitioned"
+            and self._transition_event_related(event["data"], record)
+        ]
+        if len(matching) > 1:
+            raise AppError(
+                "invalid_state", "transition event evidence is malformed"
+            )
+        if matching:
+            event = matching[0]
+            if (
+                event["data"] != record
+                or event.get("timestamp") != record["transitioned_at"]
+                or event["version"] != record["transitioned_version"]
+            ):
+                raise AppError(
+                    "invalid_state", "transition event evidence is malformed"
+                )
+            return False
+        if state.version != record["transitioned_version"]:
+            raise AppError(
+                "invalid_state", "transition event evidence is missing"
+            )
+        store.append_event_locked(
+            record["transitioned_version"],
+            Event(
+                "workflow_transitioned",
+                record,
+                record["transitioned_at"],
+            ),
+        )
+        return True
+
+    def _assert_no_related_transition_event_locked(
+        self,
+        store: StateStore,
+        state: RunState,
+        record: dict[str, object],
+    ) -> None:
+        events = self._read_events(
+            state.run_id,
+            recover_incomplete_tail=True,
+            store=store,
+            event_lock_held=True,
+        )
+        if any(
+            event["type"] == "workflow_transitioned"
+            and self._transition_event_related(event["data"], record)
+            for event in events
+        ):
+            raise AppError(
+                "invalid_state", "transition event evidence is malformed"
+            )
+
     def _active(self, state: RunState) -> None:
         if state.status in {"completed", "aborted"}:
             raise AppError(
@@ -1898,6 +2610,12 @@ class WorkflowService:
             raise AppError(
                 "invalid_state", "phase aggregate metadata is invalid"
             )
+        review_gate = state.artifacts.get("review_gate")
+        if review_gate is not None:
+            WorkflowService._review_gate(state, review_gate)
+        last_transition = state.artifacts.get(LAST_TRANSITION_KEY)
+        if last_transition is not None:
+            WorkflowService._last_transition(state, last_transition)
         registered = state.artifacts.get("registered", [])
         if not isinstance(registered, list) or not all(
             isinstance(item, dict) for item in registered
@@ -1926,9 +2644,10 @@ class WorkflowService:
         if state.status == NodeStatus.BLOCKED.value:
             if (
                 not isinstance(blocked, dict)
-                or set(blocked) != {"run"}
+                or set(blocked) != {"run", "phase"}
                 or blocked["run"]
                 not in {NodeStatus.PENDING.value, NodeStatus.RUNNING.value}
+                or blocked["phase"] != state.current_phase
             ):
                 raise AppError(
                     "invalid_state", "blocked lifecycle metadata is invalid"

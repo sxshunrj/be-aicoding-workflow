@@ -51,25 +51,28 @@ def test_complete_run_recovery_rerun_and_knowledge_growth(
     run = app.workflow_init(source_revision="abc123")
     for phase in ("spec", "plan", "implement"):
         _run_phase(app, agent, run["run_id"], phase)
-        app.workflow_transition(run["run_id"], accept=True)
+        app.workflow_review_transition(run["run_id"])
 
     _run_phase(app, agent, run["run_id"], "verify", finding_child="code_review")
     pending = app.workflow_status(run["run_id"])
     assert pending["current_phase"] == "verify"
     assert pending["status"] == "running"
-    app.workflow_transition(
+    app.workflow_review_transition(
         run["run_id"],
-        reruns={"implement": "add the missing retry branch and tests"},
+        reruns={
+            "implement.code": "add the missing retry branch and tests",
+            "verify.code_review": "repeat code review after implementing the branch",
+        },
     )
 
     recovered = app.workflow_status(run["run_id"])
     assert recovered["current_phase"] == "implement"
 
     _run_phase(app, agent, run["run_id"], "implement")
-    app.workflow_transition(run["run_id"], accept=True)
+    app.workflow_review_transition(run["run_id"])
 
     _run_phase(app, agent, run["run_id"], "verify")
-    app.workflow_transition(run["run_id"], accept=True)
+    app.workflow_review_transition(run["run_id"])
 
     candidate = app.wiki_propose(agent.propose_knowledge(run["run_id"]))
     approved = app.wiki_promote(candidate["id"], candidate["digest"], reviewer="alice")

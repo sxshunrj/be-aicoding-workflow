@@ -131,12 +131,12 @@ def test_earliest_phase_requires_at_least_one_node() -> None:
         earliest_phase([])
 
 
-@pytest.mark.parametrize("status", ["aborted", "completed"])
-def test_rejects_rerun_for_terminal_run(status: str) -> None:
+@pytest.mark.parametrize("status", ["blocked", "aborted", "completed"])
+def test_rejects_rerun_for_non_active_run(status: str) -> None:
     state = new_state()
     state.status = status
 
-    with pytest.raises(AppError, match="terminal run cannot be changed"):
+    with pytest.raises(AppError):
         StateMachine().apply_reruns(state, {"spec.spec": "new requirement"})
 
 
