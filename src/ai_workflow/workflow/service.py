@@ -17,12 +17,23 @@ from ai_workflow.errors import AppError
 from ai_workflow.workflow.machine import StateMachine
 from ai_workflow.workflow.models import NodeStatus, Phase, RunState
 from ai_workflow.workflow.store import Event, StateStore
+from ai_workflow.wiki.repository import WikiRepository
+from ai_workflow.wiki.search import KnowledgeQuery, SearchLimits
+from ai_workflow.wiki.service import WikiService
 
 
 RUN_ID_PATTERN = re.compile(r"RUN-\d{8}-\d{6}-[0-9a-f]{6}")
 ID_SUFFIX_PATTERN = re.compile(r"[0-9a-f]{6}")
 ATTEMPT_ID_PATTERN = re.compile(r"(spec|plan|implement|verify)-([1-9]\d*)-[0-9a-f]{6}")
 DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+
+class _EmptyWiki:
+    def paths(self) -> list[Path]:
+        return []
+
+    def read(self, path: Path):
+        raise AssertionError("empty wiki has no readable paths")
 BLOCKED_STATE_KEY = "_blocked_state"
 RUN_STATUSES = {
     NodeStatus.PENDING.value,
@@ -40,7 +51,7 @@ RESTORABLE_NODE_STATUSES = {
 }
 ACCEPTANCE_KEYS = {"run_id", "node", "phase", "attempt_id", "result_digest",
                    "artifact_digest", "accepted_version", "accepted_at", "status",
-                   "summary", "artifact"}
+                   "summary", "artifact", "knowledge_citations"}
 
 
 def _valid_acceptance_record(record: object, run_id: str, attempt_id: str,
@@ -56,6 +67,8 @@ def _valid_acceptance_record(record: object, run_id: str, attempt_id: str,
             or record["accepted_version"] < 1
             or not isinstance(record.get("accepted_at"), str)
             or record.get("status") not in {"completed", "unable_to_complete"}
+            or not isinstance(record.get("knowledge_citations"), list)
+            or not all(isinstance(item, str) for item in record["knowledge_citations"])
             or not isinstance(record.get("summary"), str) or not record["summary"].strip()):
         return False
     try:
@@ -150,7 +163,8 @@ class WorkflowService:
         number = int(attempts.get(phase.value, 0)) + 1
         if self.repo_root is None:
             raise AppError("repository_required", "repository root is required")
-        if number > RepositoryConfig.load(self.repo_root).max_attempts:
+        config = RepositoryConfig.load(self.repo_root)
+        if number > config.max_attempts:
             raise AppError("attempt_limit", "maximum attempts reached for phase")
         attempts[phase.value] = number
         attempt_id = f"{phase.value}-{number}-{self.id_factory()}"
@@ -168,7 +182,19 @@ class WorkflowService:
         prior = self._artifact_refs(state)
         rerun_reasons = state.artifacts.get("rerun_reasons", {})
         rerun_reason = rerun_reasons.get(phase.value) if isinstance(rerun_reasons, dict) else None
-        PhasePacket(run_id, phase, attempt_id, state.source_revision, {}, prior,
+        knowledge_path = self._store(run_id).run_dir / "knowledge-packets" / f"{attempt_id}.json"
+        if config.wiki_path.is_dir():
+            packet = WikiService(WikiRepository(config.wiki_path), today=lambda: self.clock().date()).create_packet(
+                KnowledgeQuery(repository=config.repository, services=config.services,
+                               phase=phase.value), knowledge_path,
+                SearchLimits(config.max_knowledge_entries, config.max_knowledge_characters))
+        else:
+            packet = WikiService(_EmptyWiki(), today=lambda: self.clock().date()).create_packet(
+                KnowledgeQuery(repository=config.repository, services=config.services,
+                               phase=phase.value), knowledge_path,
+                SearchLimits(config.max_knowledge_entries, config.max_knowledge_characters))
+        knowledge_ref = {"path": str(knowledge_path), "sha256": packet.digest}
+        PhasePacket(run_id, phase, attempt_id, state.source_revision, knowledge_ref, prior,
                     rerun_reason if isinstance(rerun_reason, str) else None).write(packet_path)
         self._save(state, "phase_begun", {"phase": phase.value, "attempt": number,
                                           "attempt_id": attempt_id, "packet_path": str(packet_path)})
@@ -206,6 +232,12 @@ class WorkflowService:
             if not isinstance(artifacts, list):
                 raise AppError("invalid_state", "artifact registry is invalid")
             artifacts.append(artifact.to_dict())
+        self._validate_knowledge_citations(run_id, attempt_id, result.knowledge_citations)
+        citation_registry = state.artifacts.setdefault("knowledge_citations", [])
+        if not isinstance(citation_registry, list):
+            raise AppError("invalid_state", "knowledge citation registry is invalid")
+        citation_registry.extend(item for item in result.knowledge_citations
+                                 if item not in citation_registry)
         accepted_at = self.clock().isoformat()
         accepted_version = state.version + 1
         record = self._acceptance_record(state, phase, attempt_id, result_digest, result,
@@ -232,7 +264,34 @@ class WorkflowService:
                 "artifact_digest": None if artifact is None else artifact.sha256,
                 "accepted_version": accepted_version, "accepted_at": accepted_at,
                 "status": result.status, "summary": result.summary,
-                "artifact": None if artifact is None else artifact.to_dict()}
+                "artifact": None if artifact is None else artifact.to_dict(),
+                "knowledge_citations": list(result.knowledge_citations)}
+
+    def _validate_knowledge_citations(self, run_id: str, attempt_id: str,
+                                      citations: tuple[str, ...]) -> None:
+        path = self._store(run_id).run_dir / "attempts" / attempt_id / "phase-packet.json"
+        try:
+            reference = PhasePacket.load(path).knowledge_packet
+            packet_path = reference["path"]
+            expected_digest = reference["sha256"]
+            if not isinstance(packet_path, str) or not isinstance(expected_digest, str):
+                raise ValueError("knowledge packet path is invalid")
+            resolved = Path(packet_path).resolve()
+            resolved.relative_to(self._store(run_id).run_dir.resolve())
+            payload = json.loads(resolved.read_text(encoding="utf-8"))
+            unsigned = {key: value for key, value in payload.items() if key != "digest"}
+            actual_digest = hashlib.sha256(json.dumps(unsigned, sort_keys=True,
+                                                       separators=(",", ":")).encode()).hexdigest()
+            if payload.get("digest") != expected_digest or actual_digest != expected_digest:
+                raise ValueError("knowledge packet digest does not match")
+            allowed = payload["selected_ids"]
+            if not isinstance(allowed, list) or not all(isinstance(item, str) for item in allowed):
+                raise ValueError("selected knowledge IDs are invalid")
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise AppError("invalid_state", "phase knowledge packet is malformed") from error
+        unknown = sorted(set(citations) - set(allowed))
+        if unknown:
+            raise AppError("invalid_result", f"knowledge citation was not in phase packet: {unknown[0]}")
 
     def _reconcile_submission_evidence(self, run_id: str, attempt_id: str,
                                        result_digest: str) -> RunState:
@@ -319,17 +378,16 @@ class WorkflowService:
                 phase = str(data.get("phase"))
                 durations[phase] = durations.get(phase, 0) + int((end - start).total_seconds() * 1000)
         transitions = [event["data"] for event in events if event["type"] == "workflow_transitioned"]
-        cited: set[str] = set()
         for packet in self._store(run_id).run_dir.glob("attempts/*/phase-packet.json"):
             try:
                 phase_packet = PhasePacket.load(packet)
                 if phase_packet.run_id != run_id:
                     raise ValueError("phase packet run ID does not match")
-                knowledge = phase_packet.knowledge_packet
-                ids = knowledge.get("cited_knowledge_ids", [])
-                cited.update(str(item) for item in ids)
             except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
                 raise AppError("invalid_state", "workflow phase packet is malformed") from error
+        cited = {item for event in submissions
+                 for item in event["data"].get("knowledge_citations", [])
+                 if isinstance(item, str)}
         return RunSummary(run_id, durations, len(attempts),
                           sum(1 for item in submissions if item["data"].get("status") == "unable_to_complete")
                           + sum(len(item.get("reruns", {})) for item in transitions),
@@ -492,6 +550,7 @@ class WorkflowService:
         attempt_history = state.artifacts.get("attempt_history", {})
         accepted_results = state.artifacts.get("accepted_results", {})
         registered = state.artifacts.get("registered", [])
+        knowledge_citations = state.artifacts.get("knowledge_citations", [])
         rerun_reasons = state.artifacts.get("rerun_reasons", {})
         def attempt_parts(attempt_id: object) -> tuple[str, int] | None:
             if not isinstance(attempt_id, str):
@@ -539,6 +598,10 @@ class WorkflowService:
             refs = tuple(ArtifactRef.from_dict(item) for item in registered)
         except (KeyError, TypeError, ValueError) as error:
             raise AppError("invalid_state", "artifact registry is invalid") from error
+        if (not isinstance(knowledge_citations, list)
+                or not all(isinstance(item, str) and item for item in knowledge_citations)
+                or len(knowledge_citations) != len(set(knowledge_citations))):
+            raise AppError("invalid_state", "knowledge citation registry is invalid")
         if any(ref.source_revision != state.source_revision for ref in refs):
             raise AppError("invalid_state", "artifact registry source revision is invalid")
         if not isinstance(rerun_reasons, dict) or any(

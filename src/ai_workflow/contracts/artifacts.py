@@ -69,11 +69,13 @@ class ChildResult:
     summary: str
     artifact: ArtifactRef | None
     findings: tuple[Finding, ...]
+    knowledge_citations: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {"schema_version": SCHEMA_VERSION, "status": self.status, "summary": self.summary,
                 "artifact": None if self.artifact is None else self.artifact.to_dict(),
-                "findings": [finding.to_dict() for finding in self.findings]}
+                "findings": [finding.to_dict() for finding in self.findings],
+                "knowledge_citations": list(self.knowledge_citations)}
 
     def write(self, path: Path) -> None:
         path.write_text(json.dumps(self.to_dict(), indent=2) + "\n", encoding="utf-8")
@@ -91,7 +93,8 @@ class ChildResult:
             raise ValueError("schema_version is required")
         if data["schema_version"] != SCHEMA_VERSION:
             raise ValueError(f"unsupported schema_version: {data['schema_version']!r}")
-        _keys(data, {"schema_version", "status", "summary", "artifact", "findings"}, "child result")
+        _keys(data, {"schema_version", "status", "summary", "artifact", "findings",
+                     "knowledge_citations"}, "child result")
         status = data["status"]
         if status not in ("completed", "unable_to_complete"):
             raise ValueError("child result status is invalid")
@@ -103,5 +106,10 @@ class ChildResult:
         findings_data = data["findings"]
         if not isinstance(findings_data, list) or not all(isinstance(item, dict) for item in findings_data):
             raise ValueError("findings must be a list")
+        citations = data["knowledge_citations"]
+        if (not isinstance(citations, list) or not all(isinstance(item, str) and item
+                                                       for item in citations)
+                or len(citations) != len(set(citations))):
+            raise ValueError("knowledge_citations must be a unique string list")
         return cls(status, data["summary"], None if artifact_data is None else ArtifactRef.from_dict(artifact_data),
-                   tuple(Finding.from_dict(item) for item in findings_data))
+                   tuple(Finding.from_dict(item) for item in findings_data), tuple(citations))

@@ -7,6 +7,19 @@ from ai_workflow.workflow.models import Phase
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgePacket:
+    query: dict[str, object]
+    selected_ids: tuple[str, ...]
+    entries: tuple[dict[str, object], ...]
+    digest: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {"schema_version": SCHEMA_VERSION, "query": self.query,
+                "selected_ids": list(self.selected_ids), "entries": list(self.entries),
+                "digest": self.digest}
+
+
+@dataclass(frozen=True, slots=True)
 class PhasePacket:
     run_id: str
     phase: Phase
@@ -28,7 +41,8 @@ class PhasePacket:
         path.write_text(json.dumps(self.to_dict(), indent=2) + "\n", encoding="utf-8")
 
     @classmethod
-    def load(cls, path: Path) -> "PhasePacket":
+    def load(cls, path: Path | str) -> "PhasePacket":
+        path = Path(path)
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("phase packet must be an object")

@@ -10,6 +10,7 @@ from ai_workflow.workflow.models import Phase
 from ai_workflow.workflow.service import WorkflowService
 from ai_workflow.wiki.repository import WikiRepository
 from ai_workflow.wiki.service import WikiService
+from ai_workflow.wiki.search import KnowledgeQuery, SearchLimits
 
 
 class _JsonArgumentParser(argparse.ArgumentParser):
@@ -55,6 +56,21 @@ def _parser() -> argparse.ArgumentParser:
     wiki_commands = wiki.add_subparsers(dest="wiki_command", required=True)
     lint = wiki_commands.add_parser("lint")
     lint.add_argument("--wiki", type=Path, required=True)
+    for name in ("search", "packet"):
+        command = wiki_commands.add_parser(name)
+        command.add_argument("--wiki", type=Path, required=True)
+        command.add_argument("--repository")
+        command.add_argument("--service", action="append", default=[])
+        command.add_argument("--path", action="append", default=[])
+        command.add_argument("--language", action="append", default=[])
+        command.add_argument("--phase")
+        command.add_argument("--type", action="append", default=[])
+        command.add_argument("--tag", action="append", default=[])
+        command.add_argument("--text", default="")
+        command.add_argument("--max-entries", type=int, default=8)
+        command.add_argument("--max-characters", type=int, default=12000)
+        if name == "packet":
+            command.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -88,9 +104,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "config":
             data: object = _config_data(RepositoryConfig.load(args.repo))
         elif args.command == "wiki":
-            report = WikiService(WikiRepository(args.wiki, validate_layout=False)).lint()
-            print(json.dumps({"ok": True, "data": report.to_dict()}))
-            return 0 if report.valid else 1
+            service = WikiService(WikiRepository(args.wiki, validate_layout=False))
+            if args.wiki_command == "lint":
+                report = service.lint()
+                print(json.dumps({"ok": True, "data": report.to_dict()}))
+                return 0 if report.valid else 1
+            query = KnowledgeQuery(args.repository, tuple(args.service), tuple(args.path),
+                                   tuple(args.language), args.phase, tuple(args.type),
+                                   tuple(args.tag), args.text)
+            limits = SearchLimits(args.max_entries, args.max_characters)
+            if args.wiki_command == "search":
+                data = [{"id": item.entry.id, "title": item.entry.title,
+                         "score": item.score, "match_reasons": list(item.match_reasons),
+                         "warnings": list(item.warnings)}
+                        for item in service.search(query, limits)]
+            else:
+                packet = service.create_packet(query, args.output, limits)
+                data = {"path": str(args.output), "sha256": packet.digest,
+                        "selected_ids": list(packet.selected_ids)}
         else:
             service = WorkflowService(args.repo)
             if args.workflow_command == "init":
