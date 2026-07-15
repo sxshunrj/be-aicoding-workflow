@@ -74,13 +74,15 @@ class StateStore:
         directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         descriptors: list[int] = []
         directory_edges: list[tuple[int, str, int]] = []
+        root_fd: int | None = None
         parent_fd: int | None = None
         temporary_name = f".{relative.name}.{uuid4().hex}.tmp"
         target_created = False
         committed = False
         try:
-            parent_fd = os.open(self.run_dir, directory_flags)
-            descriptors.append(parent_fd)
+            root_fd = os.open(self.run_dir, directory_flags)
+            parent_fd = root_fd
+            descriptors.append(root_fd)
             for component in relative.parts[:-1]:
                 try:
                     child_fd = os.open(
@@ -131,22 +133,13 @@ class StateStore:
                         "immutable_conflict",
                         f"immutable workflow file already has different content: {path}",
                     )
-                return False
-            for ancestor_fd, component, child_fd in directory_edges:
-                linked = os.stat(
-                    component,
-                    dir_fd=ancestor_fd,
-                    follow_symlinks=False,
+                self._validate_namespace(
+                    root_fd, directory_flags, directory_edges
                 )
-                opened = os.fstat(child_fd)
-                if (
-                    not stat.S_ISDIR(linked.st_mode)
-                    or (linked.st_dev, linked.st_ino)
-                    != (opened.st_dev, opened.st_ino)
-                ):
-                    raise OSError(
-                        "workflow storage directory changed during write"
-                    )
+                return False
+            self._validate_namespace(
+                root_fd, directory_flags, directory_edges
+            )
             os.fsync(parent_fd)
             committed = True
             return True
@@ -174,6 +167,43 @@ class StateStore:
                 finally:
                     for descriptor in reversed(descriptors):
                         os.close(descriptor)
+
+    def _validate_namespace(
+        self,
+        root_fd: int,
+        directory_flags: int,
+        directory_edges: list[tuple[int, str, int]],
+    ) -> None:
+        canonical_fd = os.open(self.run_dir, directory_flags)
+        try:
+            opened_root = os.fstat(root_fd)
+            canonical_root = os.fstat(canonical_fd)
+            named_root = os.stat(self.run_dir, follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(named_root.st_mode)
+                or (opened_root.st_dev, opened_root.st_ino)
+                != (canonical_root.st_dev, canonical_root.st_ino)
+                or (opened_root.st_dev, opened_root.st_ino)
+                != (named_root.st_dev, named_root.st_ino)
+            ):
+                raise OSError("workflow run directory changed during write")
+        finally:
+            os.close(canonical_fd)
+        for ancestor_fd, component, child_fd in directory_edges:
+            linked = os.stat(
+                component,
+                dir_fd=ancestor_fd,
+                follow_symlinks=False,
+            )
+            opened = os.fstat(child_fd)
+            if (
+                not stat.S_ISDIR(linked.st_mode)
+                or (linked.st_dev, linked.st_ino)
+                != (opened.st_dev, opened.st_ino)
+            ):
+                raise OSError(
+                    "workflow storage directory changed during write"
+                )
 
     @staticmethod
     def _read_regular_at(parent_fd: int, name: str) -> bytes:

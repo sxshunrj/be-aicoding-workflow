@@ -185,3 +185,59 @@ def test_immutable_write_holds_parent_fd_across_symlink_swap(
     assert swapped
     assert not (outside / target.name).exists()
     assert not (parked / target.name).exists()
+
+
+def test_identical_immutable_write_rejects_parent_swap_without_removing_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = StateStore(tmp_path / "run")
+    store.create(new_state())
+    target = store.run_dir / "nested" / "child.json"
+    target.parent.mkdir()
+    payload = b'{"safe":true}\n'
+    target.write_bytes(payload)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    parked = store.run_dir / "nested-parked"
+    real_link = os.link
+
+    def swap_parent_before_link(source, destination, *args, **kwargs):
+        target.parent.rename(parked)
+        target.parent.symlink_to(outside, target_is_directory=True)
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "link", swap_parent_before_link)
+
+    with pytest.raises(AppError, match="accessed safely"):
+        store.write_immutable(target, payload)
+
+    assert not (outside / target.name).exists()
+    assert (parked / target.name).read_bytes() == payload
+    assert list(parked.glob(".*.tmp")) == []
+
+
+def test_immutable_write_rejects_run_root_replacement_and_cleans_new_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = StateStore(tmp_path / "run")
+    store.create(new_state())
+    target = store.run_dir / "nested" / "child.json"
+    payload = b'{"safe":true}\n'
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    parked_run = tmp_path / "run-parked"
+    real_link = os.link
+
+    def swap_run_root_before_link(source, destination, *args, **kwargs):
+        store.run_dir.rename(parked_run)
+        store.run_dir.symlink_to(outside, target_is_directory=True)
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "link", swap_run_root_before_link)
+
+    with pytest.raises(AppError, match="accessed safely"):
+        store.write_immutable(target, payload)
+
+    assert not (outside / "nested" / target.name).exists()
+    assert not (parked_run / "nested" / target.name).exists()
+    assert list((parked_run / "nested").glob(".*.tmp")) == []

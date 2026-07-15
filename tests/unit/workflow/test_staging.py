@@ -247,6 +247,26 @@ def test_begin_rejects_duplicate_phase_begun_event(tmp_path: Path) -> None:
     assert attempt.attempt_id in store.state_path.read_text(encoding="utf-8")
 
 
+def test_begin_rejects_future_version_phase_begun_event(tmp_path: Path) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    service.begin(run.run_id, Phase.SPEC, skill_dir)
+    store = service._store(run.run_id)
+    state_version = service.status(run.run_id).version
+    events = [
+        json.loads(line) for line in store.events_path.read_text().splitlines()
+    ]
+    next(event for event in events if event["type"] == "phase_begun")[
+        "version"
+    ] = state_version + 1
+    store.events_path.write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AppError, match="phase begun evidence"):
+        service.begin(run.run_id, Phase.SPEC, skill_dir)
+
+
 def test_begin_rejects_orphan_phase_begun_event_without_mutating_state(
     tmp_path: Path,
 ) -> None:
@@ -795,6 +815,30 @@ def test_stage_rejects_orphan_staged_event_without_appending_another(
     assert attempt.attempt_id not in state.artifacts.get("staged_results", {})
 
 
+def test_begin_rejects_future_version_staged_event(tmp_path: Path) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    result = _result(
+        tmp_path, run.run_id, attempt.attempt_id, Phase.SPEC, "spec"
+    )
+    service.stage(run.run_id, attempt.attempt_id, "spec", result)
+    store = service._store(run.run_id)
+    state_version = service.status(run.run_id).version
+    events = [
+        json.loads(line) for line in store.events_path.read_text().splitlines()
+    ]
+    next(
+        event for event in events if event["type"] == "child_result_staged"
+    )["version"] = state_version + 1
+    store.events_path.write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AppError, match="staged event evidence"):
+        service.begin(run.run_id, Phase.SPEC, skill_dir)
+
+
 def test_finalize_is_idempotent_and_persists_one_immutable_aggregate(
     tmp_path: Path,
 ) -> None:
@@ -926,6 +970,31 @@ def test_finalize_rejects_orphan_finalized_event_without_appending_another(
     state = service.status(run.run_id)
     assert state.run_graph["spec.spec"].validity is NodeValidity.PENDING
     assert not store.aggregate_path(attempt.attempt_id).exists()
+
+
+def test_finalize_rejects_future_version_finalized_event(tmp_path: Path) -> None:
+    service, run, skill_dir = _service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.SPEC, skill_dir)
+    result = _result(
+        tmp_path, run.run_id, attempt.attempt_id, Phase.SPEC, "spec"
+    )
+    service.stage(run.run_id, attempt.attempt_id, "spec", result)
+    service.finalize(run.run_id, attempt.attempt_id)
+    store = service._store(run.run_id)
+    state_version = service.status(run.run_id).version
+    events = [
+        json.loads(line) for line in store.events_path.read_text().splitlines()
+    ]
+    next(event for event in events if event["type"] == "phase_finalized")[
+        "version"
+    ] = state_version + 1
+    store.events_path.write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AppError, match="finalized event evidence"):
+        service.finalize(run.run_id, attempt.attempt_id)
 
 
 def test_stage_after_finalize_is_idempotent_for_unable_fresh_result(

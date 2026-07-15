@@ -1056,6 +1056,7 @@ class WorkflowService:
                 event["data"] != record
                 or event.get("timestamp") != timestamp
                 or event["version"] < minimum_version
+                or event["version"] > state.version
             ):
                 raise AppError(
                     "invalid_state",
