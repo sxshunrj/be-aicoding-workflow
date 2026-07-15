@@ -157,6 +157,44 @@ def test_retry_repairs_missing_stage_event_once(tmp_path: Path, monkeypatch) -> 
     assert matching[0]["data"]["result_digest"] == repaired.result_digest
 
 
+def test_fresh_begin_repairs_missing_stage_event_once(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service, run, attempt = _service(tmp_path)
+    result = _result(tmp_path, run.run_id, attempt.attempt_id)
+    events_path = service._store(run.run_id).events_path
+    real_open = Path.open
+    failed = False
+
+    def fail_event_append(path, mode="r", *args, **kwargs):
+        nonlocal failed
+        if path == events_path and mode == "a" and not failed:
+            failed = True
+            raise OSError("injected event append failure")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_event_append)
+    with pytest.raises(OSError, match="injected"):
+        service.stage(run.run_id, attempt.attempt_id, "spec", result)
+
+    recovered = WorkflowService(tmp_path)
+    resumed = recovered.begin(run.run_id, Phase.SPEC, tmp_path / "skill")
+    repaired_version = recovered.status(run.run_id).version
+    stable = recovered.begin(run.run_id, Phase.SPEC, tmp_path / "skill")
+    matching = [
+        event
+        for event in _events(recovered, run.run_id)
+        if event["type"] == "child_result_staged"
+        and event["data"]["attempt_id"] == attempt.attempt_id
+        and event["data"]["child"] == "spec"
+    ]
+
+    assert resumed == stable
+    assert resumed.dispatch_plan[0].action == "already_staged"
+    assert recovered.status(run.run_id).version == repaired_version
+    assert len(matching) == 1
+
+
 def test_competing_stage_reconciliation_is_serialized_without_duplicate(
     tmp_path: Path,
 ) -> None:

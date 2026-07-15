@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import threading
 
@@ -151,3 +152,36 @@ def test_malformed_tail_rejects_save_before_state_replacement(tmp_path: Path) ->
 
     assert error.value.code == "invalid_state"
     assert store.load().version == 0
+
+
+def test_immutable_write_holds_parent_fd_across_symlink_swap(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = StateStore(tmp_path / "run")
+    store.create(new_state())
+    target = store.run_dir / "nested" / "child.json"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    parked = store.run_dir / "nested-parked"
+    payload = b'{"safe":true}\n'
+    real_link = os.link
+    swapped = False
+
+    def swap_parent_before_link(source, destination, *args, **kwargs):
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            target.parent.rename(parked)
+            target.parent.symlink_to(outside, target_is_directory=True)
+            if kwargs.get("src_dir_fd") is None:
+                (outside / Path(source).name).write_bytes(payload)
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "link", swap_parent_before_link)
+
+    with pytest.raises(AppError, match="accessed safely"):
+        store.write_immutable(target, payload)
+
+    assert swapped
+    assert not (outside / target.name).exists()
+    assert not (parked / target.name).exists()

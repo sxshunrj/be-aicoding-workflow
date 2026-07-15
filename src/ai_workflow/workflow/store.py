@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 from uuid import uuid4
 
 import yaml
@@ -56,28 +57,149 @@ class StateStore:
         return self._safe_path("knowledge-packets", attempt_id, f"{child}.json")
 
     def write_immutable(self, path: Path, payload: bytes) -> bool:
-        safe_path = self._safe_existing_path(path)
-        safe_path.parent.mkdir(parents=True, exist_ok=True)
-        safe_path = self._safe_existing_path(safe_path)
-        temporary = self._temporary_path(safe_path)
         try:
-            temporary.write_bytes(payload)
-            try:
-                os.link(temporary, safe_path)
-            except FileExistsError:
-                if safe_path.is_symlink():
-                    raise AppError(
-                        "invalid_storage_path", "workflow storage path must not be a symlink"
+            relative = path.relative_to(self.run_dir)
+        except ValueError as error:
+            raise AppError(
+                "invalid_storage_path",
+                "workflow storage path escapes the run directory",
+            ) from error
+        if (
+            not relative.parts
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise AppError(
+                "invalid_storage_path", "workflow storage path is invalid"
+            )
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        descriptors: list[int] = []
+        directory_edges: list[tuple[int, str, int]] = []
+        parent_fd: int | None = None
+        temporary_name = f".{relative.name}.{uuid4().hex}.tmp"
+        target_created = False
+        committed = False
+        try:
+            parent_fd = os.open(self.run_dir, directory_flags)
+            descriptors.append(parent_fd)
+            for component in relative.parts[:-1]:
+                try:
+                    child_fd = os.open(
+                        component, directory_flags, dir_fd=parent_fd
                     )
-                if not safe_path.is_file() or safe_path.read_bytes() != payload:
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(component, 0o700, dir_fd=parent_fd)
+                    except FileExistsError:
+                        pass
+                    child_fd = os.open(
+                        component, directory_flags, dir_fd=parent_fd
+                    )
+                directory_edges.append((parent_fd, component, child_fd))
+                descriptors.append(child_fd)
+                parent_fd = child_fd
+
+            temporary_fd = os.open(
+                temporary_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent_fd,
+            )
+            try:
+                remaining = memoryview(payload)
+                while remaining:
+                    written = os.write(temporary_fd, remaining)
+                    if written <= 0:
+                        raise OSError("immutable workflow write made no progress")
+                    remaining = remaining[written:]
+                os.fsync(temporary_fd)
+            finally:
+                os.close(temporary_fd)
+
+            try:
+                os.link(
+                    temporary_name,
+                    relative.name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+                target_created = True
+            except FileExistsError:
+                existing = self._read_regular_at(parent_fd, relative.name)
+                if existing != payload:
                     raise AppError(
                         "immutable_conflict",
-                        f"immutable workflow file already has different content: {safe_path}",
+                        f"immutable workflow file already has different content: {path}",
                     )
                 return False
+            for ancestor_fd, component, child_fd in directory_edges:
+                linked = os.stat(
+                    component,
+                    dir_fd=ancestor_fd,
+                    follow_symlinks=False,
+                )
+                opened = os.fstat(child_fd)
+                if (
+                    not stat.S_ISDIR(linked.st_mode)
+                    or (linked.st_dev, linked.st_ino)
+                    != (opened.st_dev, opened.st_ino)
+                ):
+                    raise OSError(
+                        "workflow storage directory changed during write"
+                    )
+            os.fsync(parent_fd)
+            committed = True
             return True
+        except AppError:
+            raise
+        except OSError as error:
+            raise AppError(
+                "invalid_storage_path",
+                "workflow storage path could not be accessed safely",
+            ) from error
         finally:
-            temporary.unlink(missing_ok=True)
+            try:
+                if parent_fd is not None and target_created and not committed:
+                    try:
+                        os.unlink(relative.name, dir_fd=parent_fd)
+                    except FileNotFoundError:
+                        pass
+            finally:
+                try:
+                    if parent_fd is not None:
+                        try:
+                            os.unlink(temporary_name, dir_fd=parent_fd)
+                        except FileNotFoundError:
+                            pass
+                finally:
+                    for descriptor in reversed(descriptors):
+                        os.close(descriptor)
+
+    @staticmethod
+    def _read_regular_at(parent_fd: int, name: str) -> bytes:
+        try:
+            descriptor = os.open(
+                name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd
+            )
+        except OSError as error:
+            raise AppError(
+                "invalid_storage_path",
+                "immutable workflow target must be a regular file",
+            ) from error
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise AppError(
+                    "immutable_conflict",
+                    "immutable workflow target must be a regular file",
+                )
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(descriptor, 65536)
+                if not chunk:
+                    return b"".join(chunks)
+                chunks.append(chunk)
+        finally:
+            os.close(descriptor)
 
     def create(self, state: RunState) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)

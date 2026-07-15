@@ -256,6 +256,19 @@ class WorkflowService:
                 )
             attempt_id = f"{phase.value}-{number}-{self._new_id_suffix()}"
             resolved_skill = self._validate_skill_dir(skill_dir, effective)
+            self._assert_no_related_event_locked(
+                store,
+                state,
+                "phase_begun",
+                related=lambda data: (
+                    data.get("attempt_id") == attempt_id
+                    or (
+                        data.get("phase") == phase.value
+                        and data.get("attempt") == number
+                    )
+                ),
+                evidence_name="phase begun",
+            )
             attempts[phase.value] = number
             current_attempts[phase.value] = attempt_id
             history = self._mapping(
@@ -327,16 +340,6 @@ class WorkflowService:
             self._ensure_phase_begun_event_locked(
                 store, state, attempt_id, owner
             )
-            _, allowed_citations, evidence = (
-                self._load_anchored_dispatch_evidence(
-                    store,
-                    state,
-                    attempt_id,
-                    child,
-                    owner,
-                    node_key,
-                )
-            )
             staged_results = self._mapping(
                 state.artifacts, "staged_results", "staged result metadata"
             )
@@ -346,6 +349,17 @@ class WorkflowService:
                     "invalid_state", "staged result metadata is invalid"
                 )
             previous = attempt_results.get(child)
+            _, allowed_citations, evidence = (
+                self._load_anchored_dispatch_evidence(
+                    store,
+                    state,
+                    attempt_id,
+                    child,
+                    owner,
+                    node_key,
+                    validate_graph_mode=previous is None,
+                )
+            )
             if previous is not None:
                 return self._existing_stage(
                     store,
@@ -360,6 +374,17 @@ class WorkflowService:
                     evidence,
                     allowed_citations,
                 )
+
+            self._assert_no_related_event_locked(
+                store,
+                state,
+                "child_result_staged",
+                related=lambda data: (
+                    data.get("attempt_id") == attempt_id
+                    and data.get("child") == child
+                ),
+                evidence_name="child result staged event",
+            )
 
             self._validate_result_owner(
                 state, result, run_id, attempt_id, phase, child
@@ -420,19 +445,9 @@ class WorkflowService:
             state = self._load_locked(store, run_id)
             self._active(state)
             owner = self._attempt_owner(state, attempt_id, require_current=True)
-            aggregates = self._mapping(
-                state.artifacts, "phase_aggregates", "phase aggregate metadata"
+            self._ensure_phase_begun_event_locked(
+                store, state, attempt_id, owner
             )
-            previous = aggregates.get(attempt_id)
-            if previous is not None:
-                aggregate = self._load_existing_aggregate(
-                    store, attempt_id, previous
-                )
-                self._ensure_event_locked(
-                    store, state, "phase_finalized", previous
-                )
-                return aggregate
-
             raw_nodes = owner["nodes"]
             assert isinstance(raw_nodes, list)
             staged_results = self._mapping(
@@ -457,36 +472,67 @@ class WorkflowService:
             for node_key in raw_nodes:
                 node = state.run_graph[node_key]
                 record = attempt_results[node.child]
-                if not isinstance(record, dict):
-                    raise AppError(
-                        "invalid_state", "staged result metadata is invalid"
+                _, allowed_citations, evidence = (
+                    self._load_anchored_dispatch_evidence(
+                        store,
+                        state,
+                        attempt_id,
+                        node.child,
+                        owner,
+                        node_key,
+                        validate_graph_mode=False,
                     )
-                staged_path = store.staged_path(attempt_id, node.child)
-                try:
-                    payload = staged_path.read_bytes()
-                    if hashlib.sha256(payload).hexdigest() != record["result_digest"]:
-                        raise ValueError("staged result digest does not match")
-                    result = ChildResult.from_bytes(payload)
-                except (
-                    OSError,
-                    UnicodeError,
-                    json.JSONDecodeError,
-                    KeyError,
-                    TypeError,
-                    ValueError,
-                ) as error:
-                    raise AppError(
-                        "invalid_state", "staged child result is malformed"
-                    ) from error
-                self._validate_result_owner(
+                )
+                result = self._validate_staged_evidence(
+                    store,
                     state,
-                    result,
-                    run_id,
                     attempt_id,
-                    node.phase,
                     node.child,
+                    record,
+                    owner,
+                    node_key,
+                    evidence,
+                    allowed_citations,
+                )
+                if result.artifact is not None:
+                    self._validate_artifact(
+                        state,
+                        node_key,
+                        result.artifact,
+                        evidence["allowed_output_path"],
+                    )
+                self._ensure_child_staged_event_locked(
+                    store, state, attempt_id, node.child, record
                 )
                 results.append(result)
+
+            aggregates = self._mapping(
+                state.artifacts, "phase_aggregates", "phase aggregate metadata"
+            )
+            previous = aggregates.get(attempt_id)
+            if previous is not None:
+                aggregate = self._load_existing_aggregate(
+                    store, attempt_id, previous
+                )
+                if list(aggregate.children) != [
+                    result.to_dict() for result in results
+                ]:
+                    raise AppError(
+                        "invalid_state",
+                        "phase aggregate does not match staged evidence",
+                    )
+                self._ensure_phase_finalized_event_locked(
+                    store, state, attempt_id, previous
+                )
+                return aggregate
+
+            self._assert_no_related_event_locked(
+                store,
+                state,
+                "phase_finalized",
+                related=lambda data: data.get("attempt_id") == attempt_id,
+                evidence_name="phase finalized event",
+            )
 
             aggregate_status: Literal["completed", "unable_to_complete"] = (
                 "unable_to_complete"
@@ -860,6 +906,13 @@ class WorkflowService:
                     evidence,
                     allowed_citations,
                 )
+                self._ensure_child_staged_event_locked(
+                    store,
+                    state,
+                    attempt_id,
+                    node.child,
+                    attempt_results[node.child],
+                )
                 plan.append(
                     DispatchItem(
                         node=key,
@@ -931,8 +984,8 @@ class WorkflowService:
             raise AppError(
                 "invalid_state", "staged result evidence is malformed"
             ) from error
-        self._ensure_event_locked(
-            store, state, "child_result_staged", previous
+        self._ensure_child_staged_event_locked(
+            store, state, attempt_id, child, previous
         )
         return self._staged_child(previous)
 
@@ -970,13 +1023,60 @@ class WorkflowService:
             )
         return aggregate
 
-    def _ensure_event_locked(
+    def _ensure_unique_event_locked(
         self,
         store: StateStore,
         state: RunState,
         event_type: str,
         record: dict[str, object],
-    ) -> RunState:
+        *,
+        related: Callable[[dict[str, object]], bool],
+        timestamp: str,
+        minimum_version: int,
+        evidence_name: str,
+    ) -> None:
+        events = self._read_events(
+            state.run_id,
+            recover_incomplete_tail=True,
+            store=store,
+            event_lock_held=True,
+        )
+        matching = [
+            event
+            for event in events
+            if event["type"] == event_type and related(event["data"])
+        ]
+        if len(matching) > 1:
+            raise AppError(
+                "invalid_state", f"{evidence_name} evidence is malformed"
+            )
+        if matching:
+            event = matching[0]
+            if (
+                event["data"] != record
+                or event.get("timestamp") != timestamp
+                or event["version"] < minimum_version
+            ):
+                raise AppError(
+                    "invalid_state",
+                    f"{evidence_name} evidence is malformed",
+                )
+            return
+        store.save_locked(
+            state.version,
+            state,
+            Event(event_type, record, timestamp),
+        )
+
+    def _assert_no_related_event_locked(
+        self,
+        store: StateStore,
+        state: RunState,
+        event_type: str,
+        *,
+        related: Callable[[dict[str, object]], bool],
+        evidence_name: str,
+    ) -> None:
         events = self._read_events(
             state.run_id,
             recover_incomplete_tail=True,
@@ -984,16 +1084,60 @@ class WorkflowService:
             event_lock_held=True,
         )
         if any(
-            event["type"] == event_type and event["data"] == record
+            event["type"] == event_type and related(event["data"])
             for event in events
         ):
-            return state
-        store.save_locked(
-            state.version,
+            raise AppError(
+                "invalid_state", f"{evidence_name} evidence is malformed"
+            )
+
+    def _ensure_child_staged_event_locked(
+        self,
+        store: StateStore,
+        state: RunState,
+        attempt_id: str,
+        child: str,
+        record: object,
+    ) -> None:
+        if not isinstance(record, dict):
+            raise AppError(
+                "invalid_state", "child result staged event evidence is malformed"
+            )
+        self._ensure_unique_event_locked(
+            store,
             state,
-            Event(event_type, record, self.clock().isoformat()),
+            "child_result_staged",
+            record,
+            related=lambda data: (
+                data.get("attempt_id") == attempt_id
+                and data.get("child") == child
+            ),
+            timestamp=record["staged_at"],
+            minimum_version=record["staged_version"],
+            evidence_name="child result staged event",
         )
-        return state
+
+    def _ensure_phase_finalized_event_locked(
+        self,
+        store: StateStore,
+        state: RunState,
+        attempt_id: str,
+        record: object,
+    ) -> None:
+        if not isinstance(record, dict):
+            raise AppError(
+                "invalid_state", "phase finalized event evidence is malformed"
+            )
+        self._ensure_unique_event_locked(
+            store,
+            state,
+            "phase_finalized",
+            record,
+            related=lambda data: data.get("attempt_id") == attempt_id,
+            timestamp=record["finalized_at"],
+            minimum_version=record["finalized_version"],
+            evidence_name="phase finalized event",
+        )
 
     @staticmethod
     def _phase_begun_event_data(
@@ -1015,41 +1159,21 @@ class WorkflowService:
         owner: dict[str, object],
     ) -> None:
         expected = self._phase_begun_event_data(attempt_id, owner)
-        events = self._read_events(
-            state.run_id,
-            recover_incomplete_tail=True,
-            store=store,
-            event_lock_held=True,
-        )
-        related = [
-            event
-            for event in events
-            if event.get("type") == "phase_begun"
-            and isinstance(event.get("data"), dict)
-            and (
-                event["data"].get("attempt_id") == attempt_id
-                or (
-                    event["data"].get("phase") == owner["phase"]
-                    and event["data"].get("attempt") == owner["number"]
-                )
-            )
-        ]
-        if related:
-            if any(
-                event.get("data") != expected
-                or event.get("timestamp") != owner["begun_at"]
-                or type(event.get("version")) is not int
-                or event["version"] < owner["begun_version"]
-                for event in related
-            ):
-                raise AppError(
-                    "invalid_state", "phase begun evidence is malformed"
-                )
-            return
-        store.save_locked(
-            state.version,
+        self._ensure_unique_event_locked(
+            store,
             state,
-            Event("phase_begun", expected, owner["begun_at"]),
+            "phase_begun",
+            expected,
+            related=lambda data: (
+                data.get("attempt_id") == attempt_id
+                or (
+                    data.get("phase") == owner["phase"]
+                    and data.get("attempt") == owner["number"]
+                )
+            ),
+            timestamp=owner["begun_at"],
+            minimum_version=owner["begun_version"],
+            evidence_name="phase begun",
         )
 
     @staticmethod
