@@ -97,3 +97,37 @@ def test_rejects_invalid_configuration_shapes(
         RepositoryConfig.load(tmp_path)
 
     assert error.value.code == "config_invalid"
+
+
+@pytest.mark.parametrize(
+    ("contents", "message"),
+    [
+        ("repository: demo\nmax_attempts: true\n", "max_attempts must be an integer"),
+        ("repository: demo\nmax_attempts: 1.5\n", "max_attempts must be an integer"),
+        (
+            "repository: demo\nknowledge:\n  max_entries: true\n",
+            "knowledge.max_entries must be an integer",
+        ),
+        (
+            "repository: demo\nknowledge:\n  max_entries: 1.5\n",
+            "knowledge.max_entries must be an integer",
+        ),
+        (
+            "repository: demo\nknowledge:\n  max_characters: true\n",
+            "knowledge.max_characters must be an integer",
+        ),
+        (
+            "repository: demo\nknowledge:\n  max_characters: 1.5\n",
+            "knowledge.max_characters must be an integer",
+        ),
+    ],
+)
+def test_rejects_coercible_non_integer_limits(
+    tmp_path: Path, contents: str, message: str
+) -> None:
+    (tmp_path / ".ai-workflow.yaml").write_text(contents, encoding="utf-8")
+
+    with pytest.raises(AppError, match=message) as error:
+        RepositoryConfig.load(tmp_path)
+
+    assert error.value.code == "config_invalid"

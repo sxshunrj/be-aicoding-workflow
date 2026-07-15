@@ -39,6 +39,21 @@ def test_state_round_trip_and_event_append(tmp_path: Path) -> None:
     assert '"type":"run_started"' in store.events_path.read_text(encoding="utf-8")
 
 
+def test_schema_v1_state_load_has_machine_readable_error(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "run")
+    store.create(new_state())
+    payload = store.state_path.read_text(encoding="utf-8")
+    store.state_path.write_text(
+        payload.replace("schema_version: 2", "schema_version: 1"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AppError, match="unsupported schema_version") as error:
+        store.load()
+
+    assert error.value.code == "unsupported_schema_version"
+
+
 def test_rejects_stale_state_write(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "run")
     store.create(new_state())

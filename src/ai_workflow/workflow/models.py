@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from ai_workflow.errors import AppError
+
 if TYPE_CHECKING:
     from ai_workflow.workflow.graph import RunGraphNode
 
@@ -82,6 +84,9 @@ class RunState:
         )
 
     def to_dict(self) -> dict[str, object]:
+        from ai_workflow.workflow.graph import validate_run_graph
+
+        validate_run_graph(self.run_graph)
         data = {
             "schema_version": self.schema_version,
             "run_id": self.run_id,
@@ -105,8 +110,9 @@ class RunState:
 
         validate_plain_value(data)
         if data.get("schema_version") != 2:
-            raise ValueError(
-                f"unsupported schema_version: {data.get('schema_version')!r}"
+            raise AppError(
+                "unsupported_schema_version",
+                f"unsupported schema_version: {data.get('schema_version')!r}",
             )
         raw_graph = data["run_graph"]
         raw_artifacts = data["artifacts"]

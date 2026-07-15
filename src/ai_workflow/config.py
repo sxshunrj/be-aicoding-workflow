@@ -14,10 +14,9 @@ def _mapping(value: object, name: str) -> Mapping[object, object]:
 
 
 def _integer(value: object, name: str) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError) as error:
-        raise AppError("config_invalid", f"{name} must be an integer") from error
+    if type(value) is not int:
+        raise AppError("config_invalid", f"{name} must be an integer")
+    return value
 
 
 def _strings(value: object, name: str) -> tuple[str, ...]:

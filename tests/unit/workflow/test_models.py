@@ -1,5 +1,6 @@
 import pytest
 
+from ai_workflow.errors import AppError
 from ai_workflow.workflow.graph import NodeValidity, RunGraphNode
 from ai_workflow.workflow.models import NodeStatus, Phase, RunState
 
@@ -58,6 +59,18 @@ def test_rejects_non_plain_artifact_values() -> None:
         state.to_dict()
 
 
+def test_serialization_rejects_mechanically_invalid_run_graph() -> None:
+    state = RunState.new(
+        "RUN-001", "abc123", "Add the workflow graph", "full", sample_graph()
+    )
+    state.run_graph["implement.code"].validity = NodeValidity.RERUN
+
+    with pytest.raises(AppError, match="rerun node requires a reason") as error:
+        state.to_dict()
+
+    assert error.value.code == "invalid_run_graph"
+
+
 @pytest.mark.parametrize(("requirement", "profile"), [("  ", "full"), ("work", "")])
 def test_new_run_rejects_blank_requirement_or_profile(
     requirement: str, profile: str
@@ -72,8 +85,10 @@ def test_rejects_unsupported_schema_version() -> None:
     ).to_dict()
     data["schema_version"] = 1
 
-    with pytest.raises(ValueError, match="unsupported schema_version"):
+    with pytest.raises(AppError, match="unsupported schema_version") as error:
         RunState.from_dict(data)
+
+    assert error.value.code == "unsupported_schema_version"
 
 
 def test_rejects_blank_persisted_requirement() -> None:
