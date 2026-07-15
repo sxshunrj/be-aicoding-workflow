@@ -105,31 +105,32 @@ class FakeAgent:
     def run(self, packet_path: Path, finding: str | None = None) -> Path:
         packet = PhasePacket.load(packet_path)
         result_path = packet_path.with_name(f"{packet.phase.value}-result.json")
+        artifact_path = packet_path.with_name(f"{packet.phase.value}.md")
         if finding is None:
-            artifact_path = packet_path.with_name(f"{packet.phase.value}.md")
-            artifact_path.write_text(self._artifact_text(packet), encoding="utf-8")
-            artifact = ArtifactRef(
-                str(artifact_path.name),
-                self._digest(artifact_path),
-                1,
-                packet.phase,
-                packet.source_revision,
-            )
-            result = ChildResult(
-                "completed",
-                f"{packet.phase.value} phase completed.",
-                artifact,
-                (),
-                (),
-            )
+            artifact_text = self._artifact_text(packet)
+            result_status = "completed"
+            summary = f"{packet.phase.value} phase completed."
+            findings: tuple[Finding, ...] = ()
         else:
-            result = ChildResult(
-                "unable_to_complete",
-                f"{packet.phase.value} phase found a gap.",
-                None,
-                (Finding(f"{packet.phase.value}-gap", "Missing retry branch", finding),),
-                (),
-            )
+            artifact_text = self._artifact_text(packet, finding=finding)
+            result_status = "unable_to_complete"
+            summary = f"{packet.phase.value} phase found a gap."
+            findings = (Finding(f"{packet.phase.value}-gap", "Missing retry branch", finding),)
+        artifact_path.write_text(artifact_text, encoding="utf-8")
+        artifact = ArtifactRef(
+            str(artifact_path.name),
+            self._digest(artifact_path),
+            1,
+            packet.phase,
+            packet.source_revision,
+        )
+        result = ChildResult(
+            result_status,
+            summary,
+            artifact,
+            findings,
+            (),
+        )
         result.write(result_path)
         return result_path
 
@@ -161,7 +162,7 @@ class FakeAgent:
         proposal_path.write_text(json.dumps(proposal, indent=2) + "\n", encoding="utf-8")
         return proposal_path
 
-    def _artifact_text(self, packet: PhasePacket) -> str:
+    def _artifact_text(self, packet: PhasePacket, *, finding: str | None = None) -> str:
         titles = {
             "spec": "Technical Spec",
             "plan": "Implementation Plan",
@@ -169,7 +170,13 @@ class FakeAgent:
             "verify": "Verification Report",
         }
         title = titles[packet.phase.value]
-        return f"# {title}\n\nRun {packet.run_id} / {packet.attempt_id}\n\nThis artifact is deterministic.\n"
+        suffix = ""
+        if finding is not None:
+            suffix = f"\n\nFinding: {finding}\n"
+        return (
+            f"# {title}\n\nRun {packet.run_id} / {packet.attempt_id}\n"
+            f"\nThis artifact is deterministic.{suffix}"
+        )
 
     @staticmethod
     def _digest(path: Path) -> str:

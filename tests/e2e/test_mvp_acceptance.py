@@ -48,6 +48,10 @@ def test_complete_run_recovery_rerun_and_knowledge_growth(
         finding="implementation missing retry branch",
     )
     assert finding_result.exists()
+    app.workflow_submit(run["run_id"], finding_result)
+    pending = app.workflow_status(run["run_id"])
+    assert pending["current_phase"] == "verify"
+    assert pending["status"] == "running"
     app.workflow_transition(
         run["run_id"],
         reruns={"implement": "add the missing retry branch and tests"},

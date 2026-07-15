@@ -248,8 +248,8 @@ class WorkflowService:
             state.nodes[phase.value].status = NodeStatus.VALID.value
             self.machine.advance(state)
         else:
-            state.nodes[phase.value].status = NodeStatus.RERUN.value
-            state.status = NodeStatus.PENDING.value
+            state.nodes[phase.value].status = NodeStatus.RUNNING.value
+            state.status = NodeStatus.RUNNING.value
         self._store(state.run_id).save(
             state.version, state, Event("result_submitted", record, accepted_at))
         return state

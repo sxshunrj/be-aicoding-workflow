@@ -1,4 +1,5 @@
 from datetime import datetime
+import hashlib
 from pathlib import Path
 import shutil
 
@@ -6,6 +7,7 @@ import pytest
 import yaml
 
 from ai_workflow.errors import AppError
+from ai_workflow.contracts.artifacts import ArtifactRef, ChildResult, Finding
 from ai_workflow.workflow.models import Phase
 from ai_workflow.workflow.service import WorkflowService
 
@@ -93,6 +95,39 @@ def test_verify_can_rerun_implement_then_return_to_verify(tmp_path: Path) -> Non
     attempt = service.begin(state.run_id, Phase.VERIFY)
 
     assert attempt.number == 2
+
+
+def test_failed_submission_can_be_followed_by_rerun_transition(tmp_path: Path) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+    state = service.init(tmp_path, "abc123")
+    for phase in (Phase.SPEC, Phase.PLAN, Phase.IMPLEMENT):
+        service.begin(state.run_id, phase)
+        state = service.transition(state.run_id, True, {})
+    attempt = service.begin(state.run_id, Phase.VERIFY)
+    attempt_dir = tmp_path / ".ai-workflow" / "runs" / state.run_id / "attempts" / attempt.attempt_id
+    artifact_path = attempt_dir / "verify.md"
+    artifact_path.write_text("# Verify\n", encoding="utf-8")
+    result_path = attempt_dir / "verify-result.json"
+    ChildResult(
+        "unable_to_complete",
+        "blocked",
+        ArtifactRef(
+            "verify.md",
+            hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+            1,
+            Phase.VERIFY,
+            "abc123",
+        ),
+        (Finding("verify-gap", "Missing retry branch", "missing retry branch"),),
+    ).write(result_path)
+
+    state = service.submit(state.run_id, attempt.attempt_id, result_path)
+    assert state.status == "running"
+    assert state.current_phase == "verify"
+
+    state = service.transition(state.run_id, False, {Phase.IMPLEMENT: "missing branch"})
+    assert state.current_phase == "implement"
 
 
 def test_rerun_transition_requires_a_started_attempt(tmp_path: Path) -> None:
