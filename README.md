@@ -1,6 +1,6 @@
 # AI Workflow
 
-Status: Experimental design
+Status: MVP verified
 
 This repository implements a local, deterministic AI coding workflow with a wiki-backed knowledge loop.
 
