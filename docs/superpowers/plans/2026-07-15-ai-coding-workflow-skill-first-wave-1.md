@@ -12,6 +12,7 @@
 
 - Implement only Wave 1 from `docs/superpowers/specs/2026-07-15-ai-coding-workflow-skill-first-enhancement-design.md`; Wave 2 Skills are out of scope.
 - Use `skills/` as the sole canonical Skill source. User-scope development installation targets `$HOME/.agents/skills` and `$HOME/.claude/skills`.
+- Write all committed user-facing Markdown deliverables in Chinese as the primary narrative, including `SKILL.md`, `references/*.md`, README, trial guides, and traceability documents. Keep Skill names, CLI commands, JSON fields, error codes, and other machine contracts in English; keep the approved design document bilingual.
 - Keep the executable name `ai-workflow`; replace the thin `ai-workflow` Skill with `ai-workflow-harness`.
 - Python Core validates mechanics only. Semantic correctness, rerun meaning, reflection content, and governance decisions remain Agent/human responsibilities.
 - No Agent may edit `.ai-workflow/runs/*/state.yaml`, event logs, staged sibling results, or `wiki/approved` directly.
