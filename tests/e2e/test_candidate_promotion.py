@@ -64,6 +64,18 @@ def test_candidate_promotion_round_trip(tmp_path: Path, capsys) -> None:
 
     status = main([
         "wiki",
+        "review",
+        "--wiki",
+        str(tmp_path / "wiki"),
+        "--id",
+        proposed["data"]["id"],
+    ])
+    review = json.loads(capsys.readouterr().out)
+    assert status == 0
+    assert review["data"]["candidate"]["digest"] == proposed["data"]["digest"]
+
+    status = main([
+        "wiki",
         "promote",
         "--wiki",
         str(tmp_path / "wiki"),
@@ -72,7 +84,7 @@ def test_candidate_promotion_round_trip(tmp_path: Path, capsys) -> None:
         "--reviewer",
         "alice",
         "--expected-digest",
-        proposed["data"]["digest"],
+        review["data"]["candidate"]["digest"],
     ])
     promoted = json.loads(capsys.readouterr().out)
     assert status == 0

@@ -57,6 +57,66 @@ class WikiService:
         self.repository.write_candidate(entry)
         return entry
 
+    def review_candidate(
+        self, entry_id: str, max_related: int = 8
+    ) -> dict[str, object]:
+        if max_related < 0:
+            raise AppError("wiki_invalid", "max_related must not be negative")
+        candidates = [
+            path
+            for path in self.repository.paths()
+            if path.name == f"{entry_id}.md"
+            or self.repository.read(path).id == entry_id
+        ]
+        if len(candidates) != 1:
+            raise AppError("wiki_not_found", f"candidate knowledge not found: {entry_id}")
+        candidate_path = candidates[0]
+        candidate = self.repository.read(candidate_path)
+        if candidate.status is not KnowledgeStatus.CANDIDATE:
+            raise AppError("wiki_invalid", "knowledge entry is not a candidate")
+        query = KnowledgeQuery(
+            repository=(candidate.scope.repos[0] if candidate.scope.repos else None),
+            services=candidate.scope.services,
+            paths=candidate.scope.paths,
+            languages=candidate.scope.languages,
+            phase=(candidate.scope.phases[0] if candidate.scope.phases else None),
+            types=(candidate.type.value,),
+            tags=candidate.tags,
+            text=f"{candidate.title} {candidate.summary}",
+        )
+        related = []
+        excluded = {candidate.id, *candidate.conflicts_with, *candidate.supersedes}
+        for result in self.search(
+            query,
+            SearchLimits(max_entries=max_related + len(excluded), max_characters=12000),
+        ):
+            if result.entry.id in excluded:
+                continue
+            path = self.repository.root / "approved" / f"{result.entry.id}.md"
+            related.append(
+                {
+                    "id": result.entry.id,
+                    "title": result.entry.title,
+                    "score": result.score,
+                    "digest": self.repository.path_digest(path),
+                    "match_reasons": list(result.match_reasons),
+                }
+            )
+            if len(related) >= max_related:
+                break
+        return {
+            "candidate": {
+                "id": candidate.id,
+                "title": candidate.title,
+                "type": candidate.type.value,
+                "digest": self.repository.path_digest(candidate_path),
+                "status": candidate.status.value,
+            },
+            "related_approved": related,
+            "declared_conflicts": list(candidate.conflicts_with),
+            "declared_supersedes": list(candidate.supersedes),
+        }
+
     def promote(self, entry_id: str, reviewer: str, expected_digest: str) -> KnowledgeEntry:
         candidate_path = self.repository.root / "candidates" / f"{entry_id}.md"
         self._guard_digest(candidate_path, expected_digest, "candidate changed since review")

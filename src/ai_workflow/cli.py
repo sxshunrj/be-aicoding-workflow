@@ -98,6 +98,10 @@ def _parser() -> argparse.ArgumentParser:
     propose = wiki_commands.add_parser("propose")
     propose.add_argument("--wiki", type=Path, required=True)
     propose.add_argument("--proposal", type=Path, required=True)
+    wiki_review = wiki_commands.add_parser("review")
+    wiki_review.add_argument("--wiki", type=Path, required=True)
+    wiki_review.add_argument("--id", required=True)
+    wiki_review.add_argument("--max-related", type=int, default=8)
     for name in ("promote", "reject", "archive"):
         command = wiki_commands.add_parser(name)
         command.add_argument("--wiki", type=Path, required=True)
@@ -171,6 +175,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 path = service.repository.root / "candidates" / f"{entry.id}.md"
                 data = {"id": entry.id, "status": entry.status.value, "path": str(path),
                         "digest": _file_digest(path)}
+            elif args.wiki_command == "review":
+                data = service.review_candidate(args.id, args.max_related)
             elif args.wiki_command == "promote":
                 entry = service.promote(args.id, args.reviewer, args.expected_digest)
                 path = service.repository.root / "approved" / f"{entry.id}.md"

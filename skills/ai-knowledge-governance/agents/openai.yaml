@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI 知识治理"
+  short_description: "人工审核候选知识并执行生命周期动作"
+  default_prompt: "使用 $ai-knowledge-governance 审核一个 ai-workflow 候选知识条目。"
