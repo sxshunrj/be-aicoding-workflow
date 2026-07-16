@@ -117,3 +117,20 @@ def test_repo_scope_installs_under_repository_directory(tmp_path: Path) -> None:
     assert report.failed == ()
     assert (repo / ".agents/skills/ai-workflow-harness").is_symlink()
     assert (repo / ".ai-workflow/install-manifest.json").is_file()
+
+
+def test_installs_full_wave2_skill_suite_from_repository(tmp_path: Path) -> None:
+    source_root = Path(__file__).resolve().parents[2] / "skills"
+
+    report = install_skills(
+        source_root=source_root,
+        home=tmp_path / "home",
+        clients=("codex", "claude"),
+        mode="link",
+    )
+
+    assert report.failed == ()
+    assert len(report.items) == 22
+    assert all(item.status == "installed" for item in report.items)
+    assert (tmp_path / "home/.agents/skills/ai-ci-failure-triage").is_symlink()
+    assert (tmp_path / "home/.claude/skills/ai-workflow-harness-grill").is_symlink()
