@@ -32,7 +32,12 @@ def test_init_skill_scripts_delegate_without_shell_interpolation() -> None:
 
     assert 'python3 "$SCRIPT_DIR/install.py" "$@"' in init_sh
     assert "subprocess.run(argv, shell=False" in install_py
-    assert "source_root = skill_dir.parents[1]" in install_py
+    assert "source_root = skill_dir.parent" in [
+        line.strip() for line in install_py.splitlines()
+    ]
+    assert "source_root = skill_dir.parents[1]" not in install_py
+    assert "_ai_workflow_executable" in install_py
+    assert 'Path(sys.executable).with_name("ai-workflow")' in install_py
     assert "ai-workflow" in install_py
 
 

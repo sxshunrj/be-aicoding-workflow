@@ -18,9 +18,10 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     skill_dir = Path(__file__).resolve().parents[1]
-    source_root = skill_dir.parents[1]
+    source_root = skill_dir.parent
+    executable = _ai_workflow_executable()
     install_argv = [
-        "ai-workflow",
+        executable,
         "install",
         "--source-root",
         str(source_root),
@@ -41,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         return install_result.returncode
 
     doctor_argv = [
-        "ai-workflow",
+        executable,
         "doctor",
         "--source-root",
         str(source_root),
@@ -59,6 +60,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, shell=False, text=True, capture_output=True)
+
+
+def _ai_workflow_executable() -> str:
+    candidate = Path(sys.executable).with_name("ai-workflow")
+    if candidate.is_file():
+        return str(candidate)
+    return "ai-workflow"
 
 
 if __name__ == "__main__":
