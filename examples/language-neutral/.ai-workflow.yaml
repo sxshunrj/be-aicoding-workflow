@@ -1,10 +1,11 @@
-schema_version: 1
+schema_version: 2
 repository: language-neutral-example
 services: [example]
 wiki_path: ../../wiki
 commands:
   build: [bash, verify.sh, build]
-  test: [bash, verify.sh, test]
+  unit_test: [bash, verify.sh, unit-test]
+disabled_nodes: [verify.integration_test]
 max_attempts: 3
 review_mode: human
 knowledge:

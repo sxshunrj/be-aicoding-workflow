@@ -5,8 +5,10 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from hashlib import sha256
 from io import StringIO
+import argparse
 import json
 from pathlib import Path
+from pathlib import PurePosixPath
 import shutil
 
 from ai_workflow.cli import main
@@ -235,3 +237,60 @@ class FakeAgent:
     @staticmethod
     def _digest(path: Path) -> str:
         return sha256(path.read_bytes()).hexdigest()
+
+
+def _dispatch_from_prompt(path: Path) -> DispatchPacket:
+    text = path.read_text(encoding="utf-8")
+    marker = "```json\n"
+    start = text.index(marker) + len(marker)
+    end = text.index("\n```", start)
+    return DispatchPacket.from_bytes(text[start:end].encode("utf-8"))
+
+
+def _safe_repo_path(value: str) -> PurePosixPath:
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts or path.as_posix() != value:
+        raise SystemExit(f"unsafe output path: {value}")
+    return path
+
+
+def cli(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prompt-file", type=Path, required=True)
+    parser.add_argument("--result", type=Path, required=True)
+    args = parser.parse_args(argv)
+    packet = _dispatch_from_prompt(args.prompt_file)
+    relative = _safe_repo_path(packet.allowed_output_path)
+    artifact_path = Path.cwd() / relative
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(
+        f"# {packet.phase.value} {packet.child}\n\n"
+        f"Run {packet.run_id} / {packet.attempt_id}\n",
+        encoding="utf-8",
+    )
+    result = ChildResult(
+        run_id=packet.run_id,
+        phase=packet.phase,
+        child=packet.child,
+        attempt_id=packet.attempt_id,
+        execution_mode=packet.execution_mode,
+        status="completed",
+        summary=f"{packet.phase.value} {packet.child} completed.",
+        artifact=ArtifactRef(
+            packet.allowed_output_path,
+            sha256(artifact_path.read_bytes()).hexdigest(),
+            2,
+            packet.phase,
+            packet.child,
+            packet.source_revision,
+        ),
+        findings=(),
+        knowledge_citations=(),
+    )
+    args.result.parent.mkdir(parents=True, exist_ok=True)
+    result.write(args.result)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli())
