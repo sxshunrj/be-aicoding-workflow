@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Integration Test Checklists"
+  short_description: "生成证据映射的集成测试 checklist"
+  default_prompt: "使用 $ai-integration-test-checklists 基于需求、设计或 diff 生成集成测试 checklist。"
