@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Workflow Harness Grill"
+  short_description: "交互式 PRD 驱动的 plan/implement/verify workflow"
+  default_prompt: "使用 $ai-workflow-harness-grill 启动交互式 PRD 驱动 workflow。"
