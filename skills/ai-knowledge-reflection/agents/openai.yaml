@@ -1,4 +1,4 @@
 interface:
-  display_name: "AI 知识反思"
-  short_description: "从终态 run 证据生成候选知识"
-  default_prompt: "使用 $ai-knowledge-reflection 为已完成或已中止的 ai-workflow run 生成证据化知识反思。"
+  display_name: "AI Knowledge Reflection"
+  short_description: "Create evidence-backed candidate knowledge from a terminal run"
+  default_prompt: "Use $ai-knowledge-reflection to generate evidence-backed knowledge reflection for a completed or aborted ai-workflow run."
