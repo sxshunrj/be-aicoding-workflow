@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Workflow Init"
+  short_description: "安装和诊断 Wave 1 Skill 套件"
+  default_prompt: "使用 $ai-workflow-init 安装或诊断 ai-workflow Wave 1 Skill 套件。"

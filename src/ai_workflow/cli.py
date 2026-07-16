@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Sequence
 
 from ai_workflow.config import RepositoryConfig
+from ai_workflow.doctor import run_doctor
 from ai_workflow.errors import AppError
+from ai_workflow.install import install_skills
 from ai_workflow.workflow.models import Phase
 from ai_workflow.workflow.service import WorkflowService
 from ai_workflow.wiki.repository import WikiRepository
@@ -22,6 +24,16 @@ class _JsonArgumentParser(argparse.ArgumentParser):
 def _parser() -> argparse.ArgumentParser:
     parser = _JsonArgumentParser(prog="ai-workflow")
     commands = parser.add_subparsers(dest="command", required=True)
+    install = commands.add_parser("install")
+    install.add_argument("--source-root", type=Path, required=True)
+    install.add_argument("--client", choices=("codex", "claude", "all"), default="all")
+    install.add_argument("--scope", choices=("user", "repo"), default="user")
+    install.add_argument("--repo", type=Path)
+    install.add_argument("--copy", action="store_true")
+    doctor = commands.add_parser("doctor")
+    doctor.add_argument("--source-root", type=Path, required=True)
+    doctor.add_argument("--repo", type=Path)
+    doctor.add_argument("--client", choices=("codex", "claude", "all"), default="all")
     config = commands.add_parser("config")
     config_commands = config.add_subparsers(dest="config_command", required=True)
     show = config_commands.add_parser("show")
@@ -145,7 +157,33 @@ def _reruns(values: list[str]) -> dict[str, str]:
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
-        if args.command == "config":
+        if args.command == "install":
+            clients = ("codex", "claude") if args.client == "all" else (args.client,)
+            report = install_skills(
+                source_root=args.source_root,
+                home=Path.home(),
+                clients=clients,
+                mode="copy" if args.copy else "link",
+                scope=args.scope,
+                repo=args.repo,
+            )
+            data = report.to_dict()
+            status = 1 if report.failed else 0
+            print(json.dumps({"ok": not report.failed, "data": data}))
+            return status
+        elif args.command == "doctor":
+            clients = ("codex", "claude") if args.client == "all" else (args.client,)
+            report = run_doctor(
+                source_root=args.source_root,
+                home=Path.home(),
+                repo=args.repo,
+                clients=clients,
+            )
+            data = report.to_dict()
+            status = 1 if report.failed else 0
+            print(json.dumps({"ok": not report.failed, "data": data}))
+            return status
+        elif args.command == "config":
             data: object = _config_data(RepositoryConfig.load(args.repo))
         elif args.command == "wiki":
             service = WikiService(WikiRepository(args.wiki, validate_layout=False))
