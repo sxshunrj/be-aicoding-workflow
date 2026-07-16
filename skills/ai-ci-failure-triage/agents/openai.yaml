@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI CI Failure Triage"
+  short_description: "CI 失败事实收集与路由"
+  default_prompt: "使用 $ai-ci-failure-triage 收集 CI failed-job facts、分类失败并路由到正确 Skill。"
