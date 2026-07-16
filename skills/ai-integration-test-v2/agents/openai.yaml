@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Integration Test V2"
+  short_description: "执行、诊断和收敛集成测试"
+  default_prompt: "使用 $ai-integration-test-v2 执行、诊断并收敛 integration tests。"
