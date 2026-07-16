@@ -29,6 +29,8 @@ class KnowledgeType(StrEnum):
     PATTERN = "pattern"
     PITFALL = "pitfall"
     PROCEDURE = "procedure"
+    DIAGNOSTIC = "diagnostic"
+    WORKFLOW = "workflow"
 
 
 @dataclass(frozen=True, slots=True)

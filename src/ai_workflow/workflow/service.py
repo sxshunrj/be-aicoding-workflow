@@ -17,7 +17,7 @@ import yaml
 
 from ai_workflow.config import RepositoryConfig
 from ai_workflow.contracts.artifacts import ArtifactRef, ChildResult
-from ai_workflow.contracts.packets import DispatchPacket
+from ai_workflow.contracts.packets import DispatchPacket, ReflectionPacket
 from ai_workflow.errors import AppError
 from ai_workflow.workflow.dispatch import OWNER_CONTRACT, render_prompt_file
 from ai_workflow.workflow.graph import NodeValidity, build_run_graph
@@ -26,6 +26,7 @@ from ai_workflow.workflow.models import NodeStatus, Phase, RunState
 from ai_workflow.workflow.review import ReviewDecision, UNABLE_REASON
 from ai_workflow.workflow.store import Event, StateStore
 from ai_workflow.wiki.repository import WikiRepository
+from ai_workflow.wiki.models import CandidateProposal
 from ai_workflow.wiki.search import KnowledgeQuery, SearchLimits
 from ai_workflow.wiki.service import WikiService
 
@@ -717,6 +718,143 @@ class WorkflowService:
             transitions,
             tuple(sorted(cited)),
         )
+
+    def reflection_packet(self, run_id: str) -> ReflectionPacket:
+        state = self._load(run_id)
+        if state.status not in {"completed", "aborted"}:
+            raise AppError(
+                "invalid_transition",
+                "reflection requires a terminal run",
+            )
+        config = self._config()
+        events = self._read_events(run_id)
+        phase_results = tuple(
+            self._reflection_phase_result(
+                event["data"], config.max_knowledge_characters
+            )
+            for event in events
+            if event["type"] == "phase_finalized"
+        )
+        review_decisions = tuple(
+            self._bounded_reflection_value(
+                event["data"], config.max_knowledge_characters
+            )
+            for event in events
+            if event["type"] in {"review_proposed", "review_accepted"}
+        )
+        transition_events = tuple(
+            self._bounded_reflection_value(
+                event["data"], config.max_knowledge_characters
+            )
+            for event in events
+            if event["type"] == "workflow_transitioned"
+        )
+        citations = state.artifacts.get("knowledge_citations", [])
+        if not isinstance(citations, list) or not all(
+            isinstance(item, str) for item in citations
+        ):
+            raise AppError(
+                "invalid_state", "knowledge citation registry is invalid"
+            )
+        packet = ReflectionPacket.create(
+            run_id=run_id,
+            status=state.status,
+            requirement=state.requirement,
+            source_revision=state.source_revision,
+            phase_results=phase_results,
+            review_decisions=review_decisions,
+            transition_events=transition_events,
+            cited_knowledge_ids=tuple(sorted(citations)),
+        )
+        store = self._store(run_id)
+        try:
+            store.write_immutable(
+                store.reflection_packet_path(),
+                (json.dumps(packet.to_dict(), indent=2) + "\n").encode("utf-8"),
+            )
+        except AppError as error:
+            if error.code == "immutable_conflict":
+                raise AppError(
+                    "reflection_conflict",
+                    "reflection packet already exists with different evidence",
+                ) from error
+            raise
+        return packet
+
+    def submit_reflection(
+        self,
+        run_id: str,
+        decision_path: Path,
+        proposal_path: Path | None = None,
+    ) -> dict[str, object]:
+        packet = self.reflection_packet(run_id)
+        decision = self._reflection_decision(decision_path)
+        if decision["run_id"] != run_id:
+            raise AppError(
+                "invalid_reflection", "reflection decision run ID does not match"
+            )
+        if decision["evidence_digest"] != packet.evidence_digest:
+            raise AppError(
+                "invalid_reflection",
+                "reflection decision evidence digest does not match",
+            )
+        outcome = decision["outcome"]
+        if outcome == "candidate" and proposal_path is None:
+            raise AppError(
+                "invalid_reflection", "candidate proposal is required"
+            )
+        if outcome == "no_candidate" and proposal_path is not None:
+            raise AppError(
+                "invalid_reflection",
+                "proposal is only allowed for candidate outcome",
+            )
+        proposal_payload: bytes | None = None
+        if proposal_path is not None:
+            proposal = CandidateProposal.from_json(proposal_path)
+            if {"kind": "run", "ref": run_id} not in proposal.sources:
+                raise AppError(
+                    "invalid_reflection",
+                    "candidate proposal must include a current run source",
+                )
+            proposal_payload = Path(proposal_path).read_bytes()
+
+        store = self._store(run_id)
+        record = {
+            "run_id": run_id,
+            "evidence_digest": packet.evidence_digest,
+            "outcome": outcome,
+            "reason": decision["reason"],
+            "decision_path": str(store.reflection_decision_path()),
+            "proposal_path": (
+                None
+                if proposal_payload is None
+                else str(store.reflection_proposal_path())
+            ),
+            "submitted_at": self.clock().isoformat(),
+        }
+        decision_payload = (
+            json.dumps(decision, sort_keys=True, indent=2) + "\n"
+        ).encode("utf-8")
+        try:
+            store.write_immutable(
+                store.reflection_decision_path(), decision_payload
+            )
+            if proposal_payload is not None:
+                store.write_immutable(
+                    store.reflection_proposal_path(), proposal_payload
+                )
+        except AppError as error:
+            if error.code == "immutable_conflict":
+                raise AppError(
+                    "reflection_conflict",
+                    "reflection artifact already exists with different content",
+                ) from error
+            raise
+        store.append_event(
+            self._load(run_id).version,
+            Event("reflection_submitted", record, record["submitted_at"]),
+        )
+        return record
 
     def review(self, run_id: str, reruns: dict[str, str]) -> ReviewDecision:
         store = self._store(run_id)
@@ -2868,6 +3006,125 @@ class WorkflowService:
                 "invalid_run_id", "run path escapes workflow storage"
             )
         return StateStore(run_path)
+
+    @staticmethod
+    def _reflection_phase_result(
+        data: dict[str, object], max_characters: int
+    ) -> dict[str, object]:
+        children = data.get("children", [])
+        compact_children: list[dict[str, object]] = []
+        if isinstance(children, list):
+            for child in children:
+                if not isinstance(child, dict):
+                    continue
+                compact_children.append(
+                    {
+                        "phase": child.get("phase"),
+                        "child": child.get("child"),
+                        "status": child.get("status"),
+                        "summary": WorkflowService._bounded_reflection_value(
+                            child.get("summary"), max_characters
+                        ),
+                        "findings": WorkflowService._bounded_reflection_value(
+                            child.get("findings", ()), max_characters
+                        ),
+                        "knowledge_citations": child.get(
+                            "knowledge_citations", []
+                        ),
+                    }
+                )
+        return {
+            "phase": data.get("phase"),
+            "attempt_id": data.get("attempt_id"),
+            "status": data.get("status"),
+            "children": compact_children,
+        }
+
+    @staticmethod
+    def _bounded_reflection_value(
+        value: object, max_characters: int
+    ) -> object:
+        if isinstance(value, str):
+            limit = max(24, min(max_characters, 80))
+            if len(value) <= limit:
+                return value
+            prefix = min(40, max(8, limit // 2))
+            suffix = min(20, max(0, limit - prefix - 15))
+            tail = value[-suffix:] if suffix else ""
+            return f"{value[:prefix]}...[truncated]...{tail}"
+        if isinstance(value, list):
+            return [
+                WorkflowService._bounded_reflection_value(
+                    item, max_characters
+                )
+                for item in value
+            ]
+        if isinstance(value, tuple):
+            return tuple(
+                WorkflowService._bounded_reflection_value(
+                    item, max_characters
+                )
+                for item in value
+            )
+        if isinstance(value, dict):
+            return {
+                key: WorkflowService._bounded_reflection_value(
+                    item, max_characters
+                )
+                for key, item in value.items()
+                if isinstance(key, str)
+            }
+        return value
+
+    @staticmethod
+    def _reflection_decision(path: Path) -> dict[str, object]:
+        try:
+            loaded = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise AppError(
+                "invalid_reflection", f"reflection decision is invalid: {error}"
+            ) from error
+        expected = {
+            "schema_version",
+            "run_id",
+            "evidence_digest",
+            "outcome",
+            "reason",
+        }
+        if not isinstance(loaded, dict) or set(loaded) != expected:
+            raise AppError(
+                "invalid_reflection", "reflection decision keys are invalid"
+            )
+        if loaded["schema_version"] != 1:
+            raise AppError(
+                "invalid_reflection",
+                "reflection decision schema_version is unsupported",
+            )
+        if not isinstance(loaded["run_id"], str) or not loaded["run_id"].strip():
+            raise AppError("invalid_reflection", "reflection decision run ID is invalid")
+        digest = loaded["evidence_digest"]
+        if not isinstance(digest, str) or DIGEST_PATTERN.fullmatch(digest) is None:
+            raise AppError(
+                "invalid_reflection",
+                "reflection decision evidence digest is invalid",
+            )
+        if loaded["outcome"] not in {"no_candidate", "candidate"}:
+            raise AppError(
+                "invalid_reflection",
+                "reflection decision outcome is invalid",
+            )
+        if not isinstance(loaded["reason"], str) or not loaded["reason"].strip():
+            raise AppError(
+                "invalid_reflection",
+                "reflection decision reason must not be empty",
+            )
+        return {
+            "schema_version": 1,
+            "run_id": loaded["run_id"],
+            "evidence_digest": digest,
+            "outcome": loaded["outcome"],
+            "reason": loaded["reason"].strip(),
+        }
 
     def _load(self, run_id: str) -> RunState:
         store = self._store(run_id)

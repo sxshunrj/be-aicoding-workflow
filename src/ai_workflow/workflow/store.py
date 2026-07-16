@@ -59,6 +59,15 @@ class StateStore:
     def policy_path(self) -> Path:
         return self._safe_path("run-policy.json")
 
+    def reflection_packet_path(self) -> Path:
+        return self._safe_path("reflection-packet.json")
+
+    def reflection_decision_path(self) -> Path:
+        return self._safe_path("reflection-decision.json")
+
+    def reflection_proposal_path(self) -> Path:
+        return self._safe_path("knowledge-proposal.json")
+
     def write_immutable(self, path: Path, payload: bytes) -> bool:
         try:
             relative = path.relative_to(self.run_dir)

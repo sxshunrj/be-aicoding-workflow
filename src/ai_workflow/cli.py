@@ -33,7 +33,7 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--source-revision", required=True)
     init.add_argument("--requirement", required=True)
     init.add_argument("--profile", default="full")
-    for name in ("status", "abort", "summary"):
+    for name in ("status", "abort", "summary", "reflect"):
         command = workflow_commands.add_parser(name)
         command.add_argument("--repo", type=Path, required=True)
         command.add_argument("--run-id", required=True)
@@ -71,6 +71,11 @@ def _parser() -> argparse.ArgumentParser:
     block.add_argument("--repo", type=Path, required=True)
     block.add_argument("--run-id", required=True)
     block.add_argument("--reason", required=True)
+    reflect_submit = workflow_commands.add_parser("reflect-submit")
+    reflect_submit.add_argument("--repo", type=Path, required=True)
+    reflect_submit.add_argument("--run-id", required=True)
+    reflect_submit.add_argument("--decision", type=Path, required=True)
+    reflect_submit.add_argument("--proposal", type=Path)
     wiki = commands.add_parser("wiki")
     wiki_commands = wiki.add_subparsers(dest="wiki_command", required=True)
     lint = wiki_commands.add_parser("lint")
@@ -206,6 +211,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 data = service.finalize(args.run_id, args.attempt_id).to_dict()
             elif args.workflow_command == "summary":
                 data = service.summary(args.run_id).to_dict()
+            elif args.workflow_command == "reflect":
+                packet = service.reflection_packet(args.run_id)
+                data = {
+                    "path": str(
+                        service._store(args.run_id).reflection_packet_path()
+                    ),
+                    "evidence_digest": packet.evidence_digest,
+                }
+            elif args.workflow_command == "reflect-submit":
+                data = service.submit_reflection(
+                    args.run_id, args.decision, args.proposal
+                )
             elif args.workflow_command == "review":
                 data = service.review(
                     args.run_id, _reruns(args.rerun)

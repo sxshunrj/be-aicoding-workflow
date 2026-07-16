@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -22,6 +23,140 @@ class KnowledgePacket:
         return {"schema_version": SCHEMA_VERSION, "query": self.query,
                 "selected_ids": list(self.selected_ids), "entries": list(self.entries),
                 "digest": self.digest}
+
+
+@dataclass(frozen=True, slots=True)
+class ReflectionPacket:
+    run_id: str
+    status: str
+    requirement: str
+    source_revision: str
+    phase_results: tuple[dict[str, object], ...]
+    review_decisions: tuple[dict[str, object], ...]
+    transition_events: tuple[dict[str, object], ...]
+    cited_knowledge_ids: tuple[str, ...]
+    evidence_digest: str
+
+    def to_unsigned_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "run_id": self.run_id,
+            "status": self.status,
+            "requirement": self.requirement,
+            "source_revision": self.source_revision,
+            "phase_results": list(self.phase_results),
+            "review_decisions": list(self.review_decisions),
+            "transition_events": list(self.transition_events),
+            "cited_knowledge_ids": list(self.cited_knowledge_ids),
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            **self.to_unsigned_dict(),
+            "evidence_digest": self.evidence_digest,
+        }
+
+    def write(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(self.to_dict(), indent=2) + "\n", encoding="utf-8"
+        )
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        run_id: str,
+        status: str,
+        requirement: str,
+        source_revision: str,
+        phase_results: tuple[dict[str, object], ...],
+        review_decisions: tuple[dict[str, object], ...],
+        transition_events: tuple[dict[str, object], ...],
+        cited_knowledge_ids: tuple[str, ...],
+    ) -> "ReflectionPacket":
+        unsigned = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "status": status,
+            "requirement": requirement,
+            "source_revision": source_revision,
+            "phase_results": list(phase_results),
+            "review_decisions": list(review_decisions),
+            "transition_events": list(transition_events),
+            "cited_knowledge_ids": list(cited_knowledge_ids),
+        }
+        return cls(
+            run_id=run_id,
+            status=status,
+            requirement=requirement,
+            source_revision=source_revision,
+            phase_results=phase_results,
+            review_decisions=review_decisions,
+            transition_events=transition_events,
+            cited_knowledge_ids=cited_knowledge_ids,
+            evidence_digest=cls.compute_digest(unsigned),
+        )
+
+    @classmethod
+    def load(cls, path: Path | str) -> "ReflectionPacket":
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("reflection packet must be an object")
+        expected = {
+            "schema_version",
+            "run_id",
+            "status",
+            "requirement",
+            "source_revision",
+            "phase_results",
+            "review_decisions",
+            "transition_events",
+            "cited_knowledge_ids",
+            "evidence_digest",
+        }
+        if set(data) != expected:
+            raise ValueError("reflection packet keys are invalid")
+        if data["schema_version"] != 1:
+            raise ValueError("reflection packet schema_version is unsupported")
+        for key in ("run_id", "status", "requirement", "source_revision"):
+            if not isinstance(data[key], str) or not data[key].strip():
+                raise ValueError(f"reflection packet {key} is invalid")
+        for key in ("phase_results", "review_decisions", "transition_events"):
+            if not isinstance(data[key], list) or not all(
+                isinstance(item, dict) for item in data[key]
+            ):
+                raise ValueError(f"reflection packet {key} is invalid")
+        citations = data["cited_knowledge_ids"]
+        if not isinstance(citations, list) or not all(
+            isinstance(item, str) and item.strip() for item in citations
+        ):
+            raise ValueError("reflection packet citations are invalid")
+        digest = data["evidence_digest"]
+        if not _is_sha256(digest):
+            raise ValueError("reflection packet evidence digest is invalid")
+        unsigned = {key: value for key, value in data.items() if key != "evidence_digest"}
+        if cls.compute_digest(unsigned) != digest:
+            raise ValueError("reflection packet evidence digest does not match")
+        return cls(
+            run_id=data["run_id"],
+            status=data["status"],
+            requirement=data["requirement"],
+            source_revision=data["source_revision"],
+            phase_results=tuple(data["phase_results"]),
+            review_decisions=tuple(data["review_decisions"]),
+            transition_events=tuple(data["transition_events"]),
+            cited_knowledge_ids=tuple(citations),
+            evidence_digest=digest,
+        )
+
+    @staticmethod
+    def compute_digest(unsigned: dict[str, object]) -> str:
+        return hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
