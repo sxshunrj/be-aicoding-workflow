@@ -5,23 +5,23 @@ description: Use when ai-workflow run is completed or aborted and terminal clean
 
 # AI Knowledge Reflection
 
-Terminal reflection turns recorded run evidence into either an explicit no-candidate decision or one candidate proposal. It is not governance.
+Terminal reflection 只把已记录的 run evidence 转成明确的 no-candidate decision 或一个 candidate proposal。它不是 governance。
 
 ## Sequence
 
 `workflow reflect -> read packet -> search related approved knowledge -> write decision -> optional proposal -> workflow reflect-submit -> wiki propose`
 
-Run only when `workflow status` is `completed` or `aborted`. First call `ai-workflow workflow reflect --repo REPO --run-id RUN`, read the packet, and use CLI search for related approved knowledge. Do not use chat memory as evidence.
+只在 `workflow status` 为 `completed` 或 `aborted` 时运行。先调用 `ai-workflow workflow reflect --repo REPO --run-id RUN`，读取 packet，再通过 CLI 搜索相关 approved knowledge。不要把聊天记忆当证据。
 
-Write `knowledge-reflection-decision.json` using the exact shape in [proposal contract](references/proposal-contract.md). If outcome is `no_candidate`, submit only that file with `workflow reflect-submit` and report the reason.
+按 [proposal contract](references/proposal-contract.md) 的精确结构写 `knowledge-reflection-decision.json`。如果 outcome 是 `no_candidate`，只用 `workflow reflect-submit` 提交 decision 文件并报告原因。
 
-If outcome is `candidate`, also write `knowledge-proposal.json` as unchanged schema-v1 `CandidateProposal` JSON. It must include the current run source. Submit both files with `workflow reflect-submit`; only after that succeeds, call `wiki propose`.
+如果 outcome 是 `candidate`，再写一个保持 schema-v1 不变的 `CandidateProposal` JSON：`knowledge-proposal.json`。proposal 必须包含当前 run source。先用 `workflow reflect-submit` 提交 decision 和 proposal；只有提交成功后，才能调用 `wiki propose`。
 
 ## Boundaries
 
-- never call `wiki promote`
-- never write `wiki/approved`
-- reflection acceptance is not governance approval
-- do not invent claims
-- do not include secrets
-- for existing approved knowledge conflicts, mention them in the proposal rather than resolving them
+- 永远不要调用 `wiki promote`
+- 永远不要直接写 `wiki/approved`
+- reflection acceptance 不是 governance approval
+- 不要编造 claim
+- 不要包含 secrets
+- 如果和已有 approved knowledge 有冲突，在 proposal 中说明，不要自行解决冲突

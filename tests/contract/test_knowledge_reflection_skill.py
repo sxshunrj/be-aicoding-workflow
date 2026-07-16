@@ -39,11 +39,11 @@ def test_reflection_skill_forbids_governance_or_direct_approved_writes() -> None
     skill = _read()
 
     for forbidden_boundary in (
-        "never call `wiki promote`",
-        "never write `wiki/approved`",
-        "reflection acceptance is not governance approval",
-        "do not invent claims",
-        "do not include secrets",
+        "永远不要调用 `wiki promote`",
+        "永远不要直接写 `wiki/approved`",
+        "reflection acceptance 不是 governance approval",
+        "不要编造 claim",
+        "不要包含 secrets",
     ):
         assert forbidden_boundary in skill
 

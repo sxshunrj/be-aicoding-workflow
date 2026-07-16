@@ -5,16 +5,16 @@ description: Use when reviewing ai-workflow candidate knowledge for human promot
 
 # AI Knowledge Governance
 
-Knowledge governance is a human gate. The Agent gathers facts, compares material differences, and executes only the chosen digest-protected lifecycle action.
+Knowledge governance 是人类 gate。Agent 只负责收集事实、比较 material differences，并且只执行人类选择的 digest-protected lifecycle action。
 
 ## Sequence
 
 `wiki review -> inspect candidate evidence, scope, reuse reason, conflicts, expiry, and related approved entries -> show digest and material differences -> human choice -> execute exactly one digest-protected lifecycle command -> report result`
 
-Run `ai-workflow wiki review --wiki PATH --id ID` first. Read the candidate digest, declared conflicts/supersedes, and related approved entries. Apply the [review checklist](references/review-checklist.md) before presenting choices.
+先运行 `ai-workflow wiki review --wiki PATH --id ID`。读取 candidate digest、declared conflicts/supersedes 和 related approved entries。展示选择前必须按 [review checklist](references/review-checklist.md) 检查。
 
-Human choices are `promote`, `reject`, or `leave candidate unchanged`. No choice may default to promote; silence means leave unchanged.
+人类选择只有 `promote`、`reject` 或 `leave candidate unchanged`。No choice may default to promote；沉默等于保持不变。
 
-If the human chooses `promote`, run `wiki promote` with the candidate `expected-digest`. If the human chooses `reject`, run `wiki reject` with `expected-digest` and the explicit reason. Do not archive approved entries from this candidate flow unless the human starts a separate approved-retirement action.
+如果人类选择 `promote`，用 candidate `expected-digest` 调用 `wiki promote`。如果人类选择 `reject`，用 `expected-digest` 和明确 reason 调用 `wiki reject`。不要在 candidate flow 中 archive approved entries，除非人类另行发起 approved-retirement action。
 
-Report the resulting approved path/searchability, archived path, or unchanged candidate ID and digest.
+最后报告 approved path/searchability、archived path，或 unchanged candidate ID 和 digest。

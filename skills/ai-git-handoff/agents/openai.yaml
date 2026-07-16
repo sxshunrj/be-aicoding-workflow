@@ -1,4 +1,4 @@
 interface:
   display_name: "AI Git Handoff"
-  short_description: "Human-gated Git handoff for local changes"
-  default_prompt: "Use $ai-git-handoff to inspect local changes and execute Git handoff after I choose an option."
+  short_description: "人工选择后的 Git 收尾与交接"
+  default_prompt: "使用 $ai-git-handoff 检查本地变更，并在我选择后执行 Git 收尾。"

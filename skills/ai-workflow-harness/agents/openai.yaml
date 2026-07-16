@@ -1,4 +1,4 @@
 interface:
   display_name: "AI Workflow Harness"
-  short_description: "Start, resume, or continue a persistent four-phase AI coding workflow"
-  default_prompt: "Use $ai-workflow-harness to start or resume a persistent four-phase AI coding workflow."
+  short_description: "显式启动、恢复或继续持久化四阶段 AI 编码工作流"
+  default_prompt: "使用 $ai-workflow-harness 启动或恢复持久化四阶段 AI 编码工作流。"

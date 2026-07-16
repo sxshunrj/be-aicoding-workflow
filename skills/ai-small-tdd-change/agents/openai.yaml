@@ -1,7 +1,7 @@
 interface:
   display_name: "AI Small TDD Change"
-  short_description: "Explicit lightweight TDD workflow for small scoped changes"
-  default_prompt: "Use $ai-small-tdd-change for a small scoped change with RED/GREEN verification evidence."
+  short_description: "显式触发的小范围 TDD 编码流程"
+  default_prompt: "使用 $ai-small-tdd-change 处理一个小范围改动，并保留 RED/GREEN 验证证据。"
 
 policy:
   allow_implicit_invocation: false
