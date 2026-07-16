@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Integration Test Generator"
+  short_description: "基于 repository adapter 生成或更新集成测试资产"
+  default_prompt: "使用 $ai-integration-test-generator 基于 repository adapter 生成或更新 integration-test assets。"

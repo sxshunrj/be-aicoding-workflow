@@ -38,6 +38,27 @@ disabled_nodes: [verify.integration_test]
     assert config.disabled_nodes == ("verify.integration_test",)
 
 
+def test_loads_repository_adapter_fields_for_integration_generation(tmp_path: Path) -> None:
+    (tmp_path / ".ai-workflow.yaml").write_text(
+        """
+repository: demo
+adapter:
+  source_paths: [src/**]
+  test_paths: [tests/**]
+  generated_test_destinations: [tests/generated]
+  report_paths: [reports/integration.json]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = RepositoryConfig.load(tmp_path)
+
+    assert config.adapter_source_paths == ("src/**",)
+    assert config.adapter_test_paths == ("tests/**",)
+    assert config.adapter_generated_test_destinations == ("tests/generated",)
+    assert config.adapter_report_paths == ("reports/integration.json",)
+
+
 def test_rejects_shell_string_commands(tmp_path: Path) -> None:
     (tmp_path / ".ai-workflow.yaml").write_text(
         "schema_version: 1\nrepository: demo\ncommands:\n  test: pytest -q\n",
@@ -85,6 +106,14 @@ def test_rejects_shell_string_commands(tmp_path: Path) -> None:
         (
             "repository: demo\ndisabled_nodes: [verify.build, false]\n",
             "disabled_nodes must be a list of strings",
+        ),
+        (
+            "repository: demo\nadapter: []\n",
+            "adapter must be a mapping",
+        ),
+        (
+            "repository: demo\nadapter:\n  source_paths: src/**\n",
+            "adapter.source_paths must be a list of strings",
         ),
     ],
 )

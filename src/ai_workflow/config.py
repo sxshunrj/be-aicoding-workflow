@@ -41,6 +41,10 @@ class RepositoryConfig:
     max_knowledge_characters: int
     protected_paths: tuple[str, ...]
     disabled_nodes: tuple[str, ...]
+    adapter_source_paths: tuple[str, ...]
+    adapter_test_paths: tuple[str, ...]
+    adapter_generated_test_destinations: tuple[str, ...]
+    adapter_report_paths: tuple[str, ...]
 
     def command(self, name: str) -> tuple[str, ...] | None:
         return self.commands.get(name)
@@ -69,6 +73,9 @@ class RepositoryConfig:
         knowledge = raw.get("knowledge", {})
         if "knowledge" in raw:
             knowledge = _mapping(knowledge, "knowledge")
+        adapter = raw.get("adapter", {})
+        if "adapter" in raw:
+            adapter = _mapping(adapter, "adapter")
         max_attempts = _integer(raw.get("max_attempts", 3), "max_attempts")
         if max_attempts < 1:
             raise AppError("config_invalid", "max_attempts must be at least 1")
@@ -102,4 +109,17 @@ class RepositoryConfig:
             max_knowledge_characters=max_knowledge_characters,
             protected_paths=_strings(raw.get("protected_paths"), "protected_paths"),
             disabled_nodes=_strings(raw.get("disabled_nodes"), "disabled_nodes"),
+            adapter_source_paths=_strings(
+                adapter.get("source_paths"), "adapter.source_paths"
+            ),
+            adapter_test_paths=_strings(
+                adapter.get("test_paths"), "adapter.test_paths"
+            ),
+            adapter_generated_test_destinations=_strings(
+                adapter.get("generated_test_destinations"),
+                "adapter.generated_test_destinations",
+            ),
+            adapter_report_paths=_strings(
+                adapter.get("report_paths"), "adapter.report_paths"
+            ),
         )
