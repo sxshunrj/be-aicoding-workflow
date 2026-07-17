@@ -634,8 +634,9 @@ def test_stage_rejects_protected_artifact_path(tmp_path: Path) -> None:
         tmp_path, run.run_id, attempt.attempt_id, Phase.SPEC, "spec"
     )
 
-    with pytest.raises(AppError, match="protected"):
+    with pytest.raises(AppError) as error:
         service.stage(run.run_id, attempt.attempt_id, "spec", result)
+    assert error.value.code == "path_not_authorized"
 
 
 def test_stage_rejects_artifact_outside_child_owned_output(tmp_path: Path) -> None:

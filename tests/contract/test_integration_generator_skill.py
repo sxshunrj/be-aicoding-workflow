@@ -34,6 +34,21 @@ def test_generator_skill_requires_repository_adapter_and_reviewable_outputs() ->
         assert phrase in skill
 
 
+def test_generator_skill_requires_mechanical_path_authorization() -> None:
+    skill = _read()
+    reference = _read("references/repository-adapter.md")
+    combined = f"{skill}\n{reference}"
+
+    for phrase in (
+        "ai-workflow config authorize-path --repo REPO --kind input --path PATH",
+        "ai-workflow config authorize-path --repo REPO --kind generated-test --path PATH",
+        "ai-workflow config authorize-path --repo REPO --kind report --path PATH",
+        "path_not_authorized",
+        "fail closed",
+    ):
+        assert phrase in combined
+
+
 def test_repository_adapter_reference_lists_required_fields() -> None:
     reference = _read("references/repository-adapter.md")
     for phrase in (

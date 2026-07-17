@@ -51,6 +51,7 @@ ARTIFACT_REF_KEYS = {
 }
 WORKFLOW_COMMANDS = (
     "ai-workflow config show --repo REPO",
+    "ai-workflow config authorize-path --repo REPO --kind input|generated-test|report --path PATH",
     "ai-workflow workflow init --repo REPO --source-revision SHA --requirement TEXT --profile PROFILE",
     "ai-workflow workflow status --repo REPO --run-id RUN",
     "ai-workflow workflow begin --repo REPO --run-id RUN --phase PHASE --skill-dir SKILL_DIR",
@@ -132,7 +133,7 @@ def test_harness_frontmatter_and_main_sections_are_canonical() -> None:
         "## Reference index",
     ):
         assert heading in skill
-    assert len(skill.split()) < 500
+    assert len(skill.splitlines()) >= 120
 
 
 def test_main_loop_preserves_control_order_and_hard_invariants() -> None:
@@ -151,6 +152,15 @@ def test_main_loop_preserves_control_order_and_hard_invariants() -> None:
     )
     for text in required_text:
         assert text in skill
+    for phrase in (
+        "run_graph 是唯一调度真值",
+        "先推导 rerun proposal，再进入 Review Gate",
+        "Review Gate accept 后才允许 transition",
+        "blocked 不受 auto_accept 影响",
+        "用户反馈必须映射到唯一 run_graph node",
+        "workflow 不打开 child artifact 正文来补做 child 判断",
+    ):
+        assert phrase in skill
 
 
 def test_main_skill_links_every_reference_directly() -> None:
@@ -164,10 +174,46 @@ def test_main_skill_links_every_reference_directly() -> None:
 def test_reference_topics_own_their_required_contracts() -> None:
     expected = {
         "references/bootstrap.md": ("scan", "resume", "requirement", "profile", "run_id"),
-        "references/helper-cli.md": ("JSON", "error.code", "caller", "workflow status"),
-        "references/subagent-dispatch.md": ("prompt_file", "dispatch", "wait", "ChildResult"),
-        "references/review-gate.md": ("workflow review", "review-accept", "digest", "transition"),
-        "references/recovery.md": ("status", "attempt", "staged", "review_gate"),
+        "references/helper-cli.md": (
+            "JSON",
+            "error.code",
+            "caller",
+            "workflow status",
+            "config authorize-path",
+            "path_not_authorized",
+            "attempt_owner_mismatch",
+            "barrier_incomplete",
+            "review_gate_mismatch",
+            "stale_review_gate",
+        ),
+        "references/subagent-dispatch.md": (
+            "prompt_file",
+            "dispatch",
+            "wait",
+            "ChildResult",
+            "dispatch all sibling children before waiting",
+            "silence is not failure",
+            "workflow 不重写 prompt",
+        ),
+        "references/review-gate.md": (
+            "workflow review",
+            "review-accept",
+            "digest",
+            "transition",
+            "proposed rerun",
+            "human_review",
+            "auto_accept",
+            "terminal completion",
+        ),
+        "references/recovery.md": (
+            "status",
+            "attempt",
+            "staged",
+            "review_gate",
+            "new conversation",
+            "不得从聊天记录重建 state",
+            "stale ChildResult",
+        ),
         "references/terminal-cleanup.md": ("human", "reflection", "governance", "Git handoff"),
         "references/knowledge-loop.md": ("packet", "knowledge_citations", "raw Wiki Markdown"),
     }
@@ -175,6 +221,10 @@ def test_reference_topics_own_their_required_contracts() -> None:
         text = _read(relative)
         for term in terms:
             assert term in text, f"{relative} must contain {term!r}"
+    assert len(_read("references/helper-cli.md").splitlines()) >= 130
+    assert len(_read("references/subagent-dispatch.md").splitlines()) >= 90
+    assert len(_read("references/review-gate.md").splitlines()) >= 90
+    assert len(_read("references/recovery.md").splitlines()) >= 80
 
 
 def test_common_child_contract_defines_exact_schema_v2_result_and_no_state_rules() -> None:
@@ -205,6 +255,19 @@ def test_common_child_contract_defines_exact_schema_v2_result_and_no_state_rules
         assert term in contract
     assert "allowed_input_paths` 是 repository-relative" in contract
     assert "`allowed_output_path` 是唯一可 stage 的物理路径" in contract
+    for phrase in (
+        "Child 只能调用属于自己的验证或实现命令",
+        "禁止调用 `workflow status`",
+        "禁止调用 `workflow begin`",
+        "禁止调用 `workflow stage`",
+        "禁止调用 `workflow finalize`",
+        "不得替 sibling 产出 artifact",
+        "不得向用户展示 Review Gate 菜单",
+        "stale 时不替换 attempt_id",
+        "unsupported claims",
+    ):
+        assert phrase in contract
+    assert len(contract.splitlines()) >= 120
 
 
 def test_child_result_example_has_exact_top_level_and_artifact_keys() -> None:

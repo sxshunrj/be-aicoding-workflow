@@ -29,14 +29,44 @@ def test_grill_skill_defines_prd_driven_three_phase_loop() -> None:
         "implement 和 verify 仍然 child-backed",
         "PRD issue identifier 是内容标识，不是 dynamic run-graph node",
         "不得直接编辑 `.ai-workflow/runs/**`",
+        "plan 不派 child",
+        "workflow-owned PRD",
+        "stage-owned",
+        "Review Gate",
+        "blocked 不自动恢复",
+        "terminal Git handoff",
     ):
         assert phrase in skill
+    assert len(skill.splitlines()) >= 90
 
 
 def test_grill_references_cover_prd_loop_and_dispatch_boundaries() -> None:
     prd = _read("references/prd-loop.md")
     dispatch = _read("references/dispatch.md")
-    for phrase in ("acceptance criteria", "non-goals", "open questions", "PRD artifact"):
+    for phrase in (
+        "acceptance criteria",
+        "non-goals",
+        "open questions",
+        "PRD artifact",
+        "一次只问一个问题",
+        "resolved questions",
+        "blocking questions",
+        "stage-owned",
+        "不得直接构造 ChildResult",
+    ):
         assert phrase in prd
-    for phrase in ("prompt_file", "ChildResult", "barrier", "stage", "finalize"):
+    for phrase in (
+        "prompt_file",
+        "ChildResult",
+        "barrier",
+        "stage",
+        "finalize",
+        "implement",
+        "verify",
+        "Review Gate",
+        "checkpoint",
+        "dispatch 不追加隐藏上下文",
+    ):
         assert phrase in dispatch
+    assert len(prd.splitlines()) >= 80
+    assert len(dispatch.splitlines()) >= 70

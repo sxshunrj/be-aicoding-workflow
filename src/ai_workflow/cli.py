@@ -9,6 +9,7 @@ from ai_workflow.config import RepositoryConfig
 from ai_workflow.doctor import run_doctor
 from ai_workflow.errors import AppError
 from ai_workflow.install import install_skills
+from ai_workflow.path_authorization import PathKind, RepositoryPathAuthorizer
 from ai_workflow.workflow.models import Phase
 from ai_workflow.workflow.service import WorkflowService
 from ai_workflow.wiki.repository import WikiRepository
@@ -38,6 +39,12 @@ def _parser() -> argparse.ArgumentParser:
     config_commands = config.add_subparsers(dest="config_command", required=True)
     show = config_commands.add_parser("show")
     show.add_argument("--repo", type=Path, required=True)
+    authorize_path = config_commands.add_parser("authorize-path")
+    authorize_path.add_argument("--repo", type=Path, required=True)
+    authorize_path.add_argument(
+        "--kind", choices=("input", "generated-test", "report"), required=True
+    )
+    authorize_path.add_argument("--path", required=True)
     workflow = commands.add_parser("workflow")
     workflow_commands = workflow.add_subparsers(dest="workflow_command", required=True)
     init = workflow_commands.add_parser("init")
@@ -184,7 +191,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"ok": not report.failed, "data": data}))
             return status
         elif args.command == "config":
-            data: object = _config_data(RepositoryConfig.load(args.repo))
+            config = RepositoryConfig.load(args.repo)
+            if args.config_command == "show":
+                data: object = _config_data(config)
+            else:
+                kind: PathKind = args.kind
+                authorized = RepositoryPathAuthorizer(
+                    args.repo, config
+                ).authorize(kind, args.path)
+                data = {
+                    "authorized": True,
+                    "kind": kind,
+                    "path": authorized,
+                }
         elif args.command == "wiki":
             service = WikiService(WikiRepository(args.wiki, validate_layout=False))
             if args.wiki_command == "lint":

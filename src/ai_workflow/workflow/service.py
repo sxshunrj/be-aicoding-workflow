@@ -3,11 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from fnmatch import fnmatchcase
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import stat
 from typing import Literal
@@ -19,6 +18,7 @@ from ai_workflow.config import RepositoryConfig
 from ai_workflow.contracts.artifacts import ArtifactRef, ChildResult
 from ai_workflow.contracts.packets import DispatchPacket, ReflectionPacket
 from ai_workflow.errors import AppError
+from ai_workflow.path_authorization import RepositoryPathAuthorizer
 from ai_workflow.workflow.dispatch import OWNER_CONTRACT, render_prompt_file
 from ai_workflow.workflow.graph import NodeValidity, build_run_graph
 from ai_workflow.workflow.machine import PHASE_ORDER, StateMachine, phase_nodes
@@ -1936,23 +1936,16 @@ class WorkflowService:
             raise AppError(
                 "invalid_result", "artifact path is not the child-owned output"
             )
-        pure = PurePosixPath(artifact.path)
-        if (
-            pure.is_absolute()
-            or pure.as_posix() != artifact.path
-            or ".." in pure.parts
-            or "\\" in artifact.path
-        ):
-            raise AppError("invalid_result", "artifact path escapes repository")
         config = self._config()
-        if any(fnmatchcase(artifact.path, pattern) for pattern in config.protected_paths):
-            raise AppError(
-                "protected_artifact_path", "artifact path is protected"
-            )
         if self.repo_root is None:
             raise AppError(
                 "repository_required", "repository root is required"
             )
+        RepositoryPathAuthorizer(self.repo_root, config).authorize(
+            "report",
+            artifact.path,
+            helper_owned_report_paths=(allowed_output,),
+        )
         repository = self.repo_root.resolve()
         path = self.repo_root / artifact.path
         if path.is_symlink():
@@ -2018,21 +2011,11 @@ class WorkflowService:
             raise AppError(
                 "repository_required", "repository root is required"
             )
-        excluded = {".ai-workflow", "wiki", "artifacts"}
-        paths = [
-            entry.name
-            for entry in sorted(self.repo_root.iterdir(), key=lambda item: item.name)
-            if entry.name not in excluded
-            and not entry.is_symlink()
-            and not any(
-                fnmatchcase(entry.name, pattern)
-                for pattern in config.protected_paths
-            )
-        ]
-        paths.extend(
-            artifact.path for artifact in prior if artifact.path not in paths
+        return RepositoryPathAuthorizer(
+            self.repo_root, config
+        ).allowed_input_paths(
+            helper_owned_input_paths=tuple(artifact.path for artifact in prior)
         )
-        return tuple(paths)
 
     @staticmethod
     def _validate_skill_dir(skill_dir: Path, nodes) -> Path:

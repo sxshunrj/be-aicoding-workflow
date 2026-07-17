@@ -20,7 +20,11 @@ description: Use when 用户要求基于 repository adapter 生成或更新 inte
 
 ## Rules
 
-- 只写被 adapter 授权的测试路径，优先写入 `generated_test_destinations`。
+- 读取任何 input 前，先运行 `ai-workflow config authorize-path --repo REPO --kind input --path PATH`。
+- 写 generated test 前，先运行 `ai-workflow config authorize-path --repo REPO --kind generated-test --path PATH`，优先写入 `generated_test_destinations`。
+- 写 report 前，先运行 `ai-workflow config authorize-path --repo REPO --kind report --path PATH`。
+- 任一授权命令返回 `path_not_authorized` 时 fail closed：停止该读写动作，不扩大路径范围，不猜测替代目录。
+- 只写被 adapter 授权的测试路径。
 - 不得修改生产代码，不得改 workflow state，不得写 protected paths。
 - 生成前先读取已有测试资产，避免重复 case。
 - 每个新 case 必须对应 checklist evidence 或明确需求来源。
