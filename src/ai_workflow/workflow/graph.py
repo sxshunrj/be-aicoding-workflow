@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
 from ai_workflow.config import RepositoryConfig
 from ai_workflow.errors import AppError
@@ -10,6 +11,11 @@ class NodeValidity(StrEnum):
     PENDING = "pending"
     VALID = "valid"
     RERUN = "rerun"
+
+
+class WorkflowProfile(StrEnum):
+    FULL = "full"
+    GRILL = "grill"
 
 
 @dataclass(slots=True)
@@ -51,7 +57,13 @@ class RunGraphNode:
         )
 
 
-_DEFAULT_RUN_GRAPH = (
+@dataclass(frozen=True, slots=True)
+class RunGraphDefinition:
+    nodes: dict[str, RunGraphNode]
+    initial_phase: Phase
+
+
+_FULL_RUN_GRAPH = (
     ("spec.spec", Phase.SPEC, "spec", None),
     ("plan.solution", Phase.PLAN, "solution", None),
     ("plan.test_strategy", Phase.PLAN, "test_strategy", None),
@@ -66,17 +78,51 @@ _DEFAULT_RUN_GRAPH = (
     ),
     ("verify.code_review", Phase.VERIFY, "code_review", None),
 )
-_MANDATORY_NODES = {
+_FULL_MANDATORY_NODES = {
     "spec.spec",
     "plan.solution",
     "implement.code",
     "verify.code_review",
 }
+_GRILL_RUN_GRAPH = (
+    ("plan.prd", Phase.PLAN, "prd", None),
+    ("implement.code", Phase.IMPLEMENT, "code", None),
+    ("verify.build", Phase.VERIFY, "build", "build"),
+    ("verify.unit_test", Phase.VERIFY, "unit_test", "unit_test"),
+    (
+        "verify.integration_test",
+        Phase.VERIFY,
+        "integration_test",
+        "integration_test",
+    ),
+    ("verify.code_review", Phase.VERIFY, "code_review", None),
+)
+_GRILL_MANDATORY_NODES = {
+    "plan.prd",
+    "implement.code",
+    "verify.code_review",
+}
+_PROFILE_DEFINITIONS = {
+    WorkflowProfile.FULL: (
+        _FULL_RUN_GRAPH,
+        Phase.SPEC,
+        _FULL_MANDATORY_NODES,
+    ),
+    WorkflowProfile.GRILL: (
+        _GRILL_RUN_GRAPH,
+        Phase.PLAN,
+        _GRILL_MANDATORY_NODES,
+    ),
+}
 
 
-def build_run_graph(config: RepositoryConfig) -> dict[str, RunGraphNode]:
+def build_run_graph(
+    config: RepositoryConfig,
+    profile: WorkflowProfile = WorkflowProfile.FULL,
+) -> RunGraphDefinition:
+    template, initial_phase, mandatory = _PROFILE_DEFINITIONS[profile]
     disabled = set(config.disabled_nodes)
-    disabled_mandatory = disabled & _MANDATORY_NODES
+    disabled_mandatory = disabled & mandatory
     if disabled_mandatory:
         key = min(disabled_mandatory)
         raise AppError(
@@ -84,17 +130,20 @@ def build_run_graph(config: RepositoryConfig) -> dict[str, RunGraphNode]:
             f"mandatory run graph node cannot be disabled: {key}",
         )
     graph: dict[str, RunGraphNode] = {}
-    for key, phase, child, command_name in _DEFAULT_RUN_GRAPH:
+    for key, phase, child, command_name in template:
         if key in disabled:
             continue
         if command_name is not None and config.command(command_name) is None:
             continue
         graph[key] = RunGraphNode(key=key, phase=phase, child=child)
-    validate_run_graph(graph)
-    return graph
+    validate_run_graph(graph, profile)
+    return RunGraphDefinition(nodes=graph, initial_phase=initial_phase)
 
 
-def validate_run_graph(graph: dict[str, RunGraphNode]) -> None:
+def validate_run_graph(
+    graph: dict[str, RunGraphNode],
+    profile: WorkflowProfile = WorkflowProfile.FULL,
+) -> None:
     for key, node in graph.items():
         if key != node.key:
             raise AppError(
@@ -117,7 +166,14 @@ def validate_run_graph(graph: dict[str, RunGraphNode]) -> None:
                 "invalid_run_graph", "non-rerun node must not have a reason"
             )
 
-    missing = _MANDATORY_NODES - set(graph)
+    _, _, mandatory = _PROFILE_DEFINITIONS[profile]
+    missing = mandatory - set(graph)
     if missing:
         key = min(missing)
         raise AppError("invalid_run_graph", f"mandatory run graph node is missing: {key}")
+
+
+def execution_kind(
+    node: RunGraphNode,
+) -> Literal["child_backed", "workflow_owned"]:
+    return "workflow_owned" if node.key == "plan.prd" else "child_backed"

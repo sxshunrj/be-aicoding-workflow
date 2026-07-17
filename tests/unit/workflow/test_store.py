@@ -6,7 +6,7 @@ import threading
 import pytest
 
 from ai_workflow.errors import AppError
-from ai_workflow.workflow.graph import RunGraphNode
+from ai_workflow.workflow.graph import RunGraphNode, WorkflowProfile
 from ai_workflow.workflow.models import Phase, RunState
 from ai_workflow.workflow.store import Event, StateStore
 
@@ -20,7 +20,14 @@ def new_state(run_id: str = "RUN-001", revision: str = "abc123") -> RunState:
             "verify.code_review", Phase.VERIFY, "code_review"
         ),
     }
-    return RunState.new(run_id, revision, "Test persistence", "full", graph)
+    return RunState.new(
+        run_id,
+        revision,
+        "Test persistence",
+        WorkflowProfile.FULL,
+        graph,
+        Phase.SPEC,
+    )
 
 
 def test_state_round_trip_and_event_append(tmp_path: Path) -> None:

@@ -20,7 +20,7 @@ from ai_workflow.contracts.packets import DispatchPacket, ReflectionPacket
 from ai_workflow.errors import AppError
 from ai_workflow.path_authorization import RepositoryPathAuthorizer
 from ai_workflow.workflow.dispatch import OWNER_CONTRACT, render_prompt_file
-from ai_workflow.workflow.graph import NodeValidity, build_run_graph
+from ai_workflow.workflow.graph import NodeValidity, WorkflowProfile, build_run_graph
 from ai_workflow.workflow.machine import PHASE_ORDER, StateMachine, phase_nodes
 from ai_workflow.workflow.models import NodeStatus, Phase, RunState
 from ai_workflow.workflow.review import ReviewDecision, UNABLE_REASON
@@ -211,17 +211,20 @@ class WorkflowService:
             )
         if not isinstance(requirement, str) or not requirement.strip():
             raise AppError("invalid_requirement", "requirement must not be empty")
-        if not isinstance(profile, str) or not profile.strip():
-            raise AppError("invalid_profile", "profile must not be empty")
+        try:
+            workflow_profile = WorkflowProfile(profile)
+        except ValueError as error:
+            raise AppError("invalid_profile", "profile must be full or grill") from error
         self.repo_root = repo_root
         suffix = self._new_id_suffix()
         run_id = f"RUN-{self.clock():%Y%m%d-%H%M%S}-{suffix}"
+        definition = build_run_graph(config, workflow_profile)
         store = self._store(run_id)
         policy_path = store.policy_path()
         policy_payload = self._run_policy_payload(
             run_id,
             source_revision,
-            profile,
+            workflow_profile.value,
             config.review_mode,
         )
         policy_digest = hashlib.sha256(policy_payload).hexdigest()
@@ -229,8 +232,9 @@ class WorkflowService:
             run_id,
             source_revision,
             requirement,
-            profile,
-            build_run_graph(config),
+            workflow_profile,
+            definition.nodes,
+            definition.initial_phase,
         )
         state.artifacts[RUN_POLICY_KEY] = {
             "review_mode": config.review_mode,

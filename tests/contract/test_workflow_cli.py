@@ -169,6 +169,62 @@ def test_cli_init_begin_stage_finalize_lifecycle(tmp_path: Path, capsys) -> None
     assert shown["data"]["run_graph"]["spec.spec"]["validity"] == "valid"
 
 
+def test_cli_init_grill_profile_starts_at_plan_prd(tmp_path: Path, capsys) -> None:
+    _config(tmp_path)
+
+    status, payload = _call(
+        capsys,
+        [
+            "workflow",
+            "init",
+            "--repo",
+            str(tmp_path),
+            "--source-revision",
+            "abc123",
+            "--requirement",
+            "Draft a PRD first",
+            "--profile",
+            "grill",
+        ],
+    )
+
+    assert status == 0
+    assert payload["data"]["profile"] == "grill"
+    assert payload["data"]["current_phase"] == "plan"
+    assert tuple(payload["data"]["run_graph"]) == (
+        "plan.prd",
+        "implement.code",
+        "verify.code_review",
+    )
+
+
+def test_cli_init_unknown_profile_uses_stable_json_error(
+    tmp_path: Path, capsys
+) -> None:
+    _config(tmp_path)
+
+    status, payload = _call(
+        capsys,
+        [
+            "workflow",
+            "init",
+            "--repo",
+            str(tmp_path),
+            "--source-revision",
+            "abc123",
+            "--requirement",
+            "Draft a PRD first",
+            "--profile",
+            "unknown",
+        ],
+    )
+
+    assert status != 0
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "invalid_profile"
+    assert not (tmp_path / ".ai-workflow" / "runs").exists()
+
+
 def test_cli_submit_command_is_removed(tmp_path: Path, capsys) -> None:
     status, payload = _call(
         capsys,

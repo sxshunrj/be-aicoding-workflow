@@ -62,31 +62,37 @@ class RunState:
         run_id: str,
         source_revision: str,
         requirement: str,
-        profile: str,
+        profile: object,
         run_graph: dict[str, RunGraphNode],
+        initial_phase: Phase,
     ) -> "RunState":
-        from ai_workflow.workflow.graph import validate_run_graph
+        from ai_workflow.workflow.graph import WorkflowProfile, validate_run_graph
 
         cls._validate_non_blank(requirement, "requirement")
-        cls._validate_non_blank(profile, "profile")
-        validate_run_graph(run_graph)
+        workflow_profile = WorkflowProfile(profile)
+        validate_run_graph(run_graph, workflow_profile)
+        if not any(node.phase is initial_phase for node in run_graph.values()):
+            raise AppError(
+                "invalid_run_graph", "initial phase is absent from run graph"
+            )
         return cls(
             schema_version=2,
             run_id=run_id,
             version=0,
             status=NodeStatus.PENDING.value,
-            current_phase=Phase.SPEC.value,
+            current_phase=initial_phase.value,
             source_revision=source_revision,
             requirement=requirement,
-            profile=profile,
+            profile=workflow_profile.value,
             run_graph=dict(run_graph),
             artifacts={},
         )
 
     def to_dict(self) -> dict[str, object]:
-        from ai_workflow.workflow.graph import validate_run_graph
+        from ai_workflow.workflow.graph import WorkflowProfile, validate_run_graph
 
-        validate_run_graph(self.run_graph)
+        workflow_profile = WorkflowProfile(self.profile)
+        validate_run_graph(self.run_graph, workflow_profile)
         data = {
             "schema_version": self.schema_version,
             "run_id": self.run_id,
@@ -106,7 +112,11 @@ class RunState:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "RunState":
-        from ai_workflow.workflow.graph import RunGraphNode, validate_run_graph
+        from ai_workflow.workflow.graph import (
+            RunGraphNode,
+            WorkflowProfile,
+            validate_run_graph,
+        )
 
         validate_plain_value(data)
         if data.get("schema_version") != 2:
@@ -121,13 +131,13 @@ class RunState:
         requirement = data["requirement"]
         profile = data["profile"]
         cls._validate_non_blank(requirement, "requirement")
-        cls._validate_non_blank(profile, "profile")
+        workflow_profile = WorkflowProfile(profile)
         run_graph: dict[str, RunGraphNode] = {}
         for name, node in raw_graph.items():
             if not isinstance(node, dict):
                 raise TypeError(f"run graph node {name!r} must be a mapping")
             run_graph[name] = RunGraphNode.from_dict(name, node)
-        validate_run_graph(run_graph)
+        validate_run_graph(run_graph, workflow_profile)
         return cls(
             schema_version=int(data["schema_version"]),
             run_id=str(data["run_id"]),
@@ -136,7 +146,7 @@ class RunState:
             current_phase=str(data["current_phase"]),
             source_revision=str(data["source_revision"]),
             requirement=requirement,
-            profile=profile,
+            profile=workflow_profile.value,
             run_graph=run_graph,
             artifacts={str(name): value for name, value in raw_artifacts.items()},
         )

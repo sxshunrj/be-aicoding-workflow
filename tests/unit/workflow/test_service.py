@@ -103,6 +103,34 @@ def test_init_uses_injected_clock_and_id_factory(tmp_path: Path) -> None:
     assert state.run_id == "RUN-20260714-123456-a1b2c3"
 
 
+def test_init_grill_profile_persists_plan_prd_graph(tmp_path: Path) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+
+    state = service.init(tmp_path, "abc123", "Draft PRD first", profile="grill")
+
+    assert state.profile == "grill"
+    assert state.current_phase == "plan"
+    assert tuple(state.run_graph) == (
+        "plan.prd",
+        "implement.code",
+        "verify.code_review",
+    )
+
+
+def test_init_rejects_unknown_profile_before_creating_run_directory(
+    tmp_path: Path,
+) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+
+    with pytest.raises(AppError) as error:
+        service.init(tmp_path, "abc123", "Draft PRD first", profile="unknown")
+
+    assert error.value.code == "invalid_profile"
+    assert not (tmp_path / ".ai-workflow" / "runs").exists()
+
+
 def test_begin_rejects_attempt_over_repository_limit(tmp_path: Path) -> None:
     _config(tmp_path, max_attempts=1)
     service = WorkflowService(tmp_path, id_factory=lambda: "a1b2c3")

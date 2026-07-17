@@ -1,7 +1,7 @@
 import pytest
 
 from ai_workflow.errors import AppError
-from ai_workflow.workflow.graph import NodeValidity, RunGraphNode
+from ai_workflow.workflow.graph import NodeValidity, RunGraphNode, WorkflowProfile
 from ai_workflow.workflow.machine import (
     StateMachine,
     earliest_phase,
@@ -27,7 +27,14 @@ def new_state() -> RunState:
             "verify.code_review", Phase.VERIFY, "code_review"
         ),
     }
-    return RunState.new("RUN-001", "abc123", "Implement graph", "full", graph)
+    return RunState.new(
+        "RUN-001",
+        "abc123",
+        "Implement graph",
+        WorkflowProfile.FULL,
+        graph,
+        Phase.SPEC,
+    )
 
 
 def test_phase_helpers_use_effective_run_graph_nodes() -> None:
