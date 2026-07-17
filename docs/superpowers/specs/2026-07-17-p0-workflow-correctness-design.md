@@ -1,47 +1,49 @@
-# P0 Workflow Correctness and Checkpoint Design
+# P0 工作流正确性与 Checkpoint 设计
 
-**Date:** 2026-07-17  
-**Status:** Approved design, pending written-spec review  
-**Scope:** Profile-aware Grill execution, node-level recovery, immutable local Git checkpoints, repository-config versioning, and path authorization
+**日期：** 2026-07-17
 
-## 1. Purpose
+**状态：** 设计已批准，等待书面规格复核
 
-The repository already has a deterministic four-phase workflow core, immutable evidence, node-level rerun state, and human Review Gates. The highest-priority remaining gaps are correctness gaps rather than additional product surface:
+**范围：** Profile-aware Grill 执行、节点级恢复、不可变本地 Git checkpoint、仓库配置版本管理和路径授权
 
-- the `grill` profile is persisted but does not change the graph or starting phase;
-- verification is not anchored to an immutable implementation snapshot;
-- repository configuration declares a schema version that is not validated;
-- protected-path matching is applied only to top-level names, so patterns such as `.git/**` do not exclude `.git`;
-- Wave 2 conformance currently proves Skill installation and documentation, not the real three-phase lifecycle.
+## 1. 背景与目的
 
-This design closes those gaps without embedding billing, Java, ByteDance CI, or Lark-specific behavior in the generic core.
+当前仓库已经具备确定性的四阶段工作流 Core、不可变证据、节点级 rerun 状态和人工 Review Gate。现阶段最高优先级的问题不是增加更多产品入口，而是补齐以下正确性缺口：
 
-## 2. Goals
+- `grill` profile 虽然被持久化，但不会改变 run graph 或起始 phase；
+- verification 尚未锚定到不可变的 implementation 代码快照；
+- 仓库配置声明了 schema version，但加载时没有校验；
+- protected path 只按顶层名称匹配，导致 `.git/**` 无法排除 `.git`；
+- Wave 2 conformance 目前只证明 Skill 可安装和文档存在，没有证明真实三阶段生命周期。
 
-1. Make `workflow init --profile full|grill` select a persisted graph and starting phase.
-2. Make recovery restart at the earliest affected node rather than restarting the run.
-3. Create an immutable local Git checkpoint after an accepted implementation result without moving `HEAD`, updating the business branch, modifying the user's index, or pushing.
-4. Require every verification dispatch and result to reference the active checkpoint.
-5. Validate repository configuration schema version and provide an explicit v1/missing-version to v2 migration command.
-6. Enforce protected and adapter paths mechanically in dispatch authorization.
-7. Prove the behavior through unit, contract, and end-to-end tests.
+本设计在不向通用 Core 写入 billing、Java、ByteDance CI 或飞书特定逻辑的前提下，关闭上述缺口。
 
-## 3. Non-Goals
+## 2. 目标
 
-- Do not add CI-provider, whitebox, Java, Maven, or Lark telemetry implementations in this batch.
-- Do not change the user-visible business branch or push checkpoint refs.
-- Do not include `.ai-workflow`, workflow artifacts, reports, logs, Git metadata, or unrelated pre-existing changes in checkpoint trees.
-- Do not silently restart a run after state, schema, or checkpoint corruption.
-- Do not refactor the complete `WorkflowService`; only extract the new checkpoint responsibility.
-- Do not claim real-client reference parity until Codex and Claude Code trial evidence exists.
+1. 让 `workflow init --profile full|grill` 选择并持久化对应的 graph 和起始 phase。
+2. 让故障恢复从最早受影响节点开始，而不是重新启动整个 run。
+3. implementation 结果通过 Review Gate 后创建不可变的本地 Git checkpoint，同时不移动 `HEAD`、不更新业务分支、不修改用户 index、不 push。
+4. 要求所有 verification dispatch 和结果都锚定到 active checkpoint。
+5. 校验仓库配置 schema version，并提供从 v1 或缺少版本声明迁移到 v2 的显式命令。
+6. 在 dispatch authorization 中机械执行 protected path 和 adapter path 规则。
+7. 通过 unit、contract 和 end-to-end tests 证明上述行为。
 
-## 4. Profile-Aware Run Graph
+## 3. 非目标
 
-The only supported profiles are `full` and `grill`. Unknown profiles fail with `invalid_profile`.
+- 本批次不增加 CI provider、whitebox、Java、Maven 或飞书遥测实现。
+- 不修改用户可见的业务分支，也不 push checkpoint ref。
+- checkpoint tree 不包含 `.ai-workflow`、workflow artifact、报告、日志、Git 元数据或无关的预存改动。
+- state、schema 或 checkpoint 损坏后，不静默创建新 run 或从头重跑。
+- 不整体重构 `WorkflowService`，只抽离新增的 checkpoint 职责。
+- 在真实 Codex 和 Claude Code trial evidence 完成前，不声明 real-client reference parity。
+
+## 4. Profile-aware Run Graph
+
+只支持 `full` 和 `grill` 两种 profile。未知 profile 返回 `invalid_profile`。
 
 ### 4.1 Full profile
 
-The `full` profile keeps the current lifecycle and graph:
+`full` profile 保持当前生命周期和 graph：
 
 ```text
 spec.spec
@@ -50,11 +52,11 @@ spec.spec
 -> verify.build + verify.unit_test + verify.integration_test + verify.code_review
 ```
 
-Its initial phase is `spec`.
+起始 phase 为 `spec`。
 
 ### 4.2 Grill profile
 
-The `grill` profile uses this graph:
+`grill` profile 使用以下 graph：
 
 ```text
 plan.prd
@@ -62,205 +64,205 @@ plan.prd
 -> verify.build + verify.unit_test + verify.integration_test + verify.code_review
 ```
 
-Its initial phase is `plan`. `plan.prd` is workflow-owned: the main Agent asks one question at a time and creates the PRD, while the Helper remains the only writer of persisted run evidence.
+起始 phase 为 `plan`。`plan.prd` 由 workflow 主 Agent 拥有：主 Agent 一次询问一个问题并产出 PRD，Helper 仍然是持久化 run evidence 的唯一写入者。
 
-`workflow begin` reports `execution_kind=workflow_owned` for `plan.prd` and returns its allowed artifact destination. The Agent writes a temporary PRD outside `.ai-workflow/runs/**`, then imports it with:
+`workflow begin` 为 `plan.prd` 返回 `execution_kind=workflow_owned` 以及允许的 artifact 目标位置。Agent 在 `.ai-workflow/runs/**` 外部写入临时 PRD，然后调用以下命令导入：
 
 ```text
 ai-workflow workflow stage-owned --repo REPO --run-id RUN --attempt-id ATTEMPT --phase plan --child prd --artifact FILE --summary TEXT
 ```
 
-The Helper validates the artifact, copies it immutably, creates the staged result, and preserves the normal finalize/review/transition protocol. The Agent never edits run state or synthesizes a ChildResult.
+Helper 校验 artifact、不可变地复制文件、创建 staged result，并继续使用现有的 finalize/review/transition 协议。Agent 不直接修改 run state，也不自行构造 ChildResult。
 
-The PRD contract requires stable `ISSUE-001` identifiers, vertical tracer-bullet slices, acceptance criteria, non-goals, repository scope, verification commands, and resolved or explicitly blocking open questions.
+PRD contract 必须包含稳定的 `ISSUE-001` 标识、tracer-bullet 纵向切片、acceptance criteria、non-goals、repository scope、verification commands，以及已经解决或明确构成阻塞的 open questions。
 
-### 4.3 Persisted truth
+### 4.3 持久化事实
 
-The effective graph and initial phase are written at run creation. Resume and fresh-conversation recovery use only persisted state. They never rebuild an existing run from current configuration or from chat history.
+effective graph 和 initial phase 在创建 run 时写入持久化状态。恢复 run 或在新会话中继续时，只读取持久化状态，不根据当前配置或聊天记录重新构造现有 run。
 
-## 5. Node-Level Recovery and Invalidation
+## 5. 节点级恢复与失效传播
 
-Every rerun reason belongs to a concrete graph node. The state machine moves to the earliest affected phase and applies these rules:
+每个 rerun reason 必须归属具体 graph node。状态机移动到最早受影响的 phase，并遵循以下规则：
 
-- unaffected upstream nodes remain `valid`;
-- requested nodes become `rerun` with non-empty actionable reasons;
-- nodes in later phases become `pending`;
-- unaffected siblings in the same phase remain reusable when their input anchor is unchanged;
-- environment, permission, or tool failures become `blocked`, not business reruns.
+- 未受影响的上游节点保持 `valid`；
+- 被请求重跑的节点置为 `rerun`，并携带非空、可执行的 reason；
+- 更晚 phase 的节点全部置为 `pending`；
+- 同 phase 内未受影响的 sibling，在输入锚点未变化时继续复用；
+- 环境、权限或工具失败进入 `blocked`，不伪装成业务 rerun。
 
-Examples:
+示例：
 
-| Failure | Recovery |
+| 问题 | 恢复行为 |
 | --- | --- |
-| Integration-test case defect | Rerun only `verify.integration_test`; reuse unaffected verification siblings if the checkpoint is unchanged. |
-| Verification finds an implementation defect | Rerun `implement.code`; preserve spec/plan; create a new checkpoint; invalidate all verification results tied to the old checkpoint. |
-| PRD acceptance criteria change | Rerun `plan.prd`; invalidate implementation and verification. |
-| Full-profile spec changes | Rerun `spec.spec`; invalidate every downstream node. |
-| Environment failure | Persist `blocked`; human resume retries from the affected node. |
-| Corrupt state or incompatible schema | Persist or report a fail-closed blocker; never create a replacement run silently. |
+| Integration-test case 自身有缺陷 | 只重跑 `verify.integration_test`；checkpoint 未变化时复用其他 verification sibling。 |
+| Verification 发现 implementation 缺陷 | 重跑 `implement.code`；保留 spec/plan；创建新 checkpoint；使旧 checkpoint 对应的全部 verification 结果失效。 |
+| PRD acceptance criteria 变化 | 重跑 `plan.prd`；使 implementation 和 verification 失效。 |
+| Full profile 的 spec 变化 | 重跑 `spec.spec`；使全部下游节点失效。 |
+| 环境失败 | 持久化为 `blocked`；人工 resume 后从受影响节点继续。 |
+| State 损坏或 schema 不兼容 | 持久化或报告 fail-closed blocker；不静默创建替代 run。 |
 
-## 6. Immutable Local Git Checkpoint
+## 6. 不可变本地 Git Checkpoint
 
-### 6.1 Component boundary
+### 6.1 组件边界
 
-Checkpoint mechanics live in a focused `workflow/checkpoint.py` service. `WorkflowService` coordinates lifecycle calls but does not implement Git plumbing.
+Checkpoint 机制放入独立的 `workflow/checkpoint.py` service。`WorkflowService` 只协调生命周期调用，不直接实现 Git plumbing。
 
-The checkpoint service consumes:
+Checkpoint service 输入：
 
-- repository root;
-- run and implementation attempt identity;
-- source revision;
-- implementation-attempt baseline;
-- protected paths and effective checkpoint scope.
+- repository root；
+- run 和 implementation attempt identity；
+- source revision；
+- implementation attempt baseline；
+- protected paths 和 effective checkpoint scope。
 
-It produces a checkpoint record containing:
+输出 checkpoint record：
 
-- checkpoint commit SHA;
-- tree SHA;
-- hidden ref name;
-- source revision and parent commit;
-- implementation attempt ID;
-- included paths;
-- previous checkpoint SHA, when present;
-- creation timestamp.
+- checkpoint commit SHA；
+- tree SHA；
+- hidden ref name；
+- source revision 和 parent commit；
+- implementation attempt ID；
+- included paths；
+- previous checkpoint SHA（如存在）；
+- creation timestamp。
 
 ### 6.2 Git plumbing
 
-After the implementation Review Gate is accepted, the Helper:
+Implementation Review Gate 被接受后，Helper 执行：
 
-1. verifies that `HEAD` and the business branch have not been moved unexpectedly;
-2. computes the implementation-attempt change set;
-3. selects the active checkpoint as the base anchor for an implementation rerun, or the source revision for the first implementation;
-4. creates a temporary Git index outside the user's index;
-5. populates that index from the base anchor and stages only the approved checkpoint paths;
-6. runs `git write-tree`;
-7. creates a commit with `git commit-tree`, using the base anchor as parent;
-8. writes `refs/ai-workflow/checkpoints/<run_id>/<attempt_id>` to the commit;
-9. activates the record in workflow state.
+1. 验证 `HEAD` 和业务分支没有发生非预期移动；
+2. 计算本次 implementation attempt 的变更集合；
+3. implementation rerun 时选择 active checkpoint 作为 base anchor，首次 implementation 使用 source revision；
+4. 在用户 index 之外创建临时 Git index；
+5. 从 base anchor 填充临时 index，只 stage 获得授权的 checkpoint paths；
+6. 执行 `git write-tree`；
+7. 执行 `git commit-tree`，并以 base anchor 为 parent；
+8. 将 commit 写入 `refs/ai-workflow/checkpoints/<run_id>/<attempt_id>`；
+9. 在 workflow state 中激活 checkpoint record。
 
-This writes local Git objects and a namespaced hidden ref only. It must not run ordinary `git commit`, move `HEAD`, update the current branch, alter `.git/index`, or push.
+该过程只写入本地 Git object 和带命名空间的 hidden ref。禁止执行普通 `git commit`、移动 `HEAD`、更新当前分支、修改 `.git/index` 或 push。
 
-### 6.3 Scope and dirty-worktree safety
+### 6.3 Scope 与 dirty worktree 安全
 
-At `begin` for `implement.code`, the Helper records a baseline relative to the active checkpoint for a rerun or the source revision for the first implementation. Checkpoint scope contains paths changed by the implementation attempt relative to that baseline. Worktree content already represented by the active checkpoint is not treated as unrelated dirt during an implementation rerun.
+`implement.code` 执行 `begin` 时，Helper 记录 baseline：implementation rerun 相对 active checkpoint，首次 implementation 相对 source revision。Checkpoint scope 只包含相对该 baseline 在本次 attempt 中发生变化的路径。工作区中已经由 active checkpoint 表达的内容，在 implementation rerun 时不视为无关 dirty change。
 
-Pre-existing unrelated dirty paths are excluded. If the implementation modifies a path that was already dirty at attempt start, ownership is ambiguous and checkpoint creation fails with `checkpoint_scope_ambiguous`; the run enters `blocked` for human resolution. This prevents the Helper from silently capturing user work.
+预先存在且与本次任务无关的 dirty paths 被排除。如果 implementation 修改了 attempt 开始时已经 dirty 的路径，所有权存在歧义，checkpoint 创建返回 `checkpoint_scope_ambiguous`，run 进入 `blocked` 等待人工处理。Helper 不得静默捕获用户已有工作。
 
-The following are always excluded:
+以下路径始终排除：
 
-- `.git/**`;
-- `.ai-workflow/**`;
-- workflow artifacts, result files, generated prompts, temporary logs, and reports;
-- configured protected paths;
-- paths outside the repository;
-- symlinks that escape the repository.
+- `.git/**`；
+- `.ai-workflow/**`；
+- workflow artifact、result、generated prompt、临时日志和报告；
+- 配置的 protected paths；
+- repository 外部路径；
+- 逃逸 repository 的 symlink。
 
-An empty implementation change set cannot produce a new checkpoint unless the active implementation result explicitly represents a no-code delivery. In that case the source revision itself is recorded as the checkpoint and no hidden ref is needed.
+如果 implementation 没有产生代码变更，默认不能创建新 checkpoint。只有 active implementation result 明确表示 no-code delivery 时，才直接将 source revision 记录为 checkpoint，且无需创建 hidden ref。
 
-### 6.4 Verification anchoring
+### 6.4 Verification 锚定
 
-Verification cannot begin without an active checkpoint. To preserve the existing schema-v2 packet and ChildResult contracts, a verification `DispatchPacket.source_revision` is the active checkpoint commit rather than the original run source revision. The verification artifact's existing `ArtifactRef.source_revision` must copy that checkpoint commit. The active and previous checkpoint records remain persisted in workflow state.
+没有 active checkpoint 时，不允许开始 verification。为了保持现有 schema-v2 DispatchPacket 和 ChildResult contract，verification 的 `DispatchPacket.source_revision` 使用 active checkpoint commit，而不是 run 最初的 source revision。Verification artifact 的现有 `ArtifactRef.source_revision` 必须复制该 checkpoint commit。Active 和 previous checkpoint record 持久化在 workflow state 中。
 
-The Helper validates the checkpoint during:
+Helper 在以下环节校验 checkpoint：
 
-- verification `begin`;
-- child-result `stage`;
-- phase `finalize`;
-- sibling-result reuse;
-- transition and recovery reconciliation.
+- verification `begin`；
+- child result `stage`；
+- phase `finalize`；
+- sibling result reuse；
+- transition 和 recovery reconciliation。
 
-A mismatch returns `checkpoint_mismatch`. A missing or unreachable hidden ref returns `checkpoint_unavailable`. Both fail closed. Activating a new checkpoint resets every verification node to `pending`, including previously valid siblings, because they were verified against a different tree.
+Checkpoint 不匹配返回 `checkpoint_mismatch`；记录的 commit 或 hidden ref 无法解析时返回 `checkpoint_unavailable`。两者都 fail closed。激活新 checkpoint 时，所有 verification node（包括此前 valid 的 sibling）都重置为 `pending`，因为旧结果验证的是另一棵 tree。
 
-## 7. Repository Configuration and Path Authorization
+## 7. 仓库配置与路径授权
 
-### 7.1 Configuration schema
+### 7.1 配置 schema
 
-`.ai-workflow.yaml` must contain `schema_version: 2`. Missing, non-integer, or unsupported versions return `unsupported_schema_version` with an actionable hint.
+`.ai-workflow.yaml` 必须包含 `schema_version: 2`。缺失、非整数或不支持的版本返回 `unsupported_schema_version`，并提供可执行提示。
 
-The explicit migration command is:
+显式迁移命令：
 
 ```text
 ai-workflow config migrate --repo REPO --to 2 [--dry-run]
 ```
 
-It supports only missing-version or version-1 repository configuration, preserves existing keys and values, and changes only the schema declaration required for v2. `--dry-run` prints the proposed YAML without writing. The write path is atomic. Unknown future versions are never rewritten.
+该命令只支持缺少版本声明或 version 1 的仓库配置，保留其他 key 和 value，只修改 v2 所需的 schema 声明。`--dry-run` 打印拟生成的 YAML，不写文件；实际写入必须原子化。未知的未来版本不得被重写。
 
-Persisted workflow state and ChildResult remain schema v2 in this batch; their existing strict validation is unchanged.
+本批次中，持久化 workflow state 和 ChildResult 继续使用 schema v2，现有严格校验保持不变。
 
-### 7.2 Path semantics
+### 7.2 路径语义
 
-Path authorization operates on normalized repository-relative POSIX paths, not only top-level entry names.
+路径授权基于 normalized repository-relative POSIX path，而不是只匹配顶层 entry name。
 
-The Helper:
+Helper 必须：
 
-- excludes `.git` and `.ai-workflow` unconditionally;
-- applies `protected_paths` to both an entry and its descendants;
-- rejects absolute paths, `..` traversal, repository escapes, and escaping symlinks;
-- when adapter `source_paths` or `test_paths` are configured, includes only matching repository content as ordinary readable inputs; otherwise retains the current protected top-level fallback for compatibility;
-- exposes mechanical authorization for specialist Skills through `ai-workflow config authorize-path --repo REPO --kind input|generated-test|report --path PATH`;
-- authorizes generated-test paths only under `generated_test_destinations`;
-- authorizes report paths only under `report_paths` or the Helper-owned run artifact destination.
+- 无条件排除 `.git` 和 `.ai-workflow`；
+- 将 `protected_paths` 同时应用于目标 entry 及其 descendants；
+- 拒绝 absolute path、`..` traversal、repository escape 和 escaping symlink；
+- 配置 adapter `source_paths` 或 `test_paths` 时，只把匹配的 repository content 作为普通 readable inputs；两者均未配置时，为兼容现有仓库，保留经过 protected-path 过滤的顶层输入策略；
+- 通过 `ai-workflow config authorize-path --repo REPO --kind input|generated-test|report --path PATH` 为 specialist Skills 提供机械授权入口；
+- 只允许 `generated_test_destinations` 下的 generated-test path；
+- 只允许 `report_paths` 或 Helper-owned run artifact destination 下的 report path。
 
-The workflow dispatch path uses the same input authorizer. Specialist providers added in later batches must call the generated-test/report authorizer before writing. Adapter fields therefore become enforceable authorization data rather than prompt-only guidance without changing the schema-v2 DispatchPacket shape in this batch.
+Workflow dispatch 使用相同的 input authorizer。后续批次增加的 specialist provider 在写入 generated-test/report 前必须调用对应 authorizer。因此，本批次无需改变 schema-v2 DispatchPacket shape，也能让 adapter fields 从提示词约定升级为可执行的授权数据。
 
-## 8. Error Handling
+## 8. 错误处理
 
-New stable error codes are:
+新增稳定 error codes：
 
-| Code | Meaning | Required route |
+| Error code | 含义 | 必须采取的处理 |
 | --- | --- | --- |
-| `invalid_profile` | Profile is not `full` or `grill`. | Correct caller input; do not create state. |
-| `unsupported_schema_version` | Repository config version is absent, invalid, or unsupported. | Run migration for v1/missing version or update configuration manually. |
-| `checkpoint_scope_ambiguous` | Implementation changed a path already dirty at attempt start. | Block and request human resolution. |
-| `checkpoint_creation_failed` | Git plumbing could not create the tree, commit, or ref. | Block with command evidence. |
-| `checkpoint_unavailable` | Recorded commit/ref cannot be resolved. | Block; do not dispatch verification. |
-| `checkpoint_mismatch` | Verification evidence references a different checkpoint. | Reject stale evidence and recover from current state. |
-| `path_not_authorized` | Input or output is outside effective adapter/protected-path policy. | Reject the operation without widening scope. |
+| `invalid_profile` | Profile 不是 `full` 或 `grill`。 | 修正 caller 输入，不创建 state。 |
+| `unsupported_schema_version` | Repository config version 缺失、非法或不受支持。 | 对 v1/缺失版本执行 migration，或人工更新配置。 |
+| `checkpoint_scope_ambiguous` | Implementation 修改了 attempt 开始前已经 dirty 的路径。 | Block 并等待人工处理。 |
+| `checkpoint_creation_failed` | Git plumbing 无法创建 tree、commit 或 ref。 | 携带 command evidence 进入 blocked。 |
+| `checkpoint_unavailable` | 已记录的 commit/ref 无法解析。 | Block，不 dispatch verification。 |
+| `checkpoint_mismatch` | Verification evidence 引用了其他 checkpoint。 | 拒绝 stale evidence，并从当前 state 恢复。 |
+| `path_not_authorized` | Input/output 不在有效 adapter/protected-path policy 内。 | 拒绝操作，不扩大 scope。 |
 
-Errors use the existing JSON envelope. Skills route by `error.code`, not message text.
+错误继续使用现有 JSON envelope。Skills 按 `error.code` 路由，不匹配自然语言 message。
 
-## 9. Test Strategy
+## 9. 测试策略
 
-All production changes follow red-green-refactor. The existing suite must remain green.
+所有 production change 都遵循 red-green-refactor，现有测试必须保持通过。
 
 ### 9.1 Unit tests
 
-- full and grill graph construction and starting phase;
-- rejection of unknown profiles;
-- same-phase sibling reuse and downstream invalidation;
-- implementation rerun invalidating old-checkpoint verification;
-- temporary-index checkpoint creation;
-- hidden-ref preservation;
-- unchanged `HEAD`, branch, and user index;
-- dirty-baseline ambiguity detection;
-- protected-path descendant matching and unconditional Git/workflow exclusion;
-- config v2 validation and migration dry-run/write behavior.
+- full/grill graph 构建与 initial phase；
+- 拒绝 unknown profile；
+- 同 phase sibling reuse 和 downstream invalidation；
+- implementation rerun 使旧 checkpoint verification 失效；
+- temporary-index checkpoint creation；
+- hidden-ref preservation；
+- `HEAD`、branch 和 user index 保持不变；
+- dirty baseline ambiguity detection；
+- protected-path descendant matching，以及无条件排除 Git/workflow 路径；
+- config v2 validation、migration dry-run 和 write behavior。
 
 ### 9.2 Contract tests
 
-- workflow-owned PRD staging contract;
-- checkpoint-anchor semantics in verification dispatch and ChildResult artifacts;
-- active/previous checkpoint state shape;
-- exact error codes and JSON envelopes;
-- Grill Skill PRD issue and recovery language;
-- migration CLI surface.
+- workflow-owned PRD staging contract；
+- verification dispatch 和 ChildResult artifact 的 checkpoint anchor 语义；
+- active/previous checkpoint state shape；
+- 精确 error codes 和 JSON envelope；
+- Grill Skill 的 PRD issue 和 recovery 约束；
+- migration CLI surface。
 
 ### 9.3 End-to-end tests
 
-1. A Grill run starts at `plan.prd`, imports a PRD, implements, creates a checkpoint, verifies, and completes.
-2. A verification finding reruns only one verification child and reuses unaffected siblings under the same checkpoint.
-3. An implementation finding returns to `implement.code`, creates a new checkpoint, and reruns all verification children.
-4. A fresh process restores the active checkpoint and continues without chat history.
-5. A dirty overlapping path blocks checkpoint creation without moving the branch or user index.
+1. Grill run 从 `plan.prd` 开始，依次导入 PRD、完成 implementation、创建 checkpoint、执行 verification 并完成 run。
+2. Verification finding 只重跑一个 verification child，并在 checkpoint 未变化时复用其他 sibling。
+3. Implementation finding 使流程回到 `implement.code`，创建新 checkpoint，并重跑全部 verification child。
+4. 新进程不依赖聊天记录，恢复 active checkpoint 并继续运行。
+5. 修改与 dirty baseline 重叠的路径时，checkpoint 创建进入 blocked，且不移动 branch、不修改 user index。
 
-### 9.4 Acceptance evidence
+### 9.4 验收证据
 
-- all pre-existing tests pass;
-- all new focused and end-to-end tests pass;
-- Wiki lint and `git diff --check` pass;
-- test evidence proves checkpoint creation did not move `HEAD`, alter the business branch, change the user's index, or push;
-- no test claims real Codex or Claude Code parity without completed trial evidence.
+- 所有现有测试通过；
+- 所有新增 focused 和 end-to-end tests 通过；
+- Wiki lint 和 `git diff --check` 通过；
+- 测试证据证明 checkpoint 创建没有移动 `HEAD`、改变业务分支、修改 user index 或 push；
+- 没有完成真实 trial evidence 时，任何测试或文档都不声明 Codex/Claude Code parity。
 
-## 10. Delivery Boundary
+## 10. 交付边界
 
-This P0 batch ends when profile-aware execution, node recovery, checkpoints, config migration, path authorization, and behavioral E2E are complete. CI-provider collection, integration-test providers, external telemetry exporters, repository CI/release automation, and broader `WorkflowService` decomposition remain separate follow-up batches.
+本 P0 批次在 profile-aware execution、node recovery、checkpoint、config migration、path authorization 和 behavioral E2E 全部完成后结束。CI provider collection、integration-test provider、外部 telemetry exporter、仓库自身 CI/release automation，以及更大范围的 `WorkflowService` 拆分，继续作为独立后续批次。
