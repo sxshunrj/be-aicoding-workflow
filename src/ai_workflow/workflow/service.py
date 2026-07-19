@@ -1028,12 +1028,8 @@ class WorkflowService:
             effective = dict(decision.effective_reruns)
             transitioned_phase = state.current_phase
             if effective:
-                earliest = min(
-                    (state.run_graph[key].phase for key in effective),
-                    key=PHASE_ORDER.index,
-                )
-                earliest_index = PHASE_ORDER.index(earliest)
                 self.machine.apply_reruns(state, effective)
+                earliest_index = self._earliest_rerun_phase_index(state)
                 for phase in tuple(current_attempts):
                     if PHASE_ORDER.index(Phase(phase)) >= earliest_index:
                         current_attempts.pop(phase, None)
@@ -1132,12 +1128,8 @@ class WorkflowService:
             if reruns:
                 _, effective_items = self._review_reruns(state, reruns)
                 effective = dict(effective_items)
-                earliest = min(
-                    (state.run_graph[key].phase for key in effective),
-                    key=PHASE_ORDER.index,
-                )
-                earliest_index = PHASE_ORDER.index(earliest)
                 self.machine.apply_reruns(state, effective)
+                earliest_index = self._earliest_rerun_phase_index(state)
                 current_attempts = self._mapping(
                     state.artifacts,
                     "current_attempts",
@@ -2159,6 +2151,19 @@ class WorkflowService:
                 "every rerun requires an actionable reason replacing the unable placeholder",
             )
         return proposed, tuple(sorted(effective.items()))
+
+    @staticmethod
+    def _earliest_rerun_phase_index(state: RunState) -> int:
+        phases = [
+            node.phase
+            for node in state.run_graph.values()
+            if node.validity is NodeValidity.RERUN
+        ]
+        if not phases:
+            raise AppError(
+                "invalid_transition", "at least one active rerun node is required"
+            )
+        return min(PHASE_ORDER.index(phase) for phase in phases)
 
     @staticmethod
     def _run_policy_payload(

@@ -9,6 +9,7 @@ import yaml
 from ai_workflow.contracts.artifacts import ArtifactRef, ChildResult
 from ai_workflow.contracts.packets import DispatchPacket
 from ai_workflow.errors import AppError
+from ai_workflow.workflow.graph import NodeValidity
 from ai_workflow.workflow.models import Phase
 from ai_workflow.workflow.service import UNABLE_REASON, WorkflowService
 from ai_workflow.workflow.store import Event, StateStore
@@ -495,7 +496,9 @@ def test_status_rejects_corrupted_review_gate_digest(tmp_path: Path) -> None:
     assert error.value.code == "invalid_state"
 
 
-def test_review_defers_preserved_forward_rerun_until_its_phase(tmp_path: Path) -> None:
+def test_review_drops_forward_rerun_reason_after_upstream_rerun(
+    tmp_path: Path,
+) -> None:
     service, run_id = _new_finalized(tmp_path, phase=Phase.VERIFY)
     first = service.review(
         run_id,
@@ -511,10 +514,9 @@ def test_review_defers_preserved_forward_rerun_until_its_phase(tmp_path: Path) -
     decision = service.review(run_id, {})
 
     assert decision.effective_reruns == ()
-    assert (
-        service.status(run_id).run_graph["verify.code_review"].reason
-        == "repeat review after the implementation rerun"
-    )
+    verify_node = service.status(run_id).run_graph["verify.code_review"]
+    assert verify_node.validity is NodeValidity.PENDING
+    assert verify_node.reason is None
 
 
 def test_review_retry_repairs_missing_proposal_event_once(

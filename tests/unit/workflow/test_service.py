@@ -453,6 +453,62 @@ def test_failed_submission_can_be_followed_by_rerun_transition(tmp_path: Path) -
     assert state.current_phase == "implement"
 
 
+def test_transition_drops_downstream_rerun_when_upstream_is_rerun(
+    tmp_path: Path,
+) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+    state = service.init(tmp_path, "abc123", "Test earliest rerun")
+    for phase in (Phase.SPEC, Phase.PLAN, Phase.IMPLEMENT):
+        _finalize_phase(service, tmp_path, state.run_id, phase)
+        state = _review_transition(service, state.run_id)
+    _finalize_phase(service, tmp_path, state.run_id, Phase.VERIFY)
+
+    state = _review_transition(
+        service,
+        state.run_id,
+        {
+            "implement.code": "fix implementation",
+            "verify.code_review": "rerun after implementation fix",
+        },
+    )
+
+    assert state.current_phase == "implement"
+    assert state.run_graph["implement.code"].validity is NodeValidity.RERUN
+    assert state.run_graph["verify.code_review"].validity is NodeValidity.PENDING
+    assert state.run_graph["verify.code_review"].reason is None
+    assert "implement" not in state.artifacts["current_attempts"]
+    assert "verify" not in state.artifacts["current_attempts"]
+
+
+def test_resume_drops_downstream_rerun_when_upstream_is_rerun(
+    tmp_path: Path,
+) -> None:
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+    state = service.init(tmp_path, "abc123", "Test blocked earliest rerun")
+    for phase in (Phase.SPEC, Phase.PLAN):
+        _finalize_phase(service, tmp_path, state.run_id, phase)
+        state = _review_transition(service, state.run_id)
+    service.begin(state.run_id, Phase.IMPLEMENT, _skill_dir(tmp_path))
+    service.block(state.run_id, "wait for human correction")
+
+    resumed = service.resume(
+        state.run_id,
+        {
+            "plan.solution": "revise plan",
+            "implement.code": "rerun after plan change",
+        },
+    )
+
+    assert resumed.current_phase == "plan"
+    assert resumed.run_graph["plan.solution"].validity is NodeValidity.RERUN
+    assert resumed.run_graph["implement.code"].validity is NodeValidity.PENDING
+    assert resumed.run_graph["implement.code"].reason is None
+    assert "plan" not in resumed.artifacts["current_attempts"]
+    assert "implement" not in resumed.artifacts["current_attempts"]
+
+
 def test_rerun_transition_requires_a_started_attempt(tmp_path: Path) -> None:
     _config(tmp_path)
     service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")

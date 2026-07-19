@@ -18,6 +18,10 @@ def phase_is_valid(state: RunState, phase: Phase) -> bool:
     return bool(nodes) and all(node.validity is NodeValidity.VALID for node in nodes)
 
 
+def effective_phases(state: RunState) -> tuple[Phase, ...]:
+    return tuple(phase for phase in PHASE_ORDER if phase_nodes(state, phase))
+
+
 def earliest_phase(keys: Iterable[str]) -> Phase:
     phases = {Phase(key.split(".", 1)[0]) for key in keys}
     if not phases:
@@ -32,15 +36,19 @@ class StateMachine:
             raise AppError("invalid_transition", "cannot advance a blocked run")
         try:
             current = Phase(state.current_phase)
-            index = PHASE_ORDER.index(current)
+        except ValueError as error:
+            raise AppError("invalid_transition", "current phase is invalid") from error
+        phases = effective_phases(state)
+        try:
+            index = phases.index(current)
         except ValueError as error:
             raise AppError("invalid_transition", "current phase is invalid") from error
         if not phase_is_valid(state, current):
             raise AppError("invalid_transition", "current phase is not valid")
-        if index == len(PHASE_ORDER) - 1:
+        if index == len(phases) - 1:
             state.status = "completed"
             return state
-        state.current_phase = PHASE_ORDER[index + 1].value
+        state.current_phase = phases[index + 1].value
         state.status = NodeStatus.PENDING.value
         return state
 
@@ -69,6 +77,8 @@ class StateMachine:
                 node.reason = None
         for key, reason in reruns.items():
             node = state.run_graph[key]
+            if node.phase is not earliest:
+                continue
             node.validity = NodeValidity.RERUN
             node.reason = reason
         state.current_phase = earliest.value
