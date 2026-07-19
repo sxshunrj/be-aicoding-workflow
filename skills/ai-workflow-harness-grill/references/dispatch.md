@@ -54,6 +54,31 @@ Verification finding 的调度归 Harness Review Gate：
 
 Verify child 不写调度建议，不展示 Review Gate 菜单。
 
+## Node recovery routing
+
+Grill 恢复不是从头开始，而是从最早受影响节点开始。固定路由：
+
+```text
+PRD/acceptance 变化 -> plan.prd
+implementation 缺陷 -> implement.code
+单项验证缺陷 -> verify.*
+环境、权限、工具失败 -> workflow block
+```
+
+细化规则：
+
+| 证据 | rerun / block |
+| --- | --- |
+| PRD scope、acceptance criteria、non-goals 或 blocking questions 变化 | `plan.prd` |
+| 实现代码、编译、接口行为、数据模型问题 | `implement.code` |
+| build 命令或构建脚本问题 | `verify.build` |
+| 单测失败或单测证据不足 | `verify.unit_test` |
+| 集测 case/mock/dataset/跨模块验证问题 | `verify.integration_test` |
+| correctness/security/perf review finding | `verify.code_review` |
+| 环境、权限、工具失败 | `workflow block` |
+
+单项验证缺陷只回对应 `verify.*`，不要把所有 verify sibling 都 rerun。上游 `plan.prd` 或 `implement.code` rerun 后，下游节点由 Helper 清为 pending；Harness 不保留旧下游 reason。
+
 ## Barrier
 
 每个 child phase 都必须 barrier：

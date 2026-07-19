@@ -24,6 +24,7 @@ def test_grill_skill_defines_prd_driven_three_phase_loop() -> None:
     skill = _read()
     for phrase in (
         "plan -> implement -> verify",
+        "workflow init --profile grill",
         "一次只问一个问题",
         "plan phase 由主 Agent 交互式拥有",
         "implement 和 verify 仍然 child-backed",
@@ -32,6 +33,12 @@ def test_grill_skill_defines_prd_driven_three_phase_loop() -> None:
         "plan 不派 child",
         "workflow-owned PRD",
         "stage-owned",
+        "execution_kind=workflow_owned",
+        "workflow stage-owned",
+        "plan.prd",
+        "implement.code",
+        "verify.integration_test",
+        "workflow block",
         "Review Gate",
         "blocked 不自动恢复",
         "terminal Git handoff",
@@ -48,11 +55,17 @@ def test_grill_references_cover_prd_loop_and_dispatch_boundaries() -> None:
         "non-goals",
         "open questions",
         "PRD artifact",
+        "ISSUE-001",
+        "tracer-bullet vertical slice",
         "一次只问一个问题",
         "resolved questions",
         "blocking questions",
+        "repository scope",
+        "verification commands",
+        "临时 PRD 位于 `.ai-workflow/runs/**` 外",
         "stage-owned",
         "不得直接构造 ChildResult",
+        "不得编辑 state",
     ):
         assert phrase in prd
     for phrase in (
@@ -66,7 +79,30 @@ def test_grill_references_cover_prd_loop_and_dispatch_boundaries() -> None:
         "Review Gate",
         "checkpoint",
         "dispatch 不追加隐藏上下文",
+        "PRD/acceptance 变化 -> plan.prd",
+        "implementation 缺陷 -> implement.code",
+        "单项验证缺陷 -> verify.*",
+        "环境、权限、工具失败 -> workflow block",
     ):
         assert phrase in dispatch
     assert len(prd.splitlines()) >= 80
     assert len(dispatch.splitlines()) >= 70
+
+
+def test_grill_exact_command_order_is_documented() -> None:
+    skill = _read()
+    expected_order = (
+        "workflow init --profile grill",
+        "workflow begin --phase plan",
+        "execution_kind=workflow_owned",
+        "workflow stage-owned",
+        "workflow finalize",
+        "workflow review",
+        "workflow transition",
+        "workflow begin --phase implement",
+    )
+    position = -1
+    for phrase in expected_order:
+        next_position = skill.find(phrase)
+        assert next_position > position, phrase
+        position = next_position

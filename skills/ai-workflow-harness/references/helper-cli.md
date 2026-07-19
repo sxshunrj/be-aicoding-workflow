@@ -10,8 +10,9 @@ Helper 只持久化、校验和转换状态；语义正确性、rerun reason、C
 | `ai-workflow config authorize-path --repo REPO --kind input|generated-test|report --path PATH` | Harness 或 specialist Skill；机械路径授权 |
 | `ai-workflow workflow init --repo REPO --source-revision SHA --requirement TEXT --profile PROFILE` | Harness；new run |
 | `ai-workflow workflow status --repo REPO --run-id RUN` | Harness；每次入口、transition 后、任何 stale 后 |
-| `ai-workflow workflow begin --repo REPO --run-id RUN --phase PHASE --skill-dir SKILL_DIR` | Harness；当前 phase |
+| `ai-workflow workflow begin --repo REPO --run-id RUN --phase PHASE [--skill-dir SKILL_DIR]` | Harness；当前 phase；child-backed 必须传 skill-dir |
 | `ai-workflow workflow stage --repo REPO --run-id RUN --attempt-id ATTEMPT --child CHILD --result FILE` | Harness；收到合法 ChildResult 后，逐个串行 |
+| `ai-workflow workflow stage-owned --repo REPO --run-id RUN --attempt-id ATTEMPT --phase plan --child prd --artifact FILE --summary TEXT` | Harness；workflow-owned PRD 导入 |
 | `ai-workflow workflow finalize --repo REPO --run-id RUN --attempt-id ATTEMPT` | Harness；barrier 满足后 |
 | `ai-workflow workflow review --repo REPO --run-id RUN [--rerun NODE=REASON ...]` | Harness；finalize 后 |
 | `ai-workflow workflow review-accept --repo REPO --run-id RUN --expected-digest SHA` | Harness；仅在人类明确接受该 digest 后 |
@@ -32,6 +33,7 @@ Helper CLI 是顺序协议，不是并发优化对象。所有 workflow 写动�
 | `workflow status` | Harness | Child 用它取得 attempt 或推断调度 |
 | `workflow begin` | Harness | Child 自行 claim/start 新 attempt |
 | `workflow stage` | Harness | Child stage 自己或 sibling result |
+| `workflow stage-owned` | Harness | Child 或普通 phase 伪造 workflow-owned artifact |
 | `workflow finalize` | Harness | Child 推进 phase |
 | `workflow review` / `review-accept` | Harness | Child 触发或接受 gate |
 | `workflow transition` | Harness | Child 或 Harness 在 gate 前推进 |
@@ -100,6 +102,22 @@ Harness 只消费 JSON data 中的 run status、current phase、run graph、arti
 
 Helper 可能在恢复时返回同一 attempt。Harness 不自行生成 attempt ID。
 
+workflow-owned item（当前为 Grill `plan.prd`）返回：
+
+```json
+{
+  "node": "plan.prd",
+  "child": "prd",
+  "execution_kind": "workflow_owned",
+  "action": "dispatch",
+  "allowed_artifact_path": ".../attempts/<attempt_id>/artifacts/prd.md",
+  "prompt_file": null,
+  "packet_file": null
+}
+```
+
+该 item 不派 child、不读 prompt、不构造 ChildResult。主 Agent 在 run storage 外写临时 PRD 后调用 `workflow stage-owned`。
+
 ### `workflow stage`
 
 提交一个 ChildResult。Harness 保存 child 原始 JSON 到临时文件，再串行调用。不要修改 ChildResult 字段，也不要把自然语言总结包装成 result。
@@ -113,6 +131,32 @@ Helper 可能在恢复时返回同一 attempt。Harness 不自行生成 attempt 
 | `invalid_result` | 原 Child 修复 schema/owner/evidence。 |
 | `path_not_authorized` | fail closed；不扩大路径。 |
 | `result_conflict` | 保留冲突证据，报告人类。 |
+
+### `workflow stage-owned`
+
+用途：导入 workflow-owned artifact。当前只用于 Grill `plan.prd`。
+
+```text
+ai-workflow workflow stage-owned --repo REPO --run-id RUN --attempt-id ATTEMPT --phase plan --child prd --artifact FILE --summary TEXT
+```
+
+规则：
+
+- `FILE` 必须是 regular non-symlink file；
+- `FILE` 必须位于 `.ai-workflow/runs/**` 外；
+- `phase/child` 必须匹配当前 attempt 的 workflow-owned node；
+- `summary` 非空；
+- Helper 将 artifact 不可变复制到 `allowed_artifact_path`；
+- Helper 合成 schema-v2 ChildResult 并走普通 staged result/barrier/finalize 协议；
+- 禁止主 Agent 手写 ChildResult 或编辑 state。
+
+失败恢复：
+
+| error.code | Harness action |
+| --- | --- |
+| `attempt_owner_mismatch` | status -> begin，确认当前 attempt 和 node。 |
+| `invalid_result` | 修正 PRD source 文件或 summary 后重试。 |
+| `result_conflict` | 保留冲突证据，向人类报告，不覆盖。 |
 
 ### `workflow finalize`
 

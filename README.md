@@ -62,6 +62,23 @@ plan -> implement -> verify
 
 `plan` 由主 Agent 交互式拥有：一次只问一个问题，澄清目标、范围、acceptance criteria、non-goals 和 open questions，并写出 run-local PRD artifact。`implement` 和 `verify` 仍然使用 child-backed 执行。
 
+关键命令路径：
+
+```text
+workflow init --profile grill
+-> workflow begin --phase plan
+-> execution_kind=workflow_owned / plan.prd
+-> workflow stage-owned
+-> workflow finalize
+-> workflow review
+-> workflow transition
+-> workflow begin --phase implement
+```
+
+恢复不是从头开始，而是从最早受影响节点开始：PRD/acceptance 变化回 `plan.prd`，实现缺陷回 `implement.code`，单项验证缺陷只回对应 `verify.*`，环境、权限或工具失败进入 `workflow block`。
+
+Checkpoint 只用于验证锚定，不更新业务分支、不 push；后续 Git 决策仍由 `$ai-git-handoff` 在人类确认后执行。
+
 ### `$ai-small-tdd-change`
 
 显式触发的小范围 TDD 工作流。适合单点 bugfix、小行为改动、低风险局部修改。

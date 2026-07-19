@@ -44,6 +44,40 @@ Grill 是交互式 PRD 驱动 workflow。它只用于用户显式要求，不替
 4. plan phase 从主 Agent 开始，不派 child。
 5. 任何 state 变化都走 Helper CLI；禁止手写 `.ai-workflow/runs/**`。
 
+## Exact command path
+
+Grill 的最小命令顺序固定如下，主 Agent 不得跳步：
+
+```text
+workflow init --profile grill
+workflow status
+workflow begin --phase plan
+read dispatch item: plan.prd, execution_kind=workflow_owned
+write temporary PRD outside .ai-workflow/runs/**
+workflow stage-owned
+workflow finalize
+workflow review
+workflow review-accept when human_review
+workflow transition
+workflow status
+workflow begin --phase implement
+```
+
+`workflow begin --phase plan` 返回的 `plan.prd` 是 workflow-owned item：
+
+- `execution_kind=workflow_owned`
+- `prompt_file=null`
+- `packet_file=null`
+- `allowed_artifact_path=<run_dir>/attempts/<attempt_id>/artifacts/prd.md`
+
+主 Agent 写完 PRD 后必须调用：
+
+```text
+ai-workflow workflow stage-owned --repo REPO --run-id RUN --attempt-id ATTEMPT --phase plan --child prd --artifact FILE --summary TEXT
+```
+
+禁止直接构造 ChildResult，禁止编辑 state，禁止把 PRD 写进 `.ai-workflow/runs/**` 再当作 source 导入。
+
 ## Plan phase
 
 Plan phase 的唯一目标是得到 workflow-owned PRD artifact。
@@ -83,6 +117,22 @@ Verify 是 child-backed。每个 verification child 只验证自己的范围。
 Harness 不直接跑测试、不打开报告补做判断、不修 case。verification child 返回 build/unit/integration/review 报告和 ChildResult。
 
 Verification 发现 implementation 缺陷时，Harness 在 Review Gate 中把 finding 映射到 `implement.code` rerun；如果只是测试资产问题，映射到对应 verify child rerun。
+
+## Node recovery routing
+
+所有反馈都映射到具体 node：
+
+| 反馈 / 失败 | 路由 |
+| --- | --- |
+| PRD/acceptance 变化 | `plan.prd` |
+| implementation 缺陷 | `implement.code` |
+| build 验证缺陷 | `verify.build` |
+| unit test 验证缺陷 | `verify.unit_test` |
+| integration test 验证缺陷 | `verify.integration_test` |
+| code review 验证缺陷 | `verify.code_review` |
+| 环境、权限、工具失败 | `workflow block` |
+
+单项验证缺陷只回对应 `verify.*`，不要重跑整个 verify phase。implementation 缺陷回 `implement.code` 后，下游 verify 节点由 Helper 清成 pending。
 
 ## Review Gate
 

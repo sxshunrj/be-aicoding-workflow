@@ -32,6 +32,8 @@ plan 不派 child，不创建 prompt_file，不要求 schema-v2 ChildResult。pl
 
 PRD artifact 必须包含：
 
+- `ISSUE-001`：本 PRD 内部 issue identifier；它是内容标识，不是 dynamic run-graph node。
+- tracer-bullet vertical slice：最小端到端行为切片，说明第一轮实现如何证明主路径。
 - requirement summary
 - acceptance criteria
 - non-goals
@@ -48,7 +50,12 @@ PRD artifact 必须包含：
 ```markdown
 # PRD: <short title>
 
+## Issue Identifier
+ISSUE-001
+
 ## Requirement Summary
+
+## Tracer-Bullet Vertical Slice
 
 ## Repository Scope
 
@@ -111,10 +118,14 @@ PRD 完成后：
 4. Harness 进入 finalize/review；
 5. Review Gate 接受后才 transition 到 implement。
 
+临时 PRD 位于 `.ai-workflow/runs/**` 外。Helper 会把它不可变导入 run storage；主 Agent 不得把 run storage 内文件再作为 source。
+
 不得：
 
 - 手写 `.ai-workflow/runs/**`；
 - 手写 ChildResult；
+- 直接构造 ChildResult；
+- 编辑 state 或 events；不得编辑 state；
 - 把 PRD 作为 dynamic run-graph node；
 - 让 child agent 替主 Agent 问 PRD 问题。
 
