@@ -46,6 +46,7 @@ def _finalize_phase(
     unable_child: str | None = None,
 ):
     attempt = service.begin(run_id, phase, _skill_dir(repo))
+    source_revision = service.status(run_id).source_revision
     for item in attempt.dispatch_plan:
         assert item.packet_file is not None
         packet = DispatchPacket.load(item.packet_file)
@@ -61,7 +62,7 @@ def _finalize_phase(
                 2,
                 phase,
                 item.child,
-                "abc123",
+                source_revision,
             )
         result_path = repo / f"{phase.value}-{item.child}-result.json"
         ChildResult(
@@ -71,6 +72,44 @@ def _finalize_phase(
             attempt.attempt_id,
             packet.execution_mode,
             status,
+            "child result",
+            artifact,
+            (),
+        ).write(result_path)
+        service.stage(run_id, attempt.attempt_id, item.child, result_path)
+    service.finalize(run_id, attempt.attempt_id)
+    return attempt
+
+
+def _finalize_phase_with_packet_revision(
+    service: WorkflowService,
+    repo: Path,
+    run_id: str,
+    phase: Phase,
+):
+    attempt = service.begin(run_id, phase, _skill_dir(repo))
+    for item in attempt.dispatch_plan:
+        assert item.packet_file is not None
+        packet = DispatchPacket.load(item.packet_file)
+        artifact_path = repo / packet.allowed_output_path
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(f"# {item.node}\n", encoding="utf-8")
+        artifact = ArtifactRef(
+            packet.allowed_output_path,
+            hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+            2,
+            phase,
+            item.child,
+            packet.source_revision,
+        )
+        result_path = repo / f"{phase.value}-{item.child}-result.json"
+        ChildResult(
+            run_id,
+            phase,
+            item.child,
+            attempt.attempt_id,
+            packet.execution_mode,
+            "completed",
             "child result",
             artifact,
             (),
@@ -101,6 +140,28 @@ def test_init_uses_injected_clock_and_id_factory(tmp_path: Path) -> None:
     state = service.init(tmp_path, "abc123", "Test workflow service")
 
     assert state.run_id == "RUN-20260714-123456-a1b2c3"
+
+
+def test_verify_dispatch_uses_active_checkpoint_source_revision(git_repo) -> None:
+    service = WorkflowService(git_repo.root, id_factory=lambda: "abcdef")
+    state = service.init(git_repo.root, git_repo.head, "Anchor verify")
+    for phase in (Phase.SPEC, Phase.PLAN):
+        _finalize_phase_with_packet_revision(service, git_repo.root, state.run_id, phase)
+        state = _review_transition(service, state.run_id)
+    service.begin(state.run_id, Phase.IMPLEMENT, _skill_dir(git_repo.root))
+    git_repo.write("src/app.py", "changed by implementation\n")
+    _finalize_phase_with_packet_revision(
+        service, git_repo.root, state.run_id, Phase.IMPLEMENT
+    )
+    decision = service.review(state.run_id, {})
+    service.record_review_acceptance(state.run_id, decision.digest)
+    checkpoint = service.status(state.run_id).artifacts["checkpoints"]["active"]
+
+    transitioned = service.transition(state.run_id)
+    attempt = service.begin(transitioned.run_id, Phase.VERIFY, _skill_dir(git_repo.root))
+    packet = DispatchPacket.load(attempt.dispatch_plan[0].packet_file)
+
+    assert packet.source_revision == checkpoint["commit_sha"]
 
 
 def test_init_grill_profile_persists_plan_prd_graph(tmp_path: Path) -> None:

@@ -26,6 +26,11 @@ from ai_workflow.workflow.graph import (
     build_run_graph,
     execution_kind,
 )
+from ai_workflow.workflow.checkpoint import (
+    CheckpointRecord,
+    CheckpointService,
+    ImplementationBaseline,
+)
 from ai_workflow.workflow.machine import PHASE_ORDER, StateMachine, phase_nodes
 from ai_workflow.workflow.models import NodeStatus, Phase, RunState
 from ai_workflow.workflow.review import ReviewDecision, UNABLE_REASON
@@ -339,6 +344,12 @@ class WorkflowService:
                 "nodes": [node.key for node in effective],
                 "skill_dir": None if resolved_skill is None else str(resolved_skill),
             }
+            if phase is Phase.IMPLEMENT:
+                baseline = self._capture_implementation_baseline(
+                    attempt_id, state
+                )
+                if baseline is not None:
+                    owner["implementation_baseline"] = baseline.to_dict()
             state.status = NodeStatus.RUNNING.value
             dispatch_plan, dispatch_evidence = self._create_dispatch_plan(
                 state, effective, attempt_id, resolved_skill, store, config
@@ -1128,7 +1139,7 @@ class WorkflowService:
             state = self._load_locked(store, run_id)
             self._active(state)
             self._ensure_last_transition_event_locked(store, state)
-            self._finalized_phase(state)
+            _, _, attempt_id = self._finalized_phase(state)
             gate = state.artifacts.get("review_gate")
             if gate is None:
                 raise AppError(
@@ -1172,6 +1183,10 @@ class WorkflowService:
                 )
             assert isinstance(gate, dict)
             accepted_at = self.clock().isoformat()
+            if state.current_phase == Phase.IMPLEMENT.value:
+                self._activate_implementation_checkpoint_locked(
+                    store, state, attempt_id
+                )
             gate["accepted_version"] = state.version + 1
             gate["accepted_at"] = accepted_at
             self._assert_no_related_review_event_locked(
@@ -1460,7 +1475,7 @@ class WorkflowService:
                 phase=node.phase,
                 child=node.child,
                 attempt_id=attempt_id,
-                source_revision=state.source_revision,
+                source_revision=self._expected_source_revision_static(state, node.phase),
                 requirement=state.requirement,
                 execution_mode="rerun" if action == "rerun" else "fresh",
                 rerun_reason=node.reason if action == "rerun" else None,
@@ -2139,7 +2154,7 @@ class WorkflowService:
                     result.artifact.phase is not node.phase
                     or result.artifact.child != child
                     or result.artifact.source_revision
-                    != state.source_revision
+                    != self._expected_source_revision_static(state, node.phase)
                     or result.artifact.path
                     != evidence["allowed_output_path"]
                 ):
@@ -2204,7 +2219,8 @@ class WorkflowService:
             or packet.attempt_id != attempt_id
             or packet.phase is not phase
             or packet.child != child
-            or packet.source_revision != state.source_revision
+            or packet.source_revision
+            != WorkflowService._expected_source_revision_static(state, phase)
             or packet.requirement != state.requirement
         ):
             raise AppError(
@@ -2223,7 +2239,9 @@ class WorkflowService:
             raise AppError(
                 "invalid_result", "artifact owner does not match attempt child"
             )
-        if artifact.source_revision != state.source_revision:
+        if artifact.source_revision != self._expected_source_revision_static(
+            state, node.phase
+        ):
             raise AppError(
                 "invalid_result", "artifact source revision does not match run"
             )
@@ -2467,6 +2485,104 @@ class WorkflowService:
                 "invalid_transition", "at least one active rerun node is required"
             )
         return min(PHASE_ORDER.index(phase) for phase in phases)
+
+    def _capture_implementation_baseline(
+        self, attempt_id: str, state: RunState
+    ) -> ImplementationBaseline | None:
+        try:
+            active = self._active_checkpoint(state, required=False)
+            return CheckpointService(self.repo_root).capture_baseline(
+                attempt_id=attempt_id,
+                source_revision=state.source_revision,
+                active_checkpoint=active,
+            )
+        except AppError:
+            return None
+
+    def _activate_implementation_checkpoint_locked(
+        self, store: StateStore, state: RunState, attempt_id: str
+    ) -> CheckpointRecord | None:
+        owner = self._attempt_owner(state, attempt_id, require_current=True)
+        raw_baseline = owner.get("implementation_baseline")
+        if raw_baseline is None:
+            return None
+        if not isinstance(raw_baseline, dict):
+            raise AppError("invalid_state", "implementation baseline is invalid")
+        baseline = ImplementationBaseline.from_dict(raw_baseline)
+        previous = self._active_checkpoint(state, required=False)
+        record = CheckpointService(self.repo_root).create(
+            run_id=state.run_id,
+            baseline=baseline,
+            source_revision=state.source_revision,
+            scope=RepositoryPathAuthorizer(
+                self.repo_root, self._config()
+            ).checkpoint_scope(),
+            previous_checkpoint=previous,
+            no_code_delivery=False,
+        )
+        checkpoints = state.artifacts.setdefault("checkpoints", {})
+        if not isinstance(checkpoints, dict):
+            raise AppError("invalid_state", "checkpoint metadata is invalid")
+        checkpoints["previous"] = (
+            None if previous is None else previous.to_dict()
+        )
+        checkpoints["active"] = record.to_dict()
+        current_attempts = self._mapping(
+            state.artifacts, "current_attempts", "current attempt metadata"
+        )
+        current_attempts.pop(Phase.VERIFY.value, None)
+        registered = self._list(
+            state.artifacts, "registered", "artifact registry"
+        )
+        registered[:] = [
+            item
+            for item in registered
+            if not (
+                isinstance(item, dict)
+                and item.get("phase") == Phase.VERIFY.value
+            )
+        ]
+        for node in state.run_graph.values():
+            if node.phase is Phase.VERIFY:
+                node.validity = NodeValidity.PENDING
+                node.reason = None
+        return record
+
+    @staticmethod
+    def _active_checkpoint(
+        state: RunState, *, required: bool
+    ) -> CheckpointRecord | None:
+        checkpoints = state.artifacts.get("checkpoints")
+        active = checkpoints.get("active") if isinstance(checkpoints, dict) else None
+        if active is None:
+            if required:
+                raise AppError(
+                    "checkpoint_unavailable", "active checkpoint is unavailable"
+                )
+            return None
+        if not isinstance(active, dict):
+            raise AppError("invalid_state", "checkpoint metadata is invalid")
+        return CheckpointRecord.from_dict(active)
+
+    @staticmethod
+    def _previous_checkpoint(state: RunState) -> CheckpointRecord | None:
+        checkpoints = state.artifacts.get("checkpoints")
+        previous = (
+            checkpoints.get("previous") if isinstance(checkpoints, dict) else None
+        )
+        if previous is None:
+            return None
+        if not isinstance(previous, dict):
+            raise AppError("invalid_state", "checkpoint metadata is invalid")
+        return CheckpointRecord.from_dict(previous)
+
+    @staticmethod
+    def _expected_source_revision_static(state: RunState, phase: Phase) -> str:
+        if phase is Phase.VERIFY:
+            active = WorkflowService._active_checkpoint(state, required=False)
+            if active is not None:
+                return active.commit_sha
+        return state.source_revision
 
     @staticmethod
     def _run_policy_payload(
@@ -3511,8 +3627,7 @@ class WorkflowService:
             if (
                 match is None
                 or not isinstance(owner, dict)
-                or set(owner)
-                != {
+                or not {
                     "phase",
                     "number",
                     "nodes",
@@ -3521,6 +3636,18 @@ class WorkflowService:
                     "begun_at",
                     "dispatch_plan",
                     "dispatch_evidence",
+                }.issubset(set(owner))
+                or set(owner)
+                - {
+                    "phase",
+                    "number",
+                    "nodes",
+                    "skill_dir",
+                    "begun_version",
+                    "begun_at",
+                    "dispatch_plan",
+                    "dispatch_evidence",
+                    "implementation_baseline",
                 }
                 or owner.get("phase") != match.group(1)
                 or owner.get("number") != int(match.group(2))
@@ -3549,6 +3676,12 @@ class WorkflowService:
                 raise AppError(
                     "invalid_state", "attempt history is invalid"
                 ) from error
+            if "implementation_baseline" in owner:
+                if owner["phase"] != Phase.IMPLEMENT.value or not isinstance(
+                    owner["implementation_baseline"], dict
+                ):
+                    raise AppError("invalid_state", "attempt history is invalid")
+                ImplementationBaseline.from_dict(owner["implementation_baseline"])
             if any(
                 key not in state.run_graph
                 or state.run_graph[key].phase.value != owner["phase"]
@@ -3631,7 +3764,11 @@ class WorkflowService:
             raise AppError(
                 "invalid_state", "artifact registry is invalid"
             ) from error
-        if any(ref.source_revision != state.source_revision for ref in refs):
+        if any(
+            ref.source_revision
+            != WorkflowService._expected_source_revision_static(state, ref.phase)
+            for ref in refs
+        ):
             raise AppError(
                 "invalid_state", "artifact registry source revision is invalid"
             )

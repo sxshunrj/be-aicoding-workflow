@@ -229,6 +229,8 @@ class CheckpointService:
             path
             for path in self._changed_paths(base)
             if path not in set(baseline.dirty_paths)
+            and not path.startswith("artifacts/")
+            and not path.startswith(".ai-workflow/runs/")
         ]
         included = tuple(sorted(scope.authorize(path) for path in candidates))
         if no_code_delivery:
@@ -383,7 +385,7 @@ class CheckpointService:
                 path
                 for output in (tracked, untracked)
                 for path in output.split("\0")
-                if path
+                if path and not path.startswith(".ai-workflow/runs/")
             )
         )
 
