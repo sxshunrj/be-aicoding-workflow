@@ -47,6 +47,14 @@ def test_state_round_trip_and_event_append(tmp_path: Path) -> None:
     assert '"type":"run_started"' in store.events_path.read_text(encoding="utf-8")
 
 
+def test_owned_artifact_path_is_attempt_scoped(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "run")
+
+    assert store.owned_artifact_path("plan-1-abcdef", "prd") == (
+        tmp_path / "run" / "attempts" / "plan-1-abcdef" / "artifacts" / "prd.md"
+    )
+
+
 def test_schema_v1_state_load_has_machine_readable_error(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "run")
     store.create(new_state())

@@ -198,6 +198,151 @@ def test_cli_init_grill_profile_starts_at_plan_prd(tmp_path: Path, capsys) -> No
     )
 
 
+def test_cli_stage_owned_grill_prd_then_finalize(tmp_path: Path, capsys) -> None:
+    _config(tmp_path)
+    status, initialized = _call(
+        capsys,
+        [
+            "workflow",
+            "init",
+            "--repo",
+            str(tmp_path),
+            "--source-revision",
+            "abc123",
+            "--requirement",
+            "Draft a PRD first",
+            "--profile",
+            "grill",
+        ],
+    )
+    assert status == 0
+    run_id = initialized["data"]["run_id"]
+    status, begun = _call(
+        capsys,
+        [
+            "workflow",
+            "begin",
+            "--repo",
+            str(tmp_path),
+            "--run-id",
+            run_id,
+            "--phase",
+            "plan",
+        ],
+    )
+    assert status == 0
+    item = begun["data"]["dispatch_plan"][0]
+    assert item["execution_kind"] == "workflow_owned"
+    assert item["prompt_file"] is None
+    assert item["packet_file"] is None
+    attempt_id = begun["data"]["attempt_id"]
+    prd = tmp_path / "prd.md"
+    prd.write_text("# PRD\n", encoding="utf-8")
+
+    status, staged = _call(
+        capsys,
+        [
+            "workflow",
+            "stage-owned",
+            "--repo",
+            str(tmp_path),
+            "--run-id",
+            run_id,
+            "--attempt-id",
+            attempt_id,
+            "--phase",
+            "plan",
+            "--child",
+            "prd",
+            "--artifact",
+            str(prd),
+            "--summary",
+            "PRD completed",
+        ],
+    )
+    assert status == 0
+    assert staged["data"]["child"] == "prd"
+
+    status, finalized = _call(
+        capsys,
+        [
+            "workflow",
+            "finalize",
+            "--repo",
+            str(tmp_path),
+            "--run-id",
+            run_id,
+            "--attempt-id",
+            attempt_id,
+        ],
+    )
+    assert status == 0
+    assert finalized["data"]["children"][0]["child"] == "prd"
+
+
+def test_cli_stage_owned_wrong_owner_uses_json_error(tmp_path: Path, capsys) -> None:
+    _config(tmp_path)
+    status, initialized = _call(
+        capsys,
+        [
+            "workflow",
+            "init",
+            "--repo",
+            str(tmp_path),
+            "--source-revision",
+            "abc123",
+            "--requirement",
+            "Draft a PRD first",
+            "--profile",
+            "grill",
+        ],
+    )
+    assert status == 0
+    run_id = initialized["data"]["run_id"]
+    status, begun = _call(
+        capsys,
+        [
+            "workflow",
+            "begin",
+            "--repo",
+            str(tmp_path),
+            "--run-id",
+            run_id,
+            "--phase",
+            "plan",
+        ],
+    )
+    assert status == 0
+    prd = tmp_path / "prd.md"
+    prd.write_text("# PRD\n", encoding="utf-8")
+
+    status, payload = _call(
+        capsys,
+        [
+            "workflow",
+            "stage-owned",
+            "--repo",
+            str(tmp_path),
+            "--run-id",
+            run_id,
+            "--attempt-id",
+            begun["data"]["attempt_id"],
+            "--phase",
+            "implement",
+            "--child",
+            "prd",
+            "--artifact",
+            str(prd),
+            "--summary",
+            "PRD completed",
+        ],
+    )
+
+    assert status != 0
+    assert payload["ok"] is False
+    assert payload["error"]["code"] in {"attempt_owner_mismatch", "invalid_transition"}
+
+
 def test_cli_init_unknown_profile_uses_stable_json_error(
     tmp_path: Path, capsys
 ) -> None:

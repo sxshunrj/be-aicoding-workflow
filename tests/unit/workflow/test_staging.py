@@ -50,6 +50,13 @@ def _service(tmp_path: Path, *, protected_paths: tuple[str, ...] = ()):
     return service, run, _skill_dir(tmp_path)
 
 
+def _grill_service(tmp_path: Path):
+    _config(tmp_path)
+    service = WorkflowService(tmp_path, id_factory=lambda: "abcdef")
+    run = service.init(tmp_path, "abc123", "Design the PRD", profile="grill")
+    return service, run
+
+
 def _set_current_phase(service: WorkflowService, run_id: str, phase: Phase) -> None:
     state = service.status(run_id)
     for node in state.run_graph.values():
@@ -142,6 +149,99 @@ def test_plan_children_stage_behind_barrier_and_finalize_without_advancing(
     assert state.current_phase == "plan"
     assert state.run_graph["plan.solution"].validity is NodeValidity.VALID
     assert state.run_graph["plan.test_strategy"].validity is NodeValidity.VALID
+
+
+def test_begin_returns_workflow_owned_prd_target_without_dispatch_files(
+    tmp_path: Path,
+) -> None:
+    service, run = _grill_service(tmp_path)
+
+    attempt = service.begin(run.run_id, Phase.PLAN, None)
+
+    assert len(attempt.dispatch_plan) == 1
+    item = attempt.dispatch_plan[0]
+    assert item.node == "plan.prd"
+    assert item.child == "prd"
+    assert item.execution_kind == "workflow_owned"
+    assert item.action == "dispatch"
+    assert item.prompt_file is None
+    assert item.packet_file is None
+    assert item.allowed_artifact_path.endswith("/attempts/plan-1-abcdef/artifacts/prd.md")
+
+
+def test_stage_owned_prd_finalizes_with_synthesized_child_result(
+    tmp_path: Path,
+) -> None:
+    service, run = _grill_service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.PLAN, None)
+    prd = tmp_path / "prd.md"
+    prd.write_text("# PRD\n\n## Acceptance Criteria\n", encoding="utf-8")
+
+    staged = service.stage_owned(
+        run.run_id,
+        attempt.attempt_id,
+        Phase.PLAN,
+        "prd",
+        prd,
+        "PRD completed",
+    )
+    aggregate = service.finalize(run.run_id, attempt.attempt_id)
+
+    assert staged.child == "prd"
+    assert staged.status == "completed"
+    assert aggregate.status == "completed"
+    child = aggregate.children[0]
+    assert child["run_id"] == run.run_id
+    assert child["phase"] == "plan"
+    assert child["child"] == "prd"
+    assert child["attempt_id"] == attempt.attempt_id
+    assert child["execution_mode"] == "fresh"
+    assert child["summary"] == "PRD completed"
+    assert child["findings"] == []
+    assert child["knowledge_citations"] == []
+    assert child["artifact"]["path"].startswith(".ai-workflow/runs/")
+    assert child["artifact"]["path"].endswith("/attempts/plan-1-abcdef/artifacts/prd.md")
+    assert (tmp_path / child["artifact"]["path"]).read_text(encoding="utf-8") == prd.read_text(encoding="utf-8")
+    assert service.status(run.run_id).run_graph["plan.prd"].validity is NodeValidity.VALID
+
+
+def test_stage_owned_rejects_invalid_owner_and_blank_summary(tmp_path: Path) -> None:
+    service, run = _grill_service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.PLAN, None)
+    prd = tmp_path / "prd.md"
+    prd.write_text("# PRD\n", encoding="utf-8")
+
+    with pytest.raises(AppError) as wrong_owner:
+        service.stage_owned(
+            run.run_id, attempt.attempt_id, Phase.IMPLEMENT, "prd", prd, "done"
+        )
+    assert wrong_owner.value.code == "attempt_owner_mismatch"
+    with pytest.raises(AppError, match="summary"):
+        service.stage_owned(
+            run.run_id, attempt.attempt_id, Phase.PLAN, "prd", prd, "  "
+        )
+
+
+def test_stage_owned_rejects_symlink_and_run_storage_source(tmp_path: Path) -> None:
+    service, run = _grill_service(tmp_path)
+    attempt = service.begin(run.run_id, Phase.PLAN, None)
+    prd = tmp_path / "prd.md"
+    prd.write_text("# PRD\n", encoding="utf-8")
+    symlink = tmp_path / "prd-link.md"
+    symlink.symlink_to(prd)
+
+    with pytest.raises(AppError, match="regular file"):
+        service.stage_owned(
+            run.run_id, attempt.attempt_id, Phase.PLAN, "prd", symlink, "done"
+        )
+
+    inside_run = service._store(run.run_id).attempt_dir(attempt.attempt_id) / "source.md"
+    inside_run.parent.mkdir(parents=True, exist_ok=True)
+    inside_run.write_text("# PRD\n", encoding="utf-8")
+    with pytest.raises(AppError, match="run storage"):
+        service.stage_owned(
+            run.run_id, attempt.attempt_id, Phase.PLAN, "prd", inside_run, "done"
+        )
 
 
 def test_begin_writes_per_child_dispatch_packets_prompts_and_knowledge(

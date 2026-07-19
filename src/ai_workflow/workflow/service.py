@@ -20,7 +20,12 @@ from ai_workflow.contracts.packets import DispatchPacket, ReflectionPacket
 from ai_workflow.errors import AppError
 from ai_workflow.path_authorization import RepositoryPathAuthorizer
 from ai_workflow.workflow.dispatch import OWNER_CONTRACT, render_prompt_file
-from ai_workflow.workflow.graph import NodeValidity, WorkflowProfile, build_run_graph
+from ai_workflow.workflow.graph import (
+    NodeValidity,
+    WorkflowProfile,
+    build_run_graph,
+    execution_kind,
+)
 from ai_workflow.workflow.machine import PHASE_ORDER, StateMachine, phase_nodes
 from ai_workflow.workflow.models import NodeStatus, Phase, RunState
 from ai_workflow.workflow.review import ReviewDecision, UNABLE_REASON
@@ -67,7 +72,9 @@ class _EmptyWiki:
 class DispatchItem:
     node: str
     child: str
+    execution_kind: Literal["child_backed", "workflow_owned"]
     action: Literal["dispatch", "rerun", "already_staged"]
+    allowed_artifact_path: str | None
     prompt_file: str | None
     packet_file: str | None
 
@@ -75,7 +82,9 @@ class DispatchItem:
         return {
             "node": self.node,
             "child": self.child,
+            "execution_kind": self.execution_kind,
             "action": self.action,
+            "allowed_artifact_path": self.allowed_artifact_path,
             "prompt_file": self.prompt_file,
             "packet_file": self.packet_file,
         }
@@ -258,7 +267,9 @@ class WorkflowService:
     def status(self, run_id: str) -> RunState:
         return self._load(run_id)
 
-    def begin(self, run_id: str, phase: Phase, skill_dir: Path) -> PhaseAttempt:
+    def begin(
+        self, run_id: str, phase: Phase, skill_dir: Path | None
+    ) -> PhaseAttempt:
         store = self._store(run_id)
         with store.event_lock():
             state = self._load_locked(store, run_id)
@@ -292,7 +303,18 @@ class WorkflowService:
                     "attempt_limit", "maximum attempts reached for phase"
                 )
             attempt_id = f"{phase.value}-{number}-{self._new_id_suffix()}"
-            resolved_skill = self._validate_skill_dir(skill_dir, effective)
+            child_nodes = tuple(
+                node for node in effective if execution_kind(node) == "child_backed"
+            )
+            if child_nodes:
+                if skill_dir is None:
+                    raise AppError(
+                        "invalid_skill_dir",
+                        "skill directory is required for child-backed nodes",
+                    )
+                resolved_skill = self._validate_skill_dir(skill_dir, child_nodes)
+            else:
+                resolved_skill = None
             self._assert_no_related_event_locked(
                 store,
                 state,
@@ -315,7 +337,7 @@ class WorkflowService:
                 "phase": phase.value,
                 "number": number,
                 "nodes": [node.key for node in effective],
-                "skill_dir": str(resolved_skill),
+                "skill_dir": None if resolved_skill is None else str(resolved_skill),
             }
             state.status = NodeStatus.RUNNING.value
             dispatch_plan, dispatch_evidence = self._create_dispatch_plan(
@@ -476,6 +498,169 @@ class WorkflowService:
             )
             return self._staged_child(record)
 
+    def stage_owned(
+        self,
+        run_id: str,
+        attempt_id: str,
+        phase: Phase,
+        child: str,
+        artifact_path: Path,
+        summary: str,
+    ) -> StagedChild:
+        if not isinstance(summary, str) or not summary.strip():
+            raise AppError("invalid_result", "owned result summary must not be empty")
+        if artifact_path.is_symlink():
+            raise AppError("invalid_result", "owned artifact source must be a regular file")
+        try:
+            source_resolved = artifact_path.resolve(strict=True)
+            source_stat = artifact_path.lstat()
+        except OSError as error:
+            raise AppError(
+                "invalid_result", "owned artifact source must be a regular file"
+            ) from error
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise AppError("invalid_result", "owned artifact source must be a regular file")
+
+        store = self._store(run_id)
+        try:
+            source_resolved.relative_to(store.run_dir.resolve(strict=False))
+        except ValueError:
+            pass
+        else:
+            raise AppError(
+                "invalid_result", "owned artifact source must be outside run storage"
+            )
+
+        source_payload = artifact_path.read_bytes()
+        with store.event_lock():
+            state = self._load_locked(store, run_id)
+            self._active(state)
+            owner, node_key = self._attempt_child_owner(
+                state, attempt_id, child, require_current=True
+            )
+            node = state.run_graph[node_key]
+            if execution_kind(node) != "workflow_owned":
+                raise AppError(
+                    "attempt_owner_mismatch",
+                    "child is not workflow-owned for this attempt",
+                )
+            if phase is not node.phase or phase.value != owner["phase"]:
+                raise AppError(
+                    "attempt_owner_mismatch",
+                    "owned result phase does not match attempt",
+                )
+            evidence = self._load_anchored_owned_evidence(
+                store,
+                attempt_id,
+                child,
+                owner,
+                node_key,
+                validate_graph_mode=True,
+            )
+            target = Path(evidence["allowed_artifact_path"])
+            try:
+                store.write_immutable(target, source_payload)
+            except AppError as error:
+                if error.code == "immutable_conflict":
+                    raise AppError(
+                        "result_conflict",
+                        "owned artifact already has different content",
+                    ) from error
+                raise
+            artifact = ArtifactRef(
+                path=evidence["allowed_output_path"],
+                sha256=hashlib.sha256(source_payload).hexdigest(),
+                schema_version=2,
+                phase=phase,
+                child=child,
+                source_revision=state.source_revision,
+            )
+            result = ChildResult(
+                run_id=run_id,
+                phase=phase,
+                child=child,
+                attempt_id=attempt_id,
+                execution_mode=evidence["execution_mode"],
+                status="completed",
+                summary=summary.strip(),
+                artifact=artifact,
+                findings=(),
+                knowledge_citations=(),
+            )
+            raw_result = (json.dumps(result.to_dict(), indent=2) + "\n").encode("utf-8")
+            result_digest = hashlib.sha256(raw_result).hexdigest()
+            self._ensure_phase_begun_event_locked(
+                store, state, attempt_id, owner
+            )
+            staged_results = self._mapping(
+                state.artifacts, "staged_results", "staged result metadata"
+            )
+            attempt_results = staged_results.setdefault(attempt_id, {})
+            if not isinstance(attempt_results, dict):
+                raise AppError(
+                    "invalid_state", "staged result metadata is invalid"
+                )
+            previous = attempt_results.get(child)
+            if previous is not None:
+                return self._existing_stage(
+                    store,
+                    state,
+                    attempt_id,
+                    child,
+                    result_digest,
+                    raw_result,
+                    previous,
+                    owner,
+                    node_key,
+                    evidence,
+                    (),
+                )
+            self._assert_no_related_event_locked(
+                store,
+                state,
+                "child_result_staged",
+                related=lambda data: (
+                    data.get("attempt_id") == attempt_id
+                    and data.get("child") == child
+                ),
+                evidence_name="child result staged event",
+            )
+            self._validate_artifact(
+                state, node_key, artifact, evidence["allowed_output_path"]
+            )
+            staged_path = store.staged_path(attempt_id, child)
+            try:
+                store.write_immutable(staged_path, raw_result)
+            except AppError as error:
+                if error.code == "immutable_conflict":
+                    raise AppError(
+                        "result_conflict",
+                        "child already has a different staged result",
+                    ) from error
+                raise
+            staged_at = self.clock().isoformat()
+            record: dict[str, object] = {
+                "run_id": run_id,
+                "node": node_key,
+                "phase": phase.value,
+                "child": child,
+                "attempt_id": attempt_id,
+                "status": result.status,
+                "result_path": str(staged_path),
+                "result_digest": result_digest,
+                "staged_version": state.version + 1,
+                "staged_at": staged_at,
+                "artifact": artifact.to_dict(),
+                "knowledge_citations": [],
+            }
+            attempt_results[child] = record
+            store.save_locked(
+                state.version,
+                state,
+                Event("child_result_staged", record, staged_at),
+            )
+            return self._staged_child(record)
+
     def finalize(self, run_id: str, attempt_id: str) -> PhaseAggregate:
         store = self._store(run_id)
         with store.event_lock():
@@ -509,17 +694,28 @@ class WorkflowService:
             for node_key in raw_nodes:
                 node = state.run_graph[node_key]
                 record = attempt_results[node.child]
-                _, allowed_citations, evidence = (
-                    self._load_anchored_dispatch_evidence(
+                if execution_kind(node) == "workflow_owned":
+                    allowed_citations: tuple[str, ...] = ()
+                    evidence = self._load_anchored_owned_evidence(
                         store,
-                        state,
                         attempt_id,
                         node.child,
                         owner,
                         node_key,
                         validate_graph_mode=False,
                     )
-                )
+                else:
+                    _, allowed_citations, evidence = (
+                        self._load_anchored_dispatch_evidence(
+                            store,
+                            state,
+                            attempt_id,
+                            node.child,
+                            owner,
+                            node_key,
+                            validate_graph_mode=False,
+                        )
+                    )
                 result = self._validate_staged_evidence(
                     store,
                     state,
@@ -1184,7 +1380,7 @@ class WorkflowService:
         state: RunState,
         nodes,
         attempt_id: str,
-        skill_dir: Path,
+        skill_dir: Path | None,
         store: StateStore,
         config: RepositoryConfig,
     ) -> tuple[tuple[DispatchItem, ...], dict[str, object]]:
@@ -1192,8 +1388,43 @@ class WorkflowService:
         allowed_inputs = self._allowed_input_paths(config, prior)
         items: list[DispatchItem] = []
         evidence: dict[str, object] = {}
-        contracts = skill_dir / "references" / "agents"
+        contracts = None if skill_dir is None else skill_dir / "references" / "agents"
         for node in nodes:
+            kind = execution_kind(node)
+            action: Literal["dispatch", "rerun"] = (
+                "rerun"
+                if node.validity is NodeValidity.RERUN
+                else "dispatch"
+            )
+            if kind == "workflow_owned":
+                target = store.owned_artifact_path(attempt_id, node.child)
+                if self.repo_root is None:
+                    raise AppError(
+                        "repository_required", "repository root is required"
+                    )
+                relative_target = target.relative_to(self.repo_root).as_posix()
+                reason = node.reason if action == "rerun" else None
+                evidence[node.child] = {
+                    "node": node.key,
+                    "execution_kind": kind,
+                    "allowed_artifact_path": str(target),
+                    "allowed_output_path": relative_target,
+                    "execution_mode": "rerun" if action == "rerun" else "fresh",
+                    "rerun_reason": reason,
+                }
+                items.append(
+                    DispatchItem(
+                        node=node.key,
+                        child=node.child,
+                        execution_kind=kind,
+                        action=action,
+                        allowed_artifact_path=str(target),
+                        prompt_file=None,
+                        packet_file=None,
+                    )
+                )
+                continue
+            assert contracts is not None
             knowledge_path = store.knowledge_path(attempt_id, node.child)
             wiki = (
                 WikiService(
@@ -1216,11 +1447,6 @@ class WorkflowService:
                     config.max_knowledge_entries,
                     config.max_knowledge_characters,
                 ),
-            )
-            action: Literal["dispatch", "rerun"] = (
-                "rerun"
-                if node.validity is NodeValidity.RERUN
-                else "dispatch"
             )
             output = (
                 f"artifacts/{node.phase.value}-{node.child.replace('_', '-')}.md"
@@ -1289,7 +1515,9 @@ class WorkflowService:
                 DispatchItem(
                     node=node.key,
                     child=node.child,
+                    execution_kind=kind,
                     action=action,
+                    allowed_artifact_path=None,
                     prompt_file=str(prompt_path),
                     packet_file=str(packet_path),
                 )
@@ -1314,15 +1542,26 @@ class WorkflowService:
         plan: list[DispatchItem] = []
         for key in raw_nodes:
             node = state.run_graph[key]
-            _, allowed_citations, evidence = self._load_anchored_dispatch_evidence(
-                store,
-                state,
-                attempt_id,
-                node.child,
-                owner,
-                key,
-                validate_graph_mode=node.child not in attempt_results,
-            )
+            if execution_kind(node) == "workflow_owned":
+                allowed_citations: tuple[str, ...] = ()
+                evidence = self._load_anchored_owned_evidence(
+                    store,
+                    attempt_id,
+                    node.child,
+                    owner,
+                    key,
+                    validate_graph_mode=node.child not in attempt_results,
+                )
+            else:
+                _, allowed_citations, evidence = self._load_anchored_dispatch_evidence(
+                    store,
+                    state,
+                    attempt_id,
+                    node.child,
+                    owner,
+                    key,
+                    validate_graph_mode=node.child not in attempt_results,
+                )
             if node.child in attempt_results:
                 self._validate_staged_evidence(
                     store,
@@ -1346,7 +1585,27 @@ class WorkflowService:
                     DispatchItem(
                         node=key,
                         child=node.child,
+                        execution_kind=execution_kind(node),
                         action="already_staged",
+                        allowed_artifact_path=evidence.get("allowed_artifact_path"),
+                        prompt_file=None,
+                        packet_file=None,
+                    )
+                )
+                continue
+            if execution_kind(node) == "workflow_owned":
+                action: Literal["dispatch", "rerun"] = (
+                    "rerun"
+                    if evidence["execution_mode"] == "rerun"
+                    else "dispatch"
+                )
+                plan.append(
+                    DispatchItem(
+                        node=key,
+                        child=node.child,
+                        execution_kind="workflow_owned",
+                        action=action,
+                        allowed_artifact_path=evidence["allowed_artifact_path"],
                         prompt_file=None,
                         packet_file=None,
                     )
@@ -1361,7 +1620,9 @@ class WorkflowService:
                 DispatchItem(
                     node=key,
                     child=node.child,
+                    execution_kind=execution_kind(node),
                     action=action,
+                    allowed_artifact_path=evidence.get("allowed_artifact_path"),
                     prompt_file=evidence["prompt_path"],
                     packet_file=evidence["packet_path"],
                 )
@@ -1787,6 +2048,44 @@ class WorkflowService:
             ) from error
         return packet, tuple(selected_ids), evidence
 
+    def _load_anchored_owned_evidence(
+        self,
+        store: StateStore,
+        attempt_id: str,
+        child: str,
+        owner: dict[str, object],
+        node_key: str,
+        *,
+        validate_graph_mode: bool = True,
+    ) -> dict[str, object]:
+        raw_evidence = owner.get("dispatch_evidence")
+        evidence = (
+            raw_evidence.get(child)
+            if isinstance(raw_evidence, dict)
+            else None
+        )
+        if not isinstance(evidence, dict):
+            raise AppError("invalid_state", "owned artifact evidence is malformed")
+        target = store.owned_artifact_path(attempt_id, child)
+        if self.repo_root is None:
+            raise AppError("repository_required", "repository root is required")
+        relative_target = target.relative_to(self.repo_root).as_posix()
+        if (
+            evidence.get("node") != node_key
+            or evidence.get("execution_kind") != "workflow_owned"
+            or evidence.get("allowed_artifact_path") != str(target)
+            or evidence.get("allowed_output_path") != relative_target
+            or evidence.get("execution_mode") not in {"fresh", "rerun"}
+        ):
+            raise AppError("invalid_state", "owned artifact evidence is malformed")
+        reason = evidence.get("rerun_reason")
+        mode = evidence["execution_mode"]
+        if mode == "fresh" and reason is not None:
+            raise AppError("invalid_state", "owned artifact evidence is malformed")
+        if mode == "rerun" and (not isinstance(reason, str) or not reason.strip()):
+            raise AppError("invalid_state", "owned artifact evidence is malformed")
+        return evidence
+
     def _validate_staged_evidence(
         self,
         store: StateStore,
@@ -1937,11 +2236,15 @@ class WorkflowService:
             raise AppError(
                 "repository_required", "repository root is required"
             )
-        RepositoryPathAuthorizer(self.repo_root, config).authorize(
-            "report",
-            artifact.path,
-            helper_owned_report_paths=(allowed_output,),
-        )
+        if not (
+            artifact.path == allowed_output
+            and artifact.path.startswith(".ai-workflow/runs/")
+        ):
+            RepositoryPathAuthorizer(self.repo_root, config).authorize(
+                "report",
+                artifact.path,
+                helper_owned_report_paths=(allowed_output,),
+            )
         repository = self.repo_root.resolve()
         path = self.repo_root / artifact.path
         if path.is_symlink():
@@ -3225,9 +3528,14 @@ class WorkflowService:
                 or not owner["nodes"]
                 or not all(isinstance(key, str) for key in owner["nodes"])
                 or len(owner["nodes"]) != len(set(owner["nodes"]))
-                or not isinstance(owner.get("skill_dir"), str)
-                or not owner["skill_dir"]
-                or not Path(owner["skill_dir"]).is_absolute()
+                or not (
+                    owner.get("skill_dir") is None
+                    or (
+                        isinstance(owner.get("skill_dir"), str)
+                        and owner["skill_dir"]
+                        and Path(owner["skill_dir"]).is_absolute()
+                    )
+                )
                 or type(owner.get("begun_version")) is not int
                 or not 1 <= owner["begun_version"] <= state.version
                 or not isinstance(owner.get("begun_at"), str)
@@ -3378,6 +3686,14 @@ class WorkflowService:
             "owner_contract_path",
             "common_contract_path",
         }
+        owned_evidence_keys = {
+            "node",
+            "execution_kind",
+            "allowed_artifact_path",
+            "allowed_output_path",
+            "execution_mode",
+            "rerun_reason",
+        }
         evidence = owner["dispatch_evidence"]
         plan = owner["dispatch_plan"]
         nodes = owner["nodes"]
@@ -3388,12 +3704,54 @@ class WorkflowService:
         if set(evidence) != set(children) or len(plan) != len(children):
             return False
         expected_plan: list[dict[str, object]] = []
-        contracts = Path(owner["skill_dir"]) / "references" / "agents"
+        contracts = (
+            None
+            if owner.get("skill_dir") is None
+            else Path(owner["skill_dir"]) / "references" / "agents"
+        )
         for key in nodes:
             node = state.run_graph[key]
             child = node.child
             item = evidence.get(child)
-            if not isinstance(item, dict) or set(item) != evidence_keys:
+            if not isinstance(item, dict):
+                return False
+            if execution_kind(node) == "workflow_owned":
+                try:
+                    target = store.owned_artifact_path(attempt_id, child)
+                    relative_target = target.relative_to(
+                        store.run_dir.parents[2]
+                    ).as_posix()
+                except (AppError, ValueError):
+                    return False
+                mode = item.get("execution_mode")
+                reason = item.get("rerun_reason")
+                if (
+                    set(item) != owned_evidence_keys
+                    or item.get("node") != key
+                    or item.get("execution_kind") != "workflow_owned"
+                    or item.get("allowed_artifact_path") != str(target)
+                    or item.get("allowed_output_path") != relative_target
+                    or mode not in {"fresh", "rerun"}
+                    or (mode == "fresh" and reason is not None)
+                    or (
+                        mode == "rerun"
+                        and (not isinstance(reason, str) or not reason.strip())
+                    )
+                ):
+                    return False
+                expected_plan.append(
+                    {
+                        "node": key,
+                        "child": child,
+                        "execution_kind": "workflow_owned",
+                        "action": "rerun" if mode == "rerun" else "dispatch",
+                        "allowed_artifact_path": str(target),
+                        "prompt_file": None,
+                        "packet_file": None,
+                    }
+                )
+                continue
+            if contracts is None or set(item) != evidence_keys:
                 return False
             try:
                 packet_path = store.dispatch_path(attempt_id, child)
@@ -3436,7 +3794,9 @@ class WorkflowService:
                 {
                     "node": key,
                     "child": child,
+                    "execution_kind": "child_backed",
                     "action": "rerun" if mode == "rerun" else "dispatch",
+                    "allowed_artifact_path": None,
                     "prompt_file": str(prompt_path),
                     "packet_file": str(packet_path),
                 }

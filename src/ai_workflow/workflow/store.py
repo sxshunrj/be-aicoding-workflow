@@ -41,6 +41,11 @@ class StateStore:
         self._validate_component(attempt_id, "attempt ID")
         return self._safe_path("attempts", attempt_id, "phase-result.json")
 
+    def owned_artifact_path(self, attempt_id: str, child: str) -> Path:
+        self._validate_component(attempt_id, "attempt ID")
+        self._validate_component(child, "child")
+        return self._safe_path("attempts", attempt_id, "artifacts", f"{child}.md")
+
     def dispatch_path(self, attempt_id: str, child: str) -> Path:
         self._validate_component(attempt_id, "attempt ID")
         self._validate_component(child, "child")

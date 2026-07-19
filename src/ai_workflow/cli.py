@@ -64,13 +64,21 @@ def _parser() -> argparse.ArgumentParser:
     begin.add_argument("--repo", type=Path, required=True)
     begin.add_argument("--run-id", required=True)
     begin.add_argument("--phase", type=Phase, choices=list(Phase), required=True)
-    begin.add_argument("--skill-dir", type=Path, required=True)
+    begin.add_argument("--skill-dir", type=Path)
     stage = workflow_commands.add_parser("stage")
     stage.add_argument("--repo", type=Path, required=True)
     stage.add_argument("--run-id", required=True)
     stage.add_argument("--attempt-id", required=True)
     stage.add_argument("--child", required=True)
     stage.add_argument("--result", type=Path, required=True)
+    stage_owned = workflow_commands.add_parser("stage-owned")
+    stage_owned.add_argument("--repo", type=Path, required=True)
+    stage_owned.add_argument("--run-id", required=True)
+    stage_owned.add_argument("--attempt-id", required=True)
+    stage_owned.add_argument("--phase", type=Phase, choices=list(Phase), required=True)
+    stage_owned.add_argument("--child", required=True)
+    stage_owned.add_argument("--artifact", type=Path, required=True)
+    stage_owned.add_argument("--summary", required=True)
     finalize = workflow_commands.add_parser("finalize")
     finalize.add_argument("--repo", type=Path, required=True)
     finalize.add_argument("--run-id", required=True)
@@ -269,6 +277,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             elif args.workflow_command == "stage":
                 data = service.stage(
                     args.run_id, args.attempt_id, args.child, args.result
+                ).to_dict()
+            elif args.workflow_command == "stage-owned":
+                data = service.stage_owned(
+                    args.run_id,
+                    args.attempt_id,
+                    args.phase,
+                    args.child,
+                    args.artifact,
+                    args.summary,
                 ).to_dict()
             elif args.workflow_command == "finalize":
                 data = service.finalize(args.run_id, args.attempt_id).to_dict()
