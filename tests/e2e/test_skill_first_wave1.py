@@ -33,6 +33,13 @@ def _copy_project(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     _skill_dir(target)
+    (target / "src").mkdir(exist_ok=True)
+    (target / "src" / "app.py").write_text("original\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=target, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "E2E User"], cwd=target, check=True)
+    subprocess.run(["git", "config", "user.email", "e2e@example.com"], cwd=target, check=True)
+    subprocess.run(["git", "add", "."], cwd=target, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=target, check=True, capture_output=True)
     return target
 
 
@@ -99,7 +106,14 @@ def _data(argv: list[str]) -> dict[str, object]:
 
 def test_skill_first_wave_one_local_acceptance(tmp_path: Path) -> None:
     repo = _copy_project(tmp_path)
-    run = _service(repo).init(repo, "abc123", "Exercise Wave 1 locally", "full")
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    run = _service(repo).init(repo, head, "Exercise Wave 1 locally", "full")
     run_id = run.run_id
 
     spec = _service(repo).begin(run_id, Phase.SPEC, _skill_dir(repo))
@@ -187,7 +201,7 @@ def test_skill_first_wave_one_local_acceptance(tmp_path: Path) -> None:
     promoted = wiki.promote(candidate.id, "alice", review["candidate"]["digest"])
     assert promoted.status.value == "approved"
 
-    new_run = _service(repo).init(repo, "abc124", "Use wave one knowledge", "full")
+    new_run = _service(repo).init(repo, head, "Use wave one knowledge", "full")
     next_spec = _service(repo).begin(new_run.run_id, Phase.SPEC, _skill_dir(repo))
     dispatch = DispatchPacket.load(next_spec.dispatch_plan[0].packet_file)
     packet_data = json.loads(Path(dispatch.knowledge_packet["path"]).read_text())

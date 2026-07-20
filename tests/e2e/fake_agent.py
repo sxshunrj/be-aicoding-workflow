@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from pathlib import PurePosixPath
 import shutil
+import subprocess
 
 from ai_workflow.cli import main
 from ai_workflow.config import RepositoryConfig
@@ -45,6 +46,13 @@ class ProjectTemplate:
             "code-reviewer.md",
         ):
             (contracts / name).write_text(f"# {name}\n", encoding="utf-8")
+        (target / "src").mkdir(exist_ok=True)
+        (target / "src" / "app.py").write_text("original\n", encoding="utf-8")
+        _git(target, "init")
+        _git(target, "config", "user.name", "E2E User")
+        _git(target, "config", "user.email", "e2e@example.com")
+        _git(target, "add", ".")
+        _git(target, "commit", "-m", "initial")
         return target
 
 
@@ -52,15 +60,33 @@ class CliDriver:
     def __init__(self, project_root: Path) -> None:
         self.project_root = project_root
 
-    def workflow_init(self, *, source_revision: str) -> dict[str, object]:
+    def workflow_init(
+        self, *, source_revision: str | None = None, profile: str = "full"
+    ) -> dict[str, object]:
+        source_revision = source_revision or self.git_rev_parse("HEAD")
         return self._data(["workflow", "init", "--repo", str(self.project_root),
                            "--source-revision", source_revision, "--requirement",
-                           "Exercise the full workflow lifecycle"])
+                           "Exercise the full workflow lifecycle", "--profile", profile])
 
     def workflow_begin(self, run_id: str, phase: str) -> dict[str, object]:
         return self._data(["workflow", "begin", "--repo", str(self.project_root),
                            "--run-id", run_id, "--phase", phase, "--skill-dir",
                            str(self.project_root / ".test-skill")])
+
+    def workflow_stage_owned(
+        self,
+        run_id: str,
+        attempt_id: str,
+        phase: str,
+        child: str,
+        artifact: Path,
+        summary: str,
+    ) -> dict[str, object]:
+        return self._data([
+            "workflow", "stage-owned", "--repo", str(self.project_root),
+            "--run-id", run_id, "--attempt-id", attempt_id, "--phase", phase,
+            "--child", child, "--artifact", str(artifact), "--summary", summary,
+        ])
 
     def workflow_stage(self, run_id: str, result_path: Path) -> dict[str, object]:
         result = ChildResult.load(result_path)
@@ -111,9 +137,56 @@ class CliDriver:
             ]
         )
 
+    def workflow_review(self, run_id: str, *, reruns: dict[str, str] | None = None) -> dict[str, object]:
+        argv = [
+            "workflow",
+            "review",
+            "--repo",
+            str(self.project_root),
+            "--run-id",
+            run_id,
+        ]
+        for node, reason in (reruns or {}).items():
+            argv.extend(["--rerun", f"{node}={reason}"])
+        return self._data(argv)
+
+    def workflow_review_accept_status(self, run_id: str, digest: str) -> tuple[int, dict[str, object]]:
+        return self._raw_data(
+            [
+                "workflow",
+                "review-accept",
+                "--repo",
+                str(self.project_root),
+                "--run-id",
+                run_id,
+                "--expected-digest",
+                digest,
+            ]
+        )
+
     def workflow_status(self, run_id: str) -> dict[str, object]:
         return self._data(["workflow", "status", "--repo", str(self.project_root),
                            "--run-id", run_id])
+
+    def git_rev_parse(self, revision: str) -> str:
+        return _git(self.project_root, "rev-parse", revision)
+
+    def snapshot_git_state(self) -> dict[str, object]:
+        head = self.git_rev_parse("HEAD")
+        symbolic = _git(self.project_root, "symbolic-ref", "-q", "HEAD")
+        branch_ref = self.git_rev_parse(symbolic)
+        index = (self.project_root / ".git" / "index").read_bytes()
+        return {
+            "head": head,
+            "symbolic": symbolic,
+            "branch_ref": branch_ref,
+            "index": index,
+        }
+
+    def load_packet(self, item: dict[str, object]) -> DispatchPacket:
+        packet_file = item["packet_file"]
+        assert isinstance(packet_file, str)
+        return DispatchPacket.load(packet_file)
 
     def wiki_propose(self, proposal_path: Path) -> dict[str, object]:
         return self._data(["wiki", "propose", "--wiki", str(self._wiki_root()),
@@ -131,16 +204,20 @@ class CliDriver:
         return RepositoryConfig.load(self.project_root).wiki_path
 
     def _data(self, argv: list[str]) -> dict[str, object] | list[dict[str, object]]:
-        buffer = StringIO()
-        with redirect_stdout(buffer):
-            status = main(argv)
-        payload = json.loads(buffer.getvalue())
+        status, payload = self._raw_data(argv)
         if not payload.get("ok", False):
             raise AssertionError(f"command failed: {payload}")
         data = payload["data"]
         if isinstance(data, list):
             return data
         return data
+
+    def _raw_data(self, argv: list[str]) -> tuple[int, dict[str, object]]:
+        buffer = StringIO()
+        with redirect_stdout(buffer):
+            status = main(argv)
+        payload = json.loads(buffer.getvalue())
+        return status, payload
 
 
 class FakeAgent:
@@ -155,6 +232,10 @@ class FakeAgent:
         artifact_path = self.project_root / packet.allowed_output_path
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         if finding is None:
+            if packet.phase.value == "implement" and packet.child == "code":
+                (self.project_root / "src" / "app.py").write_text(
+                    f"implemented {packet.attempt_id}\n", encoding="utf-8"
+                )
             artifact_text = self._artifact_text(packet)
             result_status = "completed"
             summary = f"{packet.phase.value} phase completed."
@@ -254,6 +335,17 @@ def _safe_repo_path(value: str) -> PurePosixPath:
     return path
 
 
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
 def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prompt-file", type=Path, required=True)
@@ -263,6 +355,10 @@ def cli(argv: list[str] | None = None) -> int:
     relative = _safe_repo_path(packet.allowed_output_path)
     artifact_path = Path.cwd() / relative
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    if packet.phase.value == "implement" and packet.child == "code":
+        source = Path.cwd() / "src" / "app.py"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(f"implemented {packet.attempt_id}\n", encoding="utf-8")
     artifact_path.write_text(
         f"# {packet.phase.value} {packet.child}\n\n"
         f"Run {packet.run_id} / {packet.attempt_id}\n",

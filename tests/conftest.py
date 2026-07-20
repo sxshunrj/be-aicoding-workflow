@@ -4,8 +4,9 @@ import sys
 
 import pytest
 
-
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+
+from tests.e2e.fake_agent import ProjectTemplate
 
 
 class GitRepo:
@@ -62,3 +63,9 @@ def git_repo(tmp_path: Path) -> GitRepo:
     repo.git("add", ".ai-workflow.yaml", "src/app.py")
     repo.git("commit", "-m", "initial")
     return repo
+
+
+@pytest.fixture()
+def project_template() -> ProjectTemplate:
+    repo_root = Path(__file__).resolve().parents[1]
+    return ProjectTemplate(repo_root / "examples" / "language-neutral")

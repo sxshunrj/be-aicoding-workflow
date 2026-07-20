@@ -229,8 +229,7 @@ class CheckpointService:
             path
             for path in self._changed_paths(base)
             if path not in set(baseline.dirty_paths)
-            and not path.startswith("artifacts/")
-            and not path.startswith(".ai-workflow/runs/")
+            and not self._ignored_workflow_path(path)
         ]
         included = tuple(sorted(scope.authorize(path) for path in candidates))
         if no_code_delivery:
@@ -385,7 +384,7 @@ class CheckpointService:
                 path
                 for output in (tracked, untracked)
                 for path in output.split("\0")
-                if path and not path.startswith(".ai-workflow/runs/")
+                if path and not self._ignored_workflow_path(path)
             )
         )
 
@@ -393,11 +392,17 @@ class CheckpointService:
         self, baseline: ImplementationBaseline
     ) -> None:
         for snapshot in baseline.dirty_snapshots:
+            if self._ignored_workflow_path(snapshot.path):
+                continue
             if self._snapshot(snapshot.path) != snapshot:
                 raise AppError(
                     "checkpoint_scope_ambiguous",
                     f"pre-existing dirty path changed: {snapshot.path}",
                 )
+
+    @staticmethod
+    def _ignored_workflow_path(path: str) -> bool:
+        return path.startswith(".ai-workflow/runs/") or path.startswith("artifacts/")
 
     def _snapshot(self, path: str) -> PathSnapshot:
         target = self.repo_root / path

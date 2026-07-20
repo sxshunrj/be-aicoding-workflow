@@ -256,6 +256,8 @@ class RepositoryPathAuthorizer:
     def _authorize_helper_owned_input(self, path: str) -> str:
         normalized = _normalize(path)
         self._require_inside_repository(normalized)
+        if normalized.startswith(".ai-workflow/runs/"):
+            return normalized
         self._require_not_denied(normalized)
         return normalized
 

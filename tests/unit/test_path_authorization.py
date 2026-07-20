@@ -192,6 +192,31 @@ def test_helper_owned_input_still_obeys_protected_paths(tmp_path: Path) -> None:
     assert error.value.code == "path_not_authorized"
 
 
+def test_helper_owned_run_artifact_is_allowed_as_input(tmp_path: Path) -> None:
+    run_artifact = (
+        tmp_path
+        / ".ai-workflow"
+        / "runs"
+        / "RUN-1"
+        / "attempts"
+        / "plan-1-abcdef"
+        / "artifacts"
+        / "prd.md"
+    )
+    run_artifact.parent.mkdir(parents=True)
+    run_artifact.write_text("# PRD\n", encoding="utf-8")
+    config = _config(tmp_path, protected_paths=(".ai-workflow/**",))
+    authorizer = RepositoryPathAuthorizer(tmp_path, config)
+
+    assert authorizer.allowed_input_paths(
+        helper_owned_input_paths=(
+            ".ai-workflow/runs/RUN-1/attempts/plan-1-abcdef/artifacts/prd.md",
+        )
+    ) == (
+        ".ai-workflow/runs/RUN-1/attempts/plan-1-abcdef/artifacts/prd.md",
+    )
+
+
 def test_checkpoint_scope_rejects_reports_symlinks_and_special_files(
     tmp_path: Path,
 ) -> None:

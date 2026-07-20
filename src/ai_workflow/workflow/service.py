@@ -47,6 +47,7 @@ ATTEMPT_ID_PATTERN = re.compile(
     r"(spec|plan|implement|verify)-([1-9]\d*)-[0-9a-f]{6}"
 )
 DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
+GIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 BLOCKED_STATE_KEY = "_blocked_state"
 LAST_TRANSITION_KEY = "_last_transition"
 RUN_POLICY_KEY = "_run_policy"
@@ -1184,9 +1185,36 @@ class WorkflowService:
             assert isinstance(gate, dict)
             accepted_at = self.clock().isoformat()
             if state.current_phase == Phase.IMPLEMENT.value:
-                self._activate_implementation_checkpoint_locked(
-                    store, state, attempt_id
-                )
+                try:
+                    self._activate_implementation_checkpoint_locked(
+                        store, state, attempt_id
+                    )
+                except AppError as error:
+                    if error.code in {
+                        "checkpoint_scope_ambiguous",
+                        "checkpoint_creation_failed",
+                        "checkpoint_unavailable",
+                        "path_not_authorized",
+                    }:
+                        failure = {
+                            "code": error.code,
+                            "message": error.message,
+                            "phase": state.current_phase,
+                            "attempt_id": attempt_id,
+                            "failed_at": accepted_at,
+                        }
+                        state.artifacts["_checkpoint_failure"] = failure
+                        state.artifacts[BLOCKED_STATE_KEY] = {
+                            "run": state.status,
+                            "phase": state.current_phase,
+                        }
+                        state.status = NodeStatus.BLOCKED.value
+                        store.save_locked(
+                            state.version,
+                            state,
+                            Event("checkpoint_failed", failure, accepted_at),
+                        )
+                    raise
             gate["accepted_version"] = state.version + 1
             gate["accepted_at"] = accepted_at
             self._assert_no_related_review_event_locked(
@@ -4000,11 +4028,14 @@ class WorkflowService:
             ref = ArtifactRef.from_dict(artifact)
         except (AppError, KeyError, TypeError, ValueError):
             return False
-        return (
-            ref.phase is node.phase
-            and ref.child == child
-            and ref.source_revision == state.source_revision
-        )
+        if ref.phase is not node.phase or ref.child != child:
+            return False
+        if ref.phase is Phase.VERIFY:
+            return (
+                GIT_SHA_PATTERN.fullmatch(ref.source_revision) is not None
+                or ref.source_revision == state.source_revision
+            )
+        return ref.source_revision == state.source_revision
 
     @staticmethod
     def _valid_aggregate_record(

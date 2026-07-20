@@ -48,7 +48,7 @@ def test_complete_run_recovery_rerun_and_knowledge_growth(
     app = CliDriver(project)
     agent = FakeAgent(project)
 
-    run = app.workflow_init(source_revision="abc123")
+    run = app.workflow_init()
     for phase in ("spec", "plan", "implement"):
         _run_phase(app, agent, run["run_id"], phase)
         app.workflow_review_transition(run["run_id"])
