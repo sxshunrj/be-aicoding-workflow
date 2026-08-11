@@ -8,7 +8,10 @@ Status: P0 workflow correctness locally verified; real-client parity evidence pe
 
 1. 安装 Python 3.11+。
 2. 安装依赖：`pip install -e '.[dev]'`。
-3. 安装 Skill：`bash skills/ai-workflow-init/scripts/init.sh --client all --scope user`。
+3. 安装 Skill：
+   - macOS/Linux：`bash skills/ai-workflow-init/scripts/init.sh --client all --scope user`
+   - Windows PowerShell：`pwsh -File skills/ai-workflow-init/scripts/init.ps1 --client all --scope user`
+   - 默认安装模式是 auto：Windows 使用 copy，其他平台使用 link；需要覆盖时传 `--copy` 或 `--link`。
 4. 诊断环境：`ai-workflow doctor --source-root "$PWD/skills" --repo "$PWD/examples/language-neutral" --client all`。
 5. 运行离线验证：`python -m pytest -q`。
 
@@ -25,7 +28,7 @@ Skill 名称保持英文，便于在 Codex/Claude Code 中稳定调用；说明�
 ```text
 locate/update ai-workflow-init
 -> reread latest SKILL.md
--> run scripts/init.sh
+-> run scripts/init.sh or scripts/init.ps1
 -> inspect installed/updated/skipped/failed
 -> run doctor
 ```

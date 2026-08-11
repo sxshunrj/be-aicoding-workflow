@@ -15,6 +15,8 @@ CLIENT_DIRS = {
     "claude": Path(".claude/skills"),
 }
 MANIFEST = ".ai-workflow/install-manifest.json"
+InstallMode = Literal["auto", "link", "copy"]
+EffectiveInstallMode = Literal["link", "copy"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,12 +63,13 @@ def install_skills(
     source_root: Path,
     home: Path,
     clients: tuple[str, ...] = ("codex", "claude"),
-    mode: Literal["link", "copy"] = "link",
+    mode: InstallMode = "auto",
     scope: Literal["user", "repo"] = "user",
     repo: Path | None = None,
 ) -> InstallReport:
-    if mode not in {"link", "copy"}:
-        raise ValueError("mode must be link or copy")
+    if mode not in {"auto", "link", "copy"}:
+        raise ValueError("mode must be auto, link, or copy")
+    effective_mode = default_install_mode() if mode == "auto" else mode
     roots = _install_roots(home, clients, scope=scope, repo=repo)
     source_root = Path(source_root).resolve()
     manifest_path = _manifest_root(home, scope=scope, repo=repo) / MANIFEST
@@ -93,15 +96,18 @@ def install_skills(
             continue
         for client, root in roots.items():
             target = root / name
-            status, message = _install_one(
-                name=name,
-                client=client,
-                source=source,
-                target=target,
-                digest=digest,
-                mode=mode,
-                previous=previous,
-            )
+            try:
+                status, message = _install_one(
+                    name=name,
+                    client=client,
+                    source=source,
+                    target=target,
+                    digest=digest,
+                    mode=effective_mode,
+                    previous=previous,
+                )
+            except OSError as error:
+                status, message = "failed", str(error)
             items.append(
                 InstallItem(
                     name,
@@ -116,6 +122,11 @@ def install_skills(
     report = InstallReport(tuple(items), str(manifest_path))
     _write_manifest(manifest_path, report)
     return report
+
+
+def default_install_mode(platform_name: str | None = None) -> EffectiveInstallMode:
+    platform_name = os.name if platform_name is None else platform_name
+    return "copy" if platform_name == "nt" else "link"
 
 
 def skill_digest(source: Path) -> str:
@@ -163,7 +174,7 @@ def _install_one(
     source: Path,
     target: Path,
     digest: str,
-    mode: str,
+    mode: EffectiveInstallMode,
     previous: dict[tuple[str, str], dict[str, object]],
 ) -> tuple[Literal["installed", "updated", "skipped", "failed"], str]:
     prior = previous.get((client, name))
@@ -188,7 +199,7 @@ def _target_matches(
     target: Path,
     source: Path,
     digest: str,
-    mode: str,
+    mode: EffectiveInstallMode,
     prior: dict[str, object] | None,
 ) -> bool:
     if prior is None or prior.get("digest") != digest:

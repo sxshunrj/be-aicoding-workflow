@@ -11,7 +11,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--client", choices=("codex", "claude", "all"), default="all")
     parser.add_argument("--scope", choices=("user", "repo"), default="user")
     parser.add_argument("--repo")
-    parser.add_argument("--copy", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--copy", action="store_true")
+    mode.add_argument("--link", action="store_true")
     return parser
 
 
@@ -34,6 +36,8 @@ def main(argv: list[str] | None = None) -> int:
         install_argv.extend(["--repo", args.repo])
     if args.copy:
         install_argv.append("--copy")
+    if args.link:
+        install_argv.append("--link")
     install_result = run(install_argv)
     sys.stdout.write(install_result.stdout)
     if install_result.stderr:
@@ -63,9 +67,10 @@ def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def _ai_workflow_executable() -> str:
-    candidate = Path(sys.executable).with_name("ai-workflow")
-    if candidate.is_file():
-        return str(candidate)
+    for name in ("ai-workflow", "ai-workflow.exe"):
+        candidate = Path(sys.executable).with_name(name)
+        if candidate.is_file():
+            return str(candidate)
     return "ai-workflow"
 
 

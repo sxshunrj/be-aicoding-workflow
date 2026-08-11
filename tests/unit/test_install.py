@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ai_workflow.install import install_skills
+from ai_workflow.install import default_install_mode, install_skills
 
 
 def _skill(root: Path, name: str, body: str = "# Skill\n") -> Path:
@@ -48,6 +48,32 @@ def test_link_install_is_idempotent_for_codex_and_claude(tmp_path: Path) -> None
         "ai-workflow-harness",
         "ai-workflow-harness",
     ]
+
+
+def test_auto_install_mode_uses_copy_on_windows_and_link_elsewhere() -> None:
+    assert default_install_mode("nt") == "copy"
+    assert default_install_mode("posix") == "link"
+
+
+def test_auto_mode_installs_with_platform_default(tmp_path: Path) -> None:
+    source_root = tmp_path / "skills"
+    _skill(source_root, "ai-workflow-harness")
+    home = tmp_path / "home"
+
+    report = install_skills(
+        source_root=source_root,
+        home=home,
+        clients=("codex",),
+        mode="auto",
+    )
+
+    assert report.failed == ()
+    target = home / ".agents/skills/ai-workflow-harness"
+    if default_install_mode() == "link":
+        assert target.is_symlink()
+    else:
+        assert target.is_dir()
+        assert not target.is_symlink()
 
 
 def test_copy_mode_updates_when_source_digest_changes(tmp_path: Path) -> None:

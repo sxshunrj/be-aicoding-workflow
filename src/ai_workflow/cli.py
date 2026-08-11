@@ -30,7 +30,9 @@ def _parser() -> argparse.ArgumentParser:
     install.add_argument("--client", choices=("codex", "claude", "all"), default="all")
     install.add_argument("--scope", choices=("user", "repo"), default="user")
     install.add_argument("--repo", type=Path)
-    install.add_argument("--copy", action="store_true")
+    install_mode = install.add_mutually_exclusive_group()
+    install_mode.add_argument("--copy", action="store_true")
+    install_mode.add_argument("--link", action="store_true")
     doctor = commands.add_parser("doctor")
     doctor.add_argument("--source-root", type=Path, required=True)
     doctor.add_argument("--repo", type=Path)
@@ -174,11 +176,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = _parser().parse_args(argv)
         if args.command == "install":
             clients = ("codex", "claude") if args.client == "all" else (args.client,)
+            mode = "copy" if args.copy else "link" if args.link else "auto"
             report = install_skills(
                 source_root=args.source_root,
                 home=Path.home(),
                 clients=clients,
-                mode="copy" if args.copy else "link",
+                mode=mode,
                 scope=args.scope,
                 repo=args.repo,
             )
