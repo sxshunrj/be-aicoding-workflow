@@ -160,3 +160,60 @@ def test_rejects_coercible_non_integer_limits(
         RepositoryConfig.load(tmp_path)
 
     assert error.value.code == "config_invalid"
+
+
+def test_load_wecom_block_and_defaults(tmp_path: Path) -> None:
+    (tmp_path / ".ai-workflow.yaml").write_text(
+        "repository: demo\n"
+        "wecom:\n"
+        "  enabled: true\n"
+        "  corpid_env: WECOM_CORPID\n"
+        "  agentid_env: WECOM_AGENT_ID\n"
+        "  agent_secret_env: WECOM_AGENT_SECRET\n"
+        "  notify_tag: 工作流通知组\n"
+        "  creator_userid_env: WECOM_CREATOR_USERID\n",
+        encoding="utf-8",
+    )
+    config = RepositoryConfig.load(tmp_path)
+    assert config.wecom_enabled is True
+    assert config.wecom_corpid_env == "WECOM_CORPID"
+    assert config.wecom_agentid_env == "WECOM_AGENT_ID"
+    assert config.wecom_agent_secret_env == "WECOM_AGENT_SECRET"
+    assert config.wecom_notify_tag == "工作流通知组"
+    assert config.wecom_creator_userid_env == "WECOM_CREATOR_USERID"
+    assert config.wecom_gates == ("review", "blocked", "governance", "git_handoff")
+
+
+def test_load_wecom_disabled_by_default(tmp_path: Path) -> None:
+    (tmp_path / ".ai-workflow.yaml").write_text(
+        "repository: demo\n", encoding="utf-8"
+    )
+    config = RepositoryConfig.load(tmp_path)
+    assert config.wecom_enabled is False
+    assert config.wecom_notify_tag is None
+    assert config.wecom_gates == ("review", "blocked", "governance", "git_handoff")
+
+
+def test_load_wecom_gates_restricts_choices(tmp_path: Path) -> None:
+    (tmp_path / ".ai-workflow.yaml").write_text(
+        "repository: demo\n"
+        "wecom:\n"
+        "  enabled: true\n"
+        "  gates: [review, blocked]\n",
+        encoding="utf-8",
+    )
+    config = RepositoryConfig.load(tmp_path)
+    assert config.wecom_gates == ("review", "blocked")
+
+
+def test_load_wecom_rejects_unknown_gate(tmp_path: Path) -> None:
+    (tmp_path / ".ai-workflow.yaml").write_text(
+        "repository: demo\n"
+        "wecom:\n"
+        "  enabled: true\n"
+        "  gates: [review, nonsense]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(AppError) as exc:
+        RepositoryConfig.load(tmp_path)
+    assert exc.value.code == "config_invalid"
