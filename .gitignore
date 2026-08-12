@@ -2,3 +2,7 @@
 .superpowers/
 __pycache__/
 *.py[cod]
+
+# Helper-owned runtime dirs (never committed)
+.ai-workflow/notifications/
+.ai-workflow/runs/
