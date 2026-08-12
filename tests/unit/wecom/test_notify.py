@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -186,3 +187,90 @@ def test_notify_gate_not_configured_is_noop(tmp_path: Path) -> None:
     )
     assert result["sent"] is False
     assert result["reason"] == "gate_not_configured"
+
+
+def test_notify_force_resends_identical_content(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WECOM_CORPID", "corp")
+    monkeypatch.setenv("WECOM_AGENT_ID", "1000002")
+    monkeypatch.setenv("WECOM_AGENT_SECRET", "secret")
+    _config(tmp_path)
+    repo = tmp_path
+    from ai_workflow.workflow.service import WorkflowService
+
+    state = WorkflowService().init(
+        repo, source_revision="abc123", requirement="实现订单导出"
+    )
+    run_id = state.run_id
+    client, transport = _client()
+
+    first = notify_command(
+        repo,
+        run_id=run_id,
+        gate="review",
+        phase="plan",
+        action="接受或修改 rerun",
+        client=client,
+    )
+    assert first["sent"] is True
+    assert first["dedup"] == "new"
+
+    # identical content without --force is deduped
+    repeat = notify_command(
+        repo,
+        run_id=run_id,
+        gate="review",
+        phase="plan",
+        action="接受或修改 rerun",
+        client=client,
+    )
+    assert repeat["sent"] is False
+    assert repeat["dedup"] == "repeat"
+
+    # --force bypasses dedup and resends the identical content
+    forced = notify_command(
+        repo,
+        run_id=run_id,
+        gate="review",
+        phase="plan",
+        action="接受或修改 rerun",
+        client=client,
+        force=True,
+    )
+    assert forced["sent"] is True
+    assert forced["dedup"] == "new"
+    assert len(transport.sent) == 2
+
+
+def test_notify_corrupt_log_does_not_crash(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WECOM_CORPID", "corp")
+    monkeypatch.setenv("WECOM_AGENT_ID", "1000002")
+    monkeypatch.setenv("WECOM_AGENT_SECRET", "secret")
+    _config(tmp_path)
+    repo = tmp_path
+    from ai_workflow.wecom.notify import notification_log_path
+    from ai_workflow.workflow.service import WorkflowService
+
+    state = WorkflowService().init(
+        repo, source_revision="abc123", requirement="实现订单导出"
+    )
+    run_id = state.run_id
+    client, transport = _client()
+    # Simulate a truncated/corrupt dedup log: it must be treated as "no prior
+    # notifications", not crash the notify step.
+    log_path = notification_log_path(repo, run_id)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text('{"review:plan": "this is not a sha256 dig', encoding="utf-8")
+
+    result = notify_command(
+        repo,
+        run_id=run_id,
+        gate="review",
+        phase="plan",
+        action="接受或修改 rerun",
+        client=client,
+    )
+    assert result["sent"] is True
+    assert result["dedup"] == "new"
+    assert len(transport.sent) == 1
+    # the log is rewritten to valid JSON after a successful send
+    assert json.loads(log_path.read_text(encoding="utf-8"))["review:plan"]

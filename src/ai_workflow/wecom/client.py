@@ -49,6 +49,14 @@ class UrllibTransport:
                 "wecom_http_error",
                 f"WeCom HTTP {error.code}: {error.read().decode('utf-8', 'replace')[:200]}",
             ) from error
+        except OSError as error:
+            # URLError (DNS failure, connection refused) and the OSError
+            # subclasses raised by socket timeouts all land here. These are
+            # environmental failures that must soft-fail the notify step, never
+            # escape as an uncaught traceback.
+            raise AppError(
+                "wecom_http_error", f"WeCom request failed: {error}"
+            ) from error
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as error:
@@ -93,7 +101,12 @@ class WeComApiClient:
                 "wecom_api_error",
                 f"gettoken failed: {data.get('errmsg')}",
             )
-        self._token = str(data["access_token"])
+        token = data.get("access_token")
+        if not isinstance(token, str) or not token:
+            raise AppError(
+                "wecom_api_error", "gettoken response missing access_token"
+            )
+        self._token = token
         self._token_expires_at = now + int(data.get("expires_in", 7200)) - 60
         return self._token
 
