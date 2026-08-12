@@ -11,6 +11,7 @@ from ai_workflow.doctor import run_doctor
 from ai_workflow.errors import AppError
 from ai_workflow.install import install_skills
 from ai_workflow.path_authorization import PathKind, RepositoryPathAuthorizer
+from ai_workflow.wecom.notify import notify_command
 from ai_workflow.workflow.models import Phase
 from ai_workflow.workflow.service import WorkflowService
 from ai_workflow.wiki.repository import WikiRepository
@@ -140,6 +141,19 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--reviewer", required=True)
         command.add_argument("--reason")
         command.add_argument("--expected-digest", required=True)
+    wecom = commands.add_parser("wecom")
+    wecom_commands = wecom.add_subparsers(dest="wecom_command", required=True)
+    wecom_notify = wecom_commands.add_parser("notify")
+    wecom_notify.add_argument("--repo", type=Path, required=True)
+    wecom_notify.add_argument("--run-id", required=True)
+    wecom_notify.add_argument(
+        "--gate", required=True, choices=("review", "blocked", "governance", "git_handoff")
+    )
+    wecom_notify.add_argument("--action", required=True)
+    wecom_notify.add_argument("--summary", default="")
+    wecom_notify.add_argument("--phase")
+    wecom_notify.add_argument("--force", action="store_true")
+    wecom_notify.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -264,6 +278,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 path = service.archive(args.id, args.reviewer, args.reason, args.expected_digest)
                 data = {"id": args.id, "status": "archived", "path": str(path),
                         "digest": _file_digest(path)}
+        elif args.command == "wecom":
+            if args.wecom_command == "notify":
+                try:
+                    data = notify_command(
+                        args.repo,
+                        run_id=args.run_id,
+                        gate=args.gate,
+                        action=args.action,
+                        summary=args.summary,
+                        phase=args.phase,
+                        force=args.force,
+                        dry_run=args.dry_run,
+                    )
+                except AppError as error:
+                    if error.code not in {
+                        "wecom_not_configured",
+                        "wecom_api_error",
+                        "wecom_http_error",
+                        "wecom_tag_not_found",
+                    }:
+                        raise
+                    # Notifications never block the workflow: soft-fail
+                    # environmental errors into a success envelope so the
+                    # enclosing shell step is never failed by a notification.
+                    data = {"sent": False, "error": error.message}
         else:
             service = WorkflowService(args.repo)
             if args.workflow_command == "init":
