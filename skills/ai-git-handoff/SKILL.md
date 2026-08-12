@@ -23,6 +23,8 @@ Git 收尾是人类 gate。先取证，再给选择；没有选择就不改 Git�
 
 向人类展示以上三个选择和每个选择会包含的文件。`execute only the chosen scope`：只 stage 人类确认的任务文件；Never stage unrelated files。
 
+展示选择前，若已配置通知通道，调用 `ai-workflow wecom notify --gate git_handoff --action "请选择 skip / commit / MR"` 通知团队；失败仅写 warning，不影响主流程。
+
 ## Authorization gates
 
 任何 push、remote branch、MR、destructive cleanup、`reset`、`clean`、`amend`、`force-push` 都必须在执行点再次获得 explicit authorization at the point of action。不要把“finish everything”解释为授权这些动作。
