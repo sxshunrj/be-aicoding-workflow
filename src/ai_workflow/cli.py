@@ -2,6 +2,7 @@ import argparse
 from dataclasses import asdict
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Sequence
 
@@ -54,6 +55,7 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--source-revision", required=True)
     init.add_argument("--requirement", required=True)
     init.add_argument("--profile", default="full")
+    init.add_argument("--operators", default="")
     for name in ("status", "abort", "summary", "reflect"):
         command = workflow_commands.add_parser(name)
         command.add_argument("--repo", type=Path, required=True)
@@ -265,11 +267,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             service = WorkflowService(args.repo)
             if args.workflow_command == "init":
+                operators = tuple(
+                    item.strip()
+                    for item in args.operators.split(",")
+                    if item.strip()
+                )
+                if not operators:
+                    creator = os.environ.get("WECOM_CREATOR_USERID", "")
+                    if creator.strip():
+                        operators = (creator.strip(),)
                 data = service.init(
                     args.repo,
                     args.source_revision,
                     args.requirement,
                     args.profile,
+                    operators=operators,
                 ).to_dict()
             elif args.workflow_command == "status":
                 data = service.status(args.run_id).to_dict()

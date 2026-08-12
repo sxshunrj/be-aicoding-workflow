@@ -709,3 +709,39 @@ def test_load_rejects_accepted_result_owned_by_another_node(tmp_path: Path) -> N
         service.status(state.run_id)
 
     assert error.value.code == "invalid_state"
+
+
+def test_init_records_operators_in_artifacts(tmp_path: Path) -> None:
+    _config(tmp_path)
+    service = WorkflowService()
+    state = service.init(
+        tmp_path,
+        source_revision="abc123",
+        requirement="Specify the change",
+        operators=("sunxianshun", "wangxiaofei"),
+    )
+    assert state.artifacts["operators"] == ["sunxianshun", "wangxiaofei"]
+
+
+def test_init_operators_default_empty(tmp_path: Path) -> None:
+    _config(tmp_path)
+    service = WorkflowService()
+    state = service.init(
+        tmp_path,
+        source_revision="abc123",
+        requirement="Specify the change",
+    )
+    assert state.artifacts.get("operators", []) == []
+
+
+def test_init_rejects_blank_operator(tmp_path: Path) -> None:
+    _config(tmp_path)
+    service = WorkflowService()
+    with pytest.raises(AppError) as exc:
+        service.init(
+            tmp_path,
+            source_revision="abc123",
+            requirement="Specify the change",
+            operators=("",),
+        )
+    assert exc.value.code == "invalid_operators"
