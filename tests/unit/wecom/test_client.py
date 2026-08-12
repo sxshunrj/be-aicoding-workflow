@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import urllib.error
 from datetime import datetime, timedelta
 
 import pytest
 
 from ai_workflow.errors import AppError
-from ai_workflow.wecom.client import WeComApiClient, WeComTransport
+from ai_workflow.wecom.client import UrllibTransport, WeComApiClient, WeComTransport
 
 
 class FakeWeComTransport:
@@ -75,4 +76,40 @@ def test_send_message_raises_on_errcode() -> None:
     client = WeComApiClient("corp", "secret", 1000002, transport=transport)
     with pytest.raises(AppError) as exc:
         client.send_message(content="x", tag_id=7)
+    assert exc.value.code == "wecom_api_error"
+
+
+def test_urllib_transport_converts_urlerror_to_apperror(monkeypatch) -> None:
+    def _offline(*args, **kwargs):
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr("ai_workflow.wecom.client.urlopen", _offline)
+    transport = UrllibTransport()
+    with pytest.raises(AppError) as exc:
+        transport.request_json("GET", "https://example.com/gettoken")
+    assert exc.value.code == "wecom_http_error"
+    assert "offline" in exc.value.message
+
+
+def test_urllib_transport_converts_timeout_to_apperror(monkeypatch) -> None:
+    import socket
+
+    def _timeout(*args, **kwargs):
+        raise socket.timeout("timed out")
+
+    monkeypatch.setattr("ai_workflow.wecom.client.urlopen", _timeout)
+    transport = UrllibTransport()
+    with pytest.raises(AppError) as exc:
+        transport.request_json("GET", "https://example.com/gettoken")
+    assert exc.value.code == "wecom_http_error"
+
+
+def test_access_token_missing_token_raises() -> None:
+    class MissingTokenTransport:
+        def request_json(self, method: str, url: str, *, params=None, payload=None):
+            return {"errcode": 0}
+
+    client = WeComApiClient("corp", "secret", 1000002, transport=MissingTokenTransport())
+    with pytest.raises(AppError) as exc:
+        client.access_token()
     assert exc.value.code == "wecom_api_error"

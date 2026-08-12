@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from uuid import uuid4
 
 from ai_workflow.config import RepositoryConfig
 from ai_workflow.errors import AppError
@@ -66,7 +67,13 @@ def _content_digest(*, gate: str, phase: str | None, content: str) -> str:
 def _load_log(path: Path) -> dict[str, object]:
     if not path.is_file():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # A truncated/corrupt log means "no prior notifications": never let a
+        # broken dedup log block or crash the notify step.
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _default_client(config: RepositoryConfig) -> WeComApiClient:
@@ -128,7 +135,7 @@ def notify_command(
     log_key = f"{gate}:{phase or ''}"
     existing = log.get(log_key)
     digest = _content_digest(gate=gate, phase=phase, content=content)
-    if existing == digest:
+    if not force and existing == digest:
         return {"sent": False, "dedup": "repeat", "targets": []}
 
     if dry_run:
@@ -140,9 +147,13 @@ def notify_command(
 
     log[log_key] = digest
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text(
+    # Atomic write: crash mid-write must not corrupt the dedup log.
+    temporary = log_path.with_name(f".{log_path.name}.{uuid4().hex}.tmp")
+    temporary.write_text(
         json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    # A first send is "new"; a resend after content changed is "content_changed".
-    dedup = "content_changed" if existing is not None else "new"
+    temporary.replace(log_path)
+    # A first send is "new"; a resend after content changed is "content_changed";
+    # a forced resend of identical content counts as a fresh "new" send.
+    dedup = "new" if force or existing is None else "content_changed"
     return {"sent": True, "dedup": dedup, "result": result, "tag_id": tag_id}

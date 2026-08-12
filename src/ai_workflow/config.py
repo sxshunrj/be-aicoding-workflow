@@ -37,7 +37,7 @@ def _optional_env_name(value: object, name: str) -> str | None:
         return None
     if not isinstance(value, str) or not value.strip():
         raise AppError("config_invalid", f"{name} must be a non-empty string")
-    return value
+    return value.strip()
 
 
 @dataclass(frozen=True, slots=True)
