@@ -14,6 +14,81 @@
 - 软失败：网络/API/配置失败返回错误但不影响工作流主流程。
 - secret 只从环境变量读取，不落盘。
 
+## 已安装 skill 的使用者：升级与使用
+
+如果已经通过 `$ai-workflow-init` 安装过这套 skill，启用 WeCom 通知只需按下面的步骤升级你的环境。**前提要清楚：真正执行 `ai-workflow wecom notify` 的是 Python Helper Core，不是 skill。** skill 只在人工节点调用该命令，所以 Helper 代码必须同步更新，否则 skill 会自动触发但命令不存在。
+
+### 1. 确认 Helper 已带 WeCom 命令
+
+```bash
+ai-workflow --help 2>&1 | grep -c wecom    # ≥1 说明已支持
+```
+
+若为 0，说明 Helper 是旧版本，先更新：
+
+```bash
+cd <你 clone 的 be-aicoding-workflow 仓库>
+git pull                                   # 拉取含 wecom notify 的版本
+pip install -e '.[dev]'                    # 更新 Helper Core
+```
+
+### 2. 刷新 skill 安装
+
+- **link 安装**（macOS/Linux 默认）：skill 是符号链接，`git pull` 后自动跟随仓库，可跳过重装。
+- **copy 安装**（Windows 默认）：必须重跑，否则仍是旧版 SKILL.md：
+
+```bash
+bash skills/ai-workflow-init/scripts/init.sh --client all --scope user
+ai-workflow doctor --source-root "$PWD/skills" --repo <你的项目> --client all
+```
+
+### 3. 在你跑工作流的项目里配置 `.ai-workflow.yaml`
+
+`wecom:` 块加在**项目**的配置文件里（不是 skill 仓库）：
+
+```yaml
+repository: your-repo
+wecom:
+  enabled: true
+  corpid_env: WECOM_CORPID
+  agentid_env: WECOM_AGENT_ID
+  agent_secret_env: WECOM_AGENT_SECRET
+  notify_tag: 工作流通知组
+  creator_userid_env: WECOM_CREATOR_USERID
+  gates: [review, blocked, governance, git_handoff]
+```
+
+### 4. 设置环境变量
+
+```bash
+export WECOM_CORPID=ww1234567890abcdef
+export WECOM_AGENT_ID=1000002
+export WECOM_AGENT_SECRET=你的应用密钥
+export WECOM_CREATOR_USERID=sunxianshun
+```
+
+（可写入 `~/.zshrc` / `~/.bashrc` 或由 `.env` 加载。）
+
+### 5. 正常使用，通知自动触发
+
+跑 `$ai-workflow-harness`、`$ai-git-handoff`、`$ai-knowledge-governance` 时，到达 Review Gate / Blocked / governance / git handoff 节点会自动推送，**无需额外操作**。开 run 时指定多个操作者：
+
+```bash
+ai-workflow workflow init --repo "$PWD" \
+  --source-revision "$(git rev-parse HEAD)" \
+  --requirement "实现订单导出模块" \
+  --operators "sunxianshun,wangxiaofei"
+```
+
+### 已安装用户常见问题
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `wecom notify` 命令不存在 | Helper 未更新（命令在 Helper，不在 skill） | `git pull` + `pip install -e '.[dev]'` |
+| skill 自动调用但没收到微信 | `wecom:` 未配 / 环境变量未设 | 按第 3、4 步配置；命令软失败不报错 |
+| Windows 更新 skill 后仍是旧版 | copy 安装不跟随仓库 | 重跑 `init.sh` |
+| `--operators` 没生效 | `WECOM_CREATOR_USERID` 未设置 | 设置后重新 `workflow init` |
+
 ## 一、企业微信侧准备
 
 需要企业微信管理员/应用负责人权限，配置一次：

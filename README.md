@@ -4,7 +4,7 @@ Status: P0 workflow correctness locally verified; real-client parity evidence pe
 
 本仓库提供一套 Skill-first 的本地 AI coding workflow：`spec -> plan -> implement -> verify` 持久化流程、schema-v2 ChildResult、LLM Wiki 检索/反思/治理、以及 Codex/Claude Code 可发现的 Wave 1 Skill 套件。Python Helper Core 只做确定性校验和状态持久化；语义判断仍由 Agent 与人类 gate 负责。
 
-可选的企业微信人工干预通知（`wecom:` 配置块 + `ai-workflow wecom notify`）见 [docs/wecom-notify-guide.md](docs/wecom-notify-guide.md)。
+可选的企业微信人工干预通知（`wecom:` 配置块 + `ai-workflow wecom notify`，含已安装 skill 的升级步骤）见 [docs/wecom-notify-guide.md](docs/wecom-notify-guide.md)。
 
 ## 本地准备
 
