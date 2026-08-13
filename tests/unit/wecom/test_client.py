@@ -29,6 +29,10 @@ class FakeWeComTransport:
             if params and params.get("debug") == "1":
                 raise AppError("wecom_api_error", "debug failure")
             return self.send_result
+        if "/webhook/send" in url:
+            if params and params.get("debug") == "1":
+                raise AppError("wecom_api_error", "debug failure")
+            return self.send_result
         raise AssertionError(f"unexpected url: {url}")
 
 
@@ -113,3 +117,18 @@ def test_access_token_missing_token_raises() -> None:
     with pytest.raises(AppError) as exc:
         client.access_token()
     assert exc.value.code == "wecom_api_error"
+
+
+def test_webhook_send_posts_without_access_token() -> None:
+    transport = FakeWeComTransport()
+    client = WeComApiClient("corp", "secret", 1000002, transport=transport)
+    webhook = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc123"
+    result = client.webhook_send(content="**hi**", webhook_url=webhook)
+    assert result == {"errcode": 0, "errmsg": "ok"}
+    method, url, payload = transport.calls[-1]
+    assert method == "POST"
+    assert url == webhook  # exact webhook URL, key included, no access_token
+    assert payload["msgtype"] == "markdown"
+    assert payload["markdown"]["content"] == "**hi**"
+    # webhook send must not hit gettoken (no access_token involved)
+    assert not any(c[0] == "GET" and c[1].endswith("/gettoken") for c in transport.calls)

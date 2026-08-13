@@ -25,6 +25,9 @@ class FakeWeComTransport:
         if url.endswith("/message/send"):
             self.sent.append(payload or {})
             return {"errcode": 0, "errmsg": "ok"}
+        if "/webhook/send" in url:
+            self.sent.append(payload or {})
+            return {"errcode": 0, "errmsg": "ok"}
         raise AssertionError(url)
 
 
@@ -373,3 +376,85 @@ def test_notify_rejects_both_targets(tmp_path: Path) -> None:
     )
     assert result["sent"] is False
     assert result["reason"] == "notify_target_ambiguous"
+
+
+def _config_webhook(repo: Path) -> None:
+    (repo / ".ai-workflow.yaml").write_text(
+        "repository: demo\n"
+        "wecom:\n"
+        "  enabled: true\n"
+        "  webhook_url_env: WECOM_WEBHOOK_URL\n",
+        encoding="utf-8",
+    )
+
+
+def test_notify_sends_to_webhook_without_credentials(tmp_path: Path, monkeypatch) -> None:
+    # Webhook target needs NO corpid/secret: it must work without WECOM_* creds.
+    monkeypatch.setenv(
+        "WECOM_WEBHOOK_URL",
+        "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc123",
+    )
+    _config_webhook(tmp_path)
+    repo = tmp_path
+    from ai_workflow.workflow.service import WorkflowService
+
+    state = WorkflowService().init(repo, source_revision="abc123", requirement="x")
+    run_id = state.run_id
+    client, transport = _client()
+
+    result = notify_command(
+        repo,
+        run_id=run_id,
+        gate="review",
+        phase="plan",
+        action="接受或修改 rerun",
+        client=client,
+    )
+    assert result["sent"] is True
+    assert result["dedup"] == "new"
+    assert "webhook/send" in result["webhook"]
+    # webhook payload has no totag/touser and no agentid
+    payload = transport.sent[0]
+    assert payload["msgtype"] == "markdown"
+    assert "totag" not in payload
+    assert "touser" not in payload
+    assert "agentid" not in payload
+
+
+def test_notify_webhook_via_default_client(monkeypatch, tmp_path: Path, capsys) -> None:
+    # E2E-ish: real CLI path, no WECOM_CORPID/SECRET set, only webhook URL.
+    monkeypatch.setenv(
+        "WECOM_WEBHOOK_URL",
+        "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc123",
+    )
+    _config_webhook(tmp_path)
+    from ai_workflow.cli import main
+    from ai_workflow.wecom.client import WeComApiClient
+
+    transport = FakeWeComTransport()
+    monkeypatch.setattr(
+        "ai_workflow.wecom.notify._client_for_webhook",
+        lambda: WeComApiClient("", "", 0, transport=transport),
+    )
+    from ai_workflow.workflow.service import WorkflowService
+
+    state = WorkflowService().init(tmp_path, source_revision="abc123", requirement="x")
+    status, out = main(
+        [
+            "wecom",
+            "notify",
+            "--repo",
+            str(tmp_path),
+            "--run-id",
+            state.run_id,
+            "--gate",
+            "review",
+            "--phase",
+            "plan",
+            "--action",
+            "x",
+        ]
+    ), capsys.readouterr().out
+    assert status == 0
+    assert json.loads(out)["data"]["sent"] is True
+    assert transport.sent
