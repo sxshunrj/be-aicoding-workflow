@@ -107,8 +107,10 @@ def notify_command(
         return {"sent": False, "reason": "not_enabled"}
     if gate not in config.wecom_gates:
         return {"sent": False, "reason": "gate_not_configured"}
-    if config.wecom_notify_tag is None:
-        return {"sent": False, "reason": "notify_tag_not_configured"}
+    if config.wecom_notify_tag is not None and config.wecom_notify_user is not None:
+        return {"sent": False, "reason": "notify_target_ambiguous"}
+    if config.wecom_notify_tag is None and config.wecom_notify_user is None:
+        return {"sent": False, "reason": "notify_target_not_configured"}
 
     service = WorkflowService(repo_root)
     state = service.status(run_id)
@@ -142,8 +144,20 @@ def notify_command(
         return {"sent": False, "dry_run": True, "dedup": "new", "payload": content}
 
     send_client = client if client is not None else _default_client(config)
-    tag_id = send_client.resolve_tag(config.wecom_notify_tag)
-    result = send_client.send_message(content=content, msgtype="markdown", tag_id=tag_id)
+    if config.wecom_notify_user is not None:
+        result = send_client.send_message(
+            content=content, msgtype="markdown", to_user=config.wecom_notify_user
+        )
+        target_key = "to_user"
+        target_value = config.wecom_notify_user
+    else:
+        assert config.wecom_notify_tag is not None
+        tag_id = send_client.resolve_tag(config.wecom_notify_tag)
+        result = send_client.send_message(
+            content=content, msgtype="markdown", tag_id=tag_id
+        )
+        target_key = "tag_id"
+        target_value = tag_id
 
     log[log_key] = digest
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -156,4 +170,9 @@ def notify_command(
     # A first send is "new"; a resend after content changed is "content_changed";
     # a forced resend of identical content counts as a fresh "new" send.
     dedup = "new" if force or existing is None else "content_changed"
-    return {"sent": True, "dedup": dedup, "result": result, "tag_id": tag_id}
+    return {
+        "sent": True,
+        "dedup": dedup,
+        "result": result,
+        target_key: target_value,
+    }
