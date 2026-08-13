@@ -274,3 +274,102 @@ def test_notify_corrupt_log_does_not_crash(tmp_path: Path, monkeypatch) -> None:
     assert len(transport.sent) == 1
     # the log is rewritten to valid JSON after a successful send
     assert json.loads(log_path.read_text(encoding="utf-8"))["review:plan"]
+
+
+def _config_user(repo: Path) -> None:
+    (repo / ".ai-workflow.yaml").write_text(
+        "repository: demo\n"
+        "wecom:\n"
+        "  enabled: true\n"
+        "  corpid_env: WECOM_CORPID\n"
+        "  agentid_env: WECOM_AGENT_ID\n"
+        "  agent_secret_env: WECOM_AGENT_SECRET\n"
+        "  notify_user: sunxianshun\n",
+        encoding="utf-8",
+    )
+
+
+def test_notify_sends_to_user_when_notify_user_configured(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("WECOM_CORPID", "corp")
+    monkeypatch.setenv("WECOM_AGENT_ID", "1000002")
+    monkeypatch.setenv("WECOM_AGENT_SECRET", "secret")
+    _config_user(tmp_path)
+    repo = tmp_path
+    from ai_workflow.workflow.service import WorkflowService
+
+    state = WorkflowService().init(
+        repo, source_revision="abc123", requirement="实现订单导出"
+    )
+    run_id = state.run_id
+    client, transport = _client()
+
+    result = notify_command(
+        repo,
+        run_id=run_id,
+        gate="review",
+        phase="plan",
+        action="接受或修改 rerun",
+        client=client,
+    )
+    assert result["sent"] is True
+    assert result["dedup"] == "new"
+    assert result["to_user"] == "sunxianshun"
+    # the message/send payload targets touser, not totag
+    assert transport.sent[0]["touser"] == "sunxianshun"
+    assert "totag" not in transport.sent[0]
+
+
+def test_notify_requires_a_target(tmp_path: Path) -> None:
+    (tmp_path / ".ai-workflow.yaml").write_text(
+        "repository: demo\n"
+        "wecom:\n"
+        "  enabled: true\n"
+        "  corpid_env: WECOM_CORPID\n"
+        "  agentid_env: WECOM_AGENT_ID\n"
+        "  agent_secret_env: WECOM_AGENT_SECRET\n",
+        encoding="utf-8",
+    )
+    repo = tmp_path
+    from ai_workflow.workflow.service import WorkflowService
+
+    state = WorkflowService().init(repo, source_revision="abc123", requirement="x")
+    client, _ = _client()
+    result = notify_command(
+        repo,
+        run_id=state.run_id,
+        gate="review",
+        action="x",
+        client=client,
+    )
+    assert result["sent"] is False
+    assert result["reason"] == "notify_target_not_configured"
+
+
+def test_notify_rejects_both_targets(tmp_path: Path) -> None:
+    (tmp_path / ".ai-workflow.yaml").write_text(
+        "repository: demo\n"
+        "wecom:\n"
+        "  enabled: true\n"
+        "  corpid_env: WECOM_CORPID\n"
+        "  agentid_env: WECOM_AGENT_ID\n"
+        "  agent_secret_env: WECOM_AGENT_SECRET\n"
+        "  notify_tag: 工作流通知组\n"
+        "  notify_user: sunxianshun\n",
+        encoding="utf-8",
+    )
+    repo = tmp_path
+    from ai_workflow.workflow.service import WorkflowService
+
+    state = WorkflowService().init(repo, source_revision="abc123", requirement="x")
+    client, _ = _client()
+    result = notify_command(
+        repo,
+        run_id=state.run_id,
+        gate="review",
+        action="x",
+        client=client,
+    )
+    assert result["sent"] is False
+    assert result["reason"] == "notify_target_ambiguous"
