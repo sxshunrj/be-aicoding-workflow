@@ -62,6 +62,7 @@ class RepositoryConfig:
     wecom_agent_secret_env: str | None = None
     wecom_notify_tag: str | None = None
     wecom_notify_user: str | None = None
+    wecom_webhook_url_env: str | None = None
     wecom_creator_userid_env: str | None = None
     wecom_gates: tuple[str, ...] = ("review", "blocked", "governance", "git_handoff")
 
@@ -160,6 +161,9 @@ class RepositoryConfig:
             wecom_notify_tag=_optional_env_name(wecom.get("notify_tag"), "wecom.notify_tag"),
             wecom_notify_user=_optional_env_name(
                 wecom.get("notify_user"), "wecom.notify_user"
+            ),
+            wecom_webhook_url_env=_optional_env_name(
+                wecom.get("webhook_url_env"), "wecom.webhook_url_env"
             ),
             wecom_creator_userid_env=_optional_env_name(
                 wecom.get("creator_userid_env"), "wecom.creator_userid_env"

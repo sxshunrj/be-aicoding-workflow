@@ -162,3 +162,23 @@ class WeComApiClient:
                 f"message/send failed: {data.get('errmsg')}",
             )
         return data
+
+    def webhook_send(self, *, content: str, webhook_url: str) -> dict[str, object]:
+        """Send a group-robot webhook message.
+
+        Unlike ``send_message`` this needs no access_token: the webhook URL
+        itself carries the key (``.../webhook/send?key=...``), so it is not
+        subject to the enterprise trusted-IP whitelist. Markdown supports
+        ``<@userid>`` in ``content`` to force-notify members.
+        """
+        payload: dict[str, object] = {
+            "msgtype": "markdown",
+            "markdown": {"content": content},
+        }
+        data = self._transport.request_json("POST", webhook_url, payload=payload)
+        if data.get("errcode", 0) != 0:
+            raise AppError(
+                "wecom_api_error",
+                f"webhook/send failed: {data.get('errmsg')}",
+            )
+        return data
