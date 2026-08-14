@@ -67,7 +67,7 @@ export WECOM_AGENT_SECRET=你的应用密钥
 export WECOM_CREATOR_USERID=sunxianshun
 ```
 
-（可写入 `~/.zshrc` / `~/.bashrc` 或由 `.env` 加载。）
+（推荐写入 `~/.zshenv`，它由 zsh **所有**会话加载——登录、交互、非交互、脚本；或由 `.env` 加载。**不要只写 `~/.zshrc`**：它只在交互式 zsh 加载，GUI 应用、服务或脚本启动的 Agent 会因变量缺失而静默收不到通知。）
 
 ### 5. 正常使用，通知自动触发
 
@@ -85,7 +85,7 @@ ai-workflow workflow init --repo "$PWD" \
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
 | `wecom notify` 命令不存在 | Helper 未更新（命令在 Helper，不在 skill） | `git pull` + `pip install -e '.[dev]'` |
-| skill 自动调用但没收到微信 | `wecom:` 未配 / 环境变量未设 | 按第 3、4 步配置；命令软失败不报错 |
+| skill 自动调用但没收到微信 | `wecom:` 未配 / 环境变量未设（如变量只在 `~/.zshrc`，GUI/非交互启动时缺失） | 按第 3、4 步配置，变量写入 `~/.zshenv`；软失败原因会打到 stderr（旧版静默） |
 | Windows 更新 skill 后仍是旧版 | copy 安装不跟随仓库 | 重跑 `init.sh` |
 | `--operators` 没生效 | `WECOM_CREATOR_USERID` 未设置 | 设置后重新 `workflow init` |
 
@@ -138,6 +138,8 @@ export WECOM_AGENT_ID=1000002
 export WECOM_AGENT_SECRET=你的应用密钥
 export WECOM_CREATOR_USERID=sunxianshun   # 你的企微 userid，init 默认操作者
 ```
+
+> **环境变量加载位置（重要）**：`~/.zshrc` 只在**交互式** zsh 加载。Codex/Claude Code 若由 GUI 应用、服务或脚本启动，将拿不到只写在 `~/.zshrc` 的变量，通知会静默失败。推荐把上述 export 写入 `~/.zshenv`（zsh 所有会话都加载）。GUI 应用当前会话可执行 `launchctl setenv <变量名> <值>` 立即注入（重启后失效，需重新设置或配合登录项）；修改后需重启 Codex/Claude 应用才生效。
 
 ## 四、开工作流时指定操作者
 
