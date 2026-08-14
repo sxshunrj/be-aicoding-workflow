@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 from typing import Sequence
 
 from ai_workflow.config import RepositoryConfig
@@ -302,6 +303,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     # Notifications never block the workflow: soft-fail
                     # environmental errors into a success envelope so the
                     # enclosing shell step is never failed by a notification.
+                    # The failure is still surfaced on stderr so run logs stay
+                    # observable instead of silently swallowing the reason.
+                    print(
+                        f"wecom notify soft-failed ({error.code}): {error.message}",
+                        file=sys.stderr,
+                    )
                     data = {"sent": False, "error": error.message}
         else:
             service = WorkflowService(args.repo)

@@ -402,7 +402,15 @@ class CheckpointService:
 
     @staticmethod
     def _ignored_workflow_path(path: str) -> bool:
-        return path.startswith(".ai-workflow/runs/") or path.startswith("artifacts/")
+        return (
+            path.startswith(".ai-workflow/runs/")
+            # WeCom notify writes its dedup log under .ai-workflow/notifications/
+            # at human gates; it is Helper-owned and must never count as a
+            # checkpoint-visible change (previously surfaced as
+            # checkpoint_scope_ambiguous after a notify).
+            or path.startswith(".ai-workflow/notifications/")
+            or path.startswith("artifacts/")
+        )
 
     def _snapshot(self, path: str) -> PathSnapshot:
         target = self.repo_root / path
