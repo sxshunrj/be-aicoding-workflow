@@ -1,18 +1,18 @@
 # WeCom 人工干预通知使用指南
 
-本指南说明如何为 `be-aicoding-workflow` 配置并启用**企业微信（WeCom）人工干预通知**。
+本指南说明如何为 `be-aicoding-workflow` 配置并启用**企业微信（WeCom）群机器人通知**。
 
-工作流中的 Review Gate、Blocked、Knowledge Governance、Git Handoff 是需要人工干预的节点。启用 WeCom 通知后，团队全员通过企业微信收到提醒，并标注「开启者」与「授权操作者」。
+工作流中的 Review Gate、Blocked、Knowledge Governance、Git Handoff 是需要人工干预的节点。启用 WeCom 通知后，团队通过企业微信群机器人收到提醒，并标注「开启者」与「授权操作者」。
 
-> 状态：**Plan 1（通知推送）已实现**。本指南只覆盖推送；"在企业微信中回复即处理"（回调服务）属于 Plan 2，尚未实现，见文末「当前限制」。
+> 状态：**Plan 1（通知推送）已实现，且只支持群机器人 Webhook 通道**。"在企业微信中回复即处理"（回调服务）属于 Plan 2，尚未实现，见文末「当前限制」。
 
 ## 功能概览
 
-- 人工节点触发时，向企业微信**通讯录标签**（通知组）推送一条 Markdown 消息。
-- 消息含 `👤 开启者`（创建者）与 `🔑 授权操作者`（白名单）标注。
-- 幂等去重：同一 run 同一 gate 同一阶段内容不重复推送。
+- 人工节点触发时，向企业微信**群机器人**推送一条 Markdown 消息（发到机器人所在的群）。
+- 消息含 `👤 开启者`（创建者）与 `🔑 授权操作者` 标注。
+- 幂等去重：同一 run 同一 gate 同一阶段同一内容不重复推送。
 - 软失败：网络/API/配置失败返回错误但不影响工作流主流程。
-- secret 只从环境变量读取，不落盘。
+- Webhook 地址只从环境变量读取，不落盘；`wecom:` 块只存**变量名**。
 
 ## 已安装 skill 的使用者：升级与使用
 
@@ -50,10 +50,7 @@ ai-workflow doctor --source-root "$PWD/skills" --repo <你的项目> --client al
 repository: your-repo
 wecom:
   enabled: true
-  corpid_env: WECOM_CORPID
-  agentid_env: WECOM_AGENT_ID
-  agent_secret_env: WECOM_AGENT_SECRET
-  notify_tag: 工作流通知组
+  webhook_url_env: WECOM_WEBHOOK_URL
   creator_userid_env: WECOM_CREATOR_USERID
   gates: [review, blocked, governance, git_handoff]
 ```
@@ -61,9 +58,7 @@ wecom:
 ### 4. 设置环境变量
 
 ```bash
-export WECOM_CORPID=ww1234567890abcdef
-export WECOM_AGENT_ID=1000002
-export WECOM_AGENT_SECRET=你的应用密钥
+export WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=你的机器人key
 export WECOM_CREATOR_USERID=sunxianshun
 ```
 
@@ -85,22 +80,20 @@ ai-workflow workflow init --repo "$PWD" \
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
 | `wecom notify` 命令不存在 | Helper 未更新（命令在 Helper，不在 skill） | `git pull` + `pip install -e '.[dev]'` |
-| skill 自动调用但没收到微信 | `wecom:` 未配 / 环境变量未设（如变量只在 `~/.zshrc`，GUI/非交互启动时缺失） | 按第 3、4 步配置，变量写入 `~/.zshenv`；软失败原因会打到 stderr（旧版静默） |
+| skill 自动调用但没收到微信 | `wecom:` 未配 / `WECOM_WEBHOOK_URL` 未设（如变量只在 `~/.zshrc`，GUI/非交互启动时缺失） | 按第 3、4 步配置，变量写入 `~/.zshenv`；软失败原因会打到 stderr |
 | Windows 更新 skill 后仍是旧版 | copy 安装不跟随仓库 | 重跑 `init.sh` |
 | `--operators` 没生效 | `WECOM_CREATOR_USERID` 未设置 | 设置后重新 `workflow init` |
 
 ## 一、企业微信侧准备
 
-需要企业微信管理员/应用负责人权限，配置一次：
+需要企业微信群主/群成员权限，配置一次：
 
-1. **创建自建应用**（管理后台 → 应用管理 → 创建应用）
-   - 记录三个值：**CorpID**（企业 ID）、**AgentID**（应用 ID）、**Secret**（应用密钥）
-   - 设置应用的**可见范围**为需要接收通知的成员/部门
-2. **创建通讯录标签**（通讯录 → 标签管理 → 新建）
-   - 例如标签名 `工作流通知组`，把团队成员加入
-   - 推送目标为 `totag`，圈内成员都会收到
+1. 在企业微信里建一个群（或拉一个通知专用群），把需要收到通知的成员拉进来。
+2. 群设置 → 群机器人 → 添加机器人 → 复制 **Webhook 地址**。
+   - 形如 `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx`
+3. 把该地址填入环境变量 `WECOM_WEBHOOK_URL`。
 
-> 回调相关（`Token`/`EncodingAESKey`）是 Plan 2 的内容，当前无需配置。
+> 你只需要一个群机器人的 **Webhook 地址**：URL 本身自带 key，把机器人拉进通知群即可，全程无需其他企业微信凭据。
 
 ## 二、配置 `.ai-workflow.yaml`
 
@@ -110,10 +103,7 @@ ai-workflow workflow init --repo "$PWD" \
 repository: your-repo
 wecom:
   enabled: true
-  corpid_env: WECOM_CORPID          # 环境变量名（不是值！）
-  agentid_env: WECOM_AGENT_ID
-  agent_secret_env: WECOM_AGENT_SECRET
-  notify_tag: 工作流通知组          # 通讯录标签名，运行时解析为 tagid
+  webhook_url_env: WECOM_WEBHOOK_URL    # 环境变量名（不是值！）
   creator_userid_env: WECOM_CREATOR_USERID
   gates: [review, blocked, governance, git_handoff]   # 可只保留部分节点
 ```
@@ -123,19 +113,16 @@ wecom:
 | 字段 | 必填 | 含义 |
 | --- | --- | --- |
 | `enabled` | 是 | 是否启用通知（默认 false） |
-| `corpid_env` / `agentid_env` / `agent_secret_env` | 是 | 对应 secret 的**环境变量名** |
-| `notify_tag` | 是 | 通知组标签名 |
+| `webhook_url_env` | 是 | 群机器人 Webhook URL 的**环境变量名** |
 | `creator_userid_env` | 否 | 创建者 userid 的环境变量名（默认 `WECOM_CREATOR_USERID`） |
 | `gates` | 否 | 启用通知的节点，默认全部四个 |
 
 ## 三、设置环境变量
 
-secret 只从环境变量读取，`wecom:` 块中存放的是变量名：
+Webhook 地址只从环境变量读取，`wecom:` 块中存放的是变量名：
 
 ```bash
-export WECOM_CORPID=ww1234567890abcdef
-export WECOM_AGENT_ID=1000002
-export WECOM_AGENT_SECRET=你的应用密钥
+export WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx
 export WECOM_CREATOR_USERID=sunxianshun   # 你的企微 userid，init 默认操作者
 ```
 
@@ -209,6 +196,8 @@ plan.solution 已完成，需审核
 其他成员仅收到通知，请勿直接操作本工作流。
 ```
 
+> 注：当前「开启者 / 授权操作者」以纯文本 `@名字` 展示，**不会在企微里真正 @ 到人**。若需真 @ 提醒（`<@userid>` 语法），需扩展 `render_message`。
+
 ## 七、行为细节
 
 | 特性 | 行为 |
@@ -217,7 +206,7 @@ plan.solution 已完成，需审核
 | `--force` | 跳过去重强制重发 |
 | `--dry-run` | 只打印不发送 |
 | 软失败 | 网络/API/环境变量缺失 → `{"sent": false, "error": ...}` 且 exit 0，不影响工作流 |
-| 未配置时 | `enabled: false` 或 gate 未启用 → no-op，不报错 |
+| 未配置时 | `enabled: false`、gate 未启用或无 `webhook_url_env` → no-op，不报错 |
 | 记录位置 | `.ai-workflow/notifications/<run_id>.json`（已 gitignore） |
 | secret | 只从环境变量读，配置文件里是变量名 |
 

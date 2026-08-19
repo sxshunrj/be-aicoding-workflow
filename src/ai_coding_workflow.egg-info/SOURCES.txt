@@ -16,6 +16,9 @@ src/ai_workflow/path_authorization.py
 src/ai_workflow/contracts/__init__.py
 src/ai_workflow/contracts/artifacts.py
 src/ai_workflow/contracts/packets.py
+src/ai_workflow/wecom/__init__.py
+src/ai_workflow/wecom/client.py
+src/ai_workflow/wecom/notify.py
 src/ai_workflow/wiki/__init__.py
 src/ai_workflow/wiki/models.py
 src/ai_workflow/wiki/repository.py

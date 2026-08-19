@@ -2,16 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** At human-gate nodes (review / blocked / governance / git_handoff), push an idempotent WeCom notification to a directory-tag notification group, annotated with `@开启者` and `🔑 授权操作者`.
+**Goal:** At human-gate nodes (review / blocked / governance / git_handoff), push an idempotent WeCom notification to a **group-robot webhook**, annotated with `👤 开启者` and `🔑 授权操作者`.
 
-**Architecture:** The Python Helper Core gains a new `wecom` domain module (`src/ai_workflow/wecom/`). `workflow init --operators` records the run's operators into `state.artifacts["operators"]` (creator default). A new `ai-workflow wecom notify` command reads `.ai-workflow.yaml`'s `wecom:` block + `team` state, resolves the WeCom tag id, renders a Markdown message, and sends it via the WeCom API through a transport-injected client. Sending is idempotent (dedup by content digest), soft-failing (never affects the workflow), and supports `--dry-run`. Three skills (`ai-workflow-harness`, `ai-git-handoff`, `ai-knowledge-governance`) call this command at their human gates.
+**Architecture:** The Python Helper Core gains a new `wecom` domain module (`src/ai_workflow/wecom/`). `workflow init --operators` records the run's operators into `state.artifacts["operators"]` (creator default). A new `ai-workflow wecom notify` command reads `.ai-workflow.yaml`'s `wecom:` block + run state, reads the group-robot webhook URL from an env var, renders a Markdown message, and sends it via `webhook/send` through a transport-injected client. Sending is idempotent (dedup by content digest), soft-failing (never affects the workflow), and supports `--dry-run`. Three skills (`ai-workflow-harness`, `ai-git-handoff`, `ai-knowledge-governance`) call this command at their human gates.
 
 **Tech Stack:** Python 3.11+, stdlib `urllib.request`, PyYAML. **No new dependencies in Plan 1.** (Plan 2 — the callback service — adds `cryptography` for WeCom AES.)
 
 ## Global Constraints
 
 - Repository runs offline tests: `python -m pytest -q` (currently 487 passing). Every task keeps the suite green.
-- Secret material (corp secret, etc.) comes **only from environment variables**, never from `.ai-workflow.yaml` values. Config stores **env-var names**, not values.
+- Secret material (the webhook URL, etc.) comes **only from environment variables**, never from `.ai-workflow.yaml` values. Config stores **env-var names**, not values.
 - Notifications never block the workflow: network/API/config failures return `{"sent": false, "error": ...}` and write a warning to stderr — they never raise into the workflow path.
 - Idempotency key: `(run_id, gate, phase, content_digest)`. Same content → `dedup="repeat"`, no resend. Changed content → `dedup="content_changed"`, resend. `--force` skips dedup.
 - Notification records live in `.ai-workflow/notifications/<run_id>.json` (sibling of `.ai-workflow/runs/`, both Helper-owned, both gitignored). Never written into `state.yaml`.
@@ -31,10 +31,7 @@
 **Interfaces:**
 - Produces: `RepositoryConfig` gains these attributes (all defaults shown):
   - `wecom_enabled: bool = False`
-  - `wecom_corpid_env: str | None = None`
-  - `wecom_agentid_env: str | None = None`
-  - `wecom_agent_secret_env: str | None = None`
-  - `wecom_notify_tag: str | None = None`
+  - `wecom_webhook_url_env: str | None = None`
   - `wecom_creator_userid_env: str | None = None`
   - `wecom_gates: tuple[str, ...] = ("review", "blocked", "governance", "git_handoff")`
 
@@ -48,19 +45,13 @@ def test_load_wecom_block_and_defaults(tmp_path: Path) -> None:
         "repository: demo\n"
         "wecom:\n"
         "  enabled: true\n"
-        "  corpid_env: WECOM_CORPID\n"
-        "  agentid_env: WECOM_AGENT_ID\n"
-        "  agent_secret_env: WECOM_AGENT_SECRET\n"
-        "  notify_tag: 工作流通知组\n"
+        "  webhook_url_env: WECOM_WEBHOOK_URL\n"
         "  creator_userid_env: WECOM_CREATOR_USERID\n",
         encoding="utf-8",
     )
     config = RepositoryConfig.load(tmp_path)
     assert config.wecom_enabled is True
-    assert config.wecom_corpid_env == "WECOM_CORPID"
-    assert config.wecom_agentid_env == "WECOM_AGENT_ID"
-    assert config.wecom_agent_secret_env == "WECOM_AGENT_SECRET"
-    assert config.wecom_notify_tag == "工作流通知组"
+    assert config.wecom_webhook_url_env == "WECOM_WEBHOOK_URL"
     assert config.wecom_creator_userid_env == "WECOM_CREATOR_USERID"
     assert config.wecom_gates == ("review", "blocked", "governance", "git_handoff")
 
@@ -71,7 +62,7 @@ def test_load_wecom_disabled_by_default(tmp_path: Path) -> None:
     )
     config = RepositoryConfig.load(tmp_path)
     assert config.wecom_enabled is False
-    assert config.wecom_notify_tag is None
+    assert config.wecom_webhook_url_env is None
     assert config.wecom_gates == ("review", "blocked", "governance", "git_handoff")
 
 
@@ -111,10 +102,7 @@ In `src/ai_workflow/config.py`, add to the `RepositoryConfig` dataclass (after `
 
 ```python
     wecom_enabled: bool = False
-    wecom_corpid_env: str | None = None
-    wecom_agentid_env: str | None = None
-    wecom_agent_secret_env: str | None = None
-    wecom_notify_tag: str | None = None
+    wecom_webhook_url_env: str | None = None
     wecom_creator_userid_env: str | None = None
     wecom_gates: tuple[str, ...] = ("review", "blocked", "governance", "git_handoff")
 ```
@@ -130,7 +118,7 @@ def _optional_env_name(value: object, name: str) -> str | None:
         return None
     if not isinstance(value, str) or not value.strip():
         raise AppError("config_invalid", f"{name} must be a non-empty string")
-    return value
+    return value.strip()
 ```
 
 Inside `load()`, after the `adapter` mapping is resolved, add parsing:
@@ -152,12 +140,9 @@ And pass to the `cls(...)` constructor call:
 
 ```python
             wecom_enabled=bool(wecom.get("enabled", False)),
-            wecom_corpid_env=_optional_env_name(wecom.get("corpid_env"), "wecom.corpid_env"),
-            wecom_agentid_env=_optional_env_name(wecom.get("agentid_env"), "wecom.agentid_env"),
-            wecom_agent_secret_env=_optional_env_name(
-                wecom.get("agent_secret_env"), "wecom.agent_secret_env"
+            wecom_webhook_url_env=_optional_env_name(
+                wecom.get("webhook_url_env"), "wecom.webhook_url_env"
             ),
-            wecom_notify_tag=_optional_env_name(wecom.get("notify_tag"), "wecom.notify_tag"),
             wecom_creator_userid_env=_optional_env_name(
                 wecom.get("creator_userid_env"), "wecom.creator_userid_env"
             ),
@@ -351,7 +336,7 @@ git commit -m "feat: record operators at workflow init"
 
 ---
 
-### Task 3: WeCom API client with injected transport
+### Task 3: WeCom API client with injected transport (webhook-only)
 
 **Files:**
 - Create: `src/ai_workflow/wecom/__init__.py`
@@ -362,10 +347,8 @@ git commit -m "feat: record operators at workflow init"
 - Produces:
   - `WeComTransport` (Protocol): `def request_json(self, method: str, url: str, *, params: dict[str, object] | None = None, payload: dict[str, object] | None = None) -> dict[str, object]`
   - `UrllibTransport(WeComTransport)`: real implementation via `urllib.request`.
-  - `WeComApiClient(corpid: str, corpsecret: str, agentid: int, *, transport: WeComTransport | None = None, clock=None)`:
-    - `access_token() -> str` — cached; refreshes after `expires_in`.
-    - `resolve_tag(tag_name: str) -> int` — `GET /cgi-bin/tag/list`, returns `tagid` for the name; raises `AppError("wecom_tag_not_found", ...)` if absent.
-    - `send_message(*, content: str, msgtype: str = "markdown", tag_id: int | None = None, to_user: str | None = None) -> dict[str, object]` — `POST /cgi-bin/message/send`; raises `AppError("wecom_api_error", ...)` on `errcode != 0`.
+  - `WeComApiClient(*, transport: WeComTransport | None = None)`:
+    - `webhook_send(*, content: str, webhook_url: str) -> dict[str, object]` — `POST` to the webhook URL (key embedded in the URL); raises `AppError("wecom_api_error", ...)` on `errcode != 0`.
   - `FakeWeComTransport` lives in tests (not production).
 
 - [ ] **Step 1: Write the failing test**
@@ -375,81 +358,73 @@ Create `tests/unit/wecom/test_client.py`:
 ```python
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import urllib.error
 
 import pytest
 
 from ai_workflow.errors import AppError
-from ai_workflow.wecom.client import WeComApiClient, WeComTransport
+from ai_workflow.wecom.client import UrllibTransport, WeComApiClient
 
 
 class FakeWeComTransport:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict[str, object] | None]] = []
-        self.tokens: list[dict[str, object]] = [{"errcode": 0, "access_token": "TOK-1", "expires_in": 7200}]
-        self.taglist: list[dict[str, object]] = [
-            {"tagid": 7, "tagname": "工作流通知组"},
-            {"tagid": 9, "tagname": "other"},
-        ]
         self.send_result: dict[str, object] = {"errcode": 0, "errmsg": "ok"}
 
     def request_json(self, method: str, url: str, *, params=None, payload=None) -> dict[str, object]:
         self.calls.append((method, url, payload))
-        if url.endswith("/gettoken"):
-            return self.tokens.pop(0)
-        if url.endswith("/tag/list"):
-            return {"errcode": 0, "taglist": self.taglist}
-        if url.endswith("/message/send"):
-            if params and params.get("debug") == "1":
-                raise AppError("wecom_api_error", "debug failure")
+        if "/webhook/send" in url:
             return self.send_result
         raise AssertionError(f"unexpected url: {url}")
 
 
-def test_access_token_cached_then_refreshed() -> None:
-    transport = FakeWeComTransport()
-    client = WeComApiClient("corp", "secret", 1000002, transport=transport)
-    first = client.access_token()
-    second = client.access_token()
-    assert first == "TOK-1"
-    assert second == "TOK-1"
-    # only one gettoken call for the cached token
-    assert sum(1 for c in transport.calls if c[0] == "GET" and c[1].endswith("/gettoken")) == 1
+def test_urllib_transport_converts_urlerror_to_apperror(monkeypatch) -> None:
+    def _offline(*args, **kwargs):
+        raise urllib.error.URLError("offline")
 
-
-def test_resolve_tag_finds_tagname() -> None:
-    transport = FakeWeComTransport()
-    client = WeComApiClient("corp", "secret", 1000002, transport=transport)
-    assert client.resolve_tag("工作流通知组") == 7
-
-
-def test_resolve_tag_missing_raises() -> None:
-    transport = FakeWeComTransport()
-    client = WeComApiClient("corp", "secret", 1000002, transport=transport)
+    monkeypatch.setattr("ai_workflow.wecom.client.urlopen", _offline)
+    transport = UrllibTransport()
     with pytest.raises(AppError) as exc:
-        client.resolve_tag("不存在")
-    assert exc.value.code == "wecom_tag_not_found"
+        transport.request_json("GET", "https://example.com/webhook/send")
+    assert exc.value.code == "wecom_http_error"
+    assert "offline" in exc.value.message
 
 
-def test_send_message_posts_to_tag() -> None:
+def test_urllib_transport_converts_timeout_to_apperror(monkeypatch) -> None:
+    import socket
+
+    def _timeout(*args, **kwargs):
+        raise socket.timeout("timed out")
+
+    monkeypatch.setattr("ai_workflow.wecom.client.urlopen", _timeout)
+    transport = UrllibTransport()
+    with pytest.raises(AppError) as exc:
+        transport.request_json("GET", "https://example.com/webhook/send")
+    assert exc.value.code == "wecom_http_error"
+
+
+def test_webhook_send_posts_with_embedded_key() -> None:
     transport = FakeWeComTransport()
-    client = WeComApiClient("corp", "secret", 1000002, transport=transport)
-    result = client.send_message(content="**hi**", msgtype="markdown", tag_id=7)
+    client = WeComApiClient(transport=transport)
+    webhook = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc123"
+    result = client.webhook_send(content="**hi**", webhook_url=webhook)
     assert result == {"errcode": 0, "errmsg": "ok"}
-    _, url, payload = transport.calls[-1]
-    assert url.endswith("/message/send")
-    assert payload["totag"] == 7
-    assert payload["agentid"] == 1000002
+    method, url, payload = transport.calls[-1]
+    assert method == "POST"
+    assert url == webhook  # exact webhook URL, key included
     assert payload["msgtype"] == "markdown"
     assert payload["markdown"]["content"] == "**hi**"
 
 
-def test_send_message_raises_on_errcode() -> None:
+def test_webhook_send_raises_on_errcode() -> None:
     transport = FakeWeComTransport()
-    transport.send_result = {"errcode": 81013, "errmsg": "user & party & tag all invalid"}
-    client = WeComApiClient("corp", "secret", 1000002, transport=transport)
+    transport.send_result = {"errcode": 93000, "errmsg": "invalid webhook key"}
+    client = WeComApiClient(transport=transport)
     with pytest.raises(AppError) as exc:
-        client.send_message(content="x", tag_id=7)
+        client.webhook_send(
+            content="x",
+            webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=bad",
+        )
     assert exc.value.code == "wecom_api_error"
 ```
 
@@ -472,15 +447,12 @@ Create `src/ai_workflow/wecom/client.py`:
 from __future__ import annotations
 
 import json
-import time
 from typing import Protocol
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from ai_workflow.errors import AppError
-
-BASE_URL = "https://qyapi.weixin.qq.com/cgi-bin"
 
 
 class WeComTransport(Protocol):
@@ -520,6 +492,14 @@ class UrllibTransport:
                 "wecom_http_error",
                 f"WeCom HTTP {error.code}: {error.read().decode('utf-8', 'replace')[:200]}",
             ) from error
+        except OSError as error:
+            # URLError (DNS failure, connection refused) and the OSError
+            # subclasses raised by socket timeouts all land here. These are
+            # environmental failures that must soft-fail the notify step, never
+            # escape as an uncaught traceback.
+            raise AppError(
+                "wecom_http_error", f"WeCom request failed: {error}"
+            ) from error
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as error:
@@ -533,91 +513,26 @@ class UrllibTransport:
 
 class WeComApiClient:
     def __init__(
-        self,
-        corpid: str,
-        corpsecret: str,
-        agentid: int,
-        *,
-        transport: WeComTransport | None = None,
-        clock=None,
+        self, *, transport: WeComTransport | None = None
     ) -> None:
-        self.corpid = corpid
-        self.corpsecret = corpsecret
-        self.agentid = agentid
         self._transport = transport if transport is not None else UrllibTransport()
-        self._clock = clock or time.time
-        self._token: str | None = None
-        self._token_expires_at = 0.0
-        self._tag_cache: dict[str, int] = {}
 
-    def access_token(self) -> str:
-        now = self._clock()
-        if self._token is not None and now < self._token_expires_at:
-            return self._token
-        data = self._transport.request_json(
-            "GET",
-            f"{BASE_URL}/gettoken",
-            params={"corpid": self.corpid, "corpsecret": self.corpsecret},
-        )
-        if data.get("errcode", 0) != 0:
-            raise AppError(
-                "wecom_api_error",
-                f"gettoken failed: {data.get('errmsg')}",
-            )
-        self._token = str(data["access_token"])
-        self._token_expires_at = now + int(data.get("expires_in", 7200)) - 60
-        return self._token
+    def webhook_send(self, *, content: str, webhook_url: str) -> dict[str, object]:
+        """Send a group-robot webhook message.
 
-    def resolve_tag(self, tag_name: str) -> int:
-        cached = self._tag_cache.get(tag_name)
-        if cached is not None:
-            return cached
-        data = self._transport.request_json(
-            "GET",
-            f"{BASE_URL}/tag/list",
-            params={"access_token": self.access_token()},
-        )
-        if data.get("errcode", 0) != 0:
-            raise AppError(
-                "wecom_api_error", f"tag/list failed: {data.get('errmsg')}"
-            )
-        for item in data.get("taglist", []):
-            if item.get("tagname") == tag_name:
-                tag_id = int(item["tagid"])
-                self._tag_cache[tag_name] = tag_id
-                return tag_id
-        raise AppError("wecom_tag_not_found", f"tag not found: {tag_name}")
-
-    def send_message(
-        self,
-        *,
-        content: str,
-        msgtype: str = "markdown",
-        tag_id: int | None = None,
-        to_user: str | None = None,
-    ) -> dict[str, object]:
-        if tag_id is None and to_user is None:
-            raise AppError("wecom_invalid_target", "either tag_id or to_user is required")
+        The webhook URL itself carries the key (``.../webhook/send?key=...``),
+        so the message is sent directly. Markdown supports
+        ``<@userid>`` in ``content`` to force-notify members.
+        """
         payload: dict[str, object] = {
-            "agentid": self.agentid,
-            "msgtype": msgtype,
-            msgtype: {"content": content},
-            "safe": 0,
+            "msgtype": "markdown",
+            "markdown": {"content": content},
         }
-        if tag_id is not None:
-            payload["totag"] = tag_id
-        if to_user is not None:
-            payload["touser"] = to_user
-        data = self._transport.request_json(
-            "POST",
-            f"{BASE_URL}/message/send",
-            params={"access_token": self.access_token()},
-            payload=payload,
-        )
+        data = self._transport.request_json("POST", webhook_url, payload=payload)
         if data.get("errcode", 0) != 0:
             raise AppError(
                 "wecom_api_error",
-                f"message/send failed: {data.get('errmsg')}",
+                f"webhook/send failed: {data.get('errmsg')}",
             )
         return data
 ```
@@ -631,12 +546,12 @@ Expected: PASS
 
 ```bash
 git add src/ai_workflow/wecom/__init__.py src/ai_workflow/wecom/client.py tests/unit/wecom/test_client.py
-git commit -m "feat: add WeCom API client with injected transport"
+git commit -m "feat: add WeCom webhook client with injected transport"
 ```
 
 ---
 
-### Task 4: Message rendering + idempotent notify command
+### Task 4: Message rendering + idempotent notify command (webhook-only)
 
 **Files:**
 - Create: `src/ai_workflow/wecom/notify.py`
@@ -646,7 +561,7 @@ git commit -m "feat: add WeCom API client with injected transport"
 - Consumes: `RepositoryConfig` (wecom fields), `WorkflowService.status(run_id) -> RunState`, `WeComApiClient`.
 - Produces:
   - `render_message(*, gate, phase, run_id, requirement, repo, operators, action, summary) -> str`
-  - `notify_command(repo_root: Path, *, run_id, gate, action, summary="", phase=None, force=False, dry_run=False, client=None, clock=None) -> dict[str, object]`
+  - `notify_command(repo_root: Path, *, run_id, gate, action, summary="", phase=None, force=False, dry_run=False, client=None) -> dict[str, object]`
   - Notification log path helper: `notification_log_path(repo_root, run_id) -> Path` → `<repo>/.ai-workflow/notifications/<run_id>.json`
 
 - [ ] **Step 1: Write the failing test**
@@ -656,12 +571,9 @@ Create `tests/unit/wecom/test_notify.py`:
 ```python
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-import pytest
-
-from ai_workflow.config import RepositoryConfig
-from ai_workflow.errors import AppError
 from ai_workflow.wecom.client import WeComApiClient
 from ai_workflow.wecom.notify import notify_command, render_message
 
@@ -673,14 +585,13 @@ class FakeWeComTransport:
 
     def request_json(self, method: str, url: str, *, params=None, payload=None) -> dict[str, object]:
         self.calls.append((method, url, payload))
-        if url.endswith("/gettoken"):
-            return {"errcode": 0, "access_token": "TOK", "expires_in": 7200}
-        if url.endswith("/tag/list"):
-            return {"errcode": 0, "taglist": [{"tagid": 7, "tagname": "工作流通知组"}]}
-        if url.endswith("/message/send"):
+        if "/webhook/send" in url:
             self.sent.append(payload or {})
             return {"errcode": 0, "errmsg": "ok"}
         raise AssertionError(url)
+
+
+_WEBHOOK = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc123"
 
 
 def _config(repo: Path) -> None:
@@ -688,17 +599,18 @@ def _config(repo: Path) -> None:
         "repository: demo\n"
         "wecom:\n"
         "  enabled: true\n"
-        "  corpid_env: WECOM_CORPID\n"
-        "  agentid_env: WECOM_AGENT_ID\n"
-        "  agent_secret_env: WECOM_AGENT_SECRET\n"
-        "  notify_tag: 工作流通知组\n",
+        "  webhook_url_env: WECOM_WEBHOOK_URL\n",
         encoding="utf-8",
     )
 
 
+def _set_webhook_env(monkeypatch) -> None:
+    monkeypatch.setenv("WECOM_WEBHOOK_URL", _WEBHOOK)
+
+
 def _client() -> tuple[WeComApiClient, FakeWeComTransport]:
     transport = FakeWeComTransport()
-    return WeComApiClient("corp", "secret", 1000002, transport=transport), transport
+    return WeComApiClient(transport=transport), transport
 
 
 def test_render_message_includes_owner_and_operators() -> None:
@@ -722,12 +634,9 @@ def test_render_message_includes_owner_and_operators() -> None:
 
 
 def test_notify_sends_once_then_dedups(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("WECOM_CORPID", "corp")
-    monkeypatch.setenv("WECOM_AGENT_ID", "1000002")
-    monkeypatch.setenv("WECOM_AGENT_SECRET", "secret")
+    _set_webhook_env(monkeypatch)
     _config(tmp_path)
     repo = tmp_path
-    # a minimal run must exist so service.status(run_id) succeeds
     from ai_workflow.workflow.service import WorkflowService
 
     state = WorkflowService().init(
@@ -740,37 +649,22 @@ def test_notify_sends_once_then_dedups(tmp_path: Path, monkeypatch) -> None:
     client, transport = _client()
 
     first = notify_command(
-        repo,
-        run_id=run_id,
-        gate="review",
-        phase="plan",
-        action="接受或修改 rerun",
-        summary="plan.solution 已完成",
-        client=client,
+        repo, run_id=run_id, gate="review", phase="plan",
+        action="接受或修改 rerun", summary="plan.solution 已完成", client=client,
     )
     assert first["sent"] is True
     assert first["dedup"] == "new"
 
     second = notify_command(
-        repo,
-        run_id=run_id,
-        gate="review",
-        phase="plan",
-        action="接受或修改 rerun",
-        summary="plan.solution 已完成",
-        client=client,
+        repo, run_id=run_id, gate="review", phase="plan",
+        action="接受或修改 rerun", summary="plan.solution 已完成", client=client,
     )
     assert second["sent"] is False
     assert second["dedup"] == "repeat"
 
     third = notify_command(
-        repo,
-        run_id=run_id,
-        gate="review",
-        phase="plan",
-        action="修改了 rerun 内容",
-        summary="plan.solution 已更新",
-        client=client,
+        repo, run_id=run_id, gate="review", phase="plan",
+        action="修改了 rerun 内容", summary="plan.solution 已更新", client=client,
     )
     assert third["sent"] is True
     assert third["dedup"] == "content_changed"
@@ -779,24 +673,18 @@ def test_notify_sends_once_then_dedups(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_notify_dry_run_does_not_send(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("WECOM_CORPID", "corp")
-    monkeypatch.setenv("WECOM_AGENT_ID", "1000002")
-    monkeypatch.setenv("WECOM_AGENT_SECRET", "secret")
+    _set_webhook_env(monkeypatch)
     _config(tmp_path)
     repo = tmp_path
+    from ai_workflow.workflow.service import WorkflowService
+
     state = WorkflowService().init(repo, source_revision="abc123", requirement="x")
     run_id = state.run_id
     client, transport = _client()
 
     result = notify_command(
-        repo,
-        run_id=run_id,
-        gate="blocked",
-        phase="implement",
-        action="resume 或 abort",
-        summary="环境失败",
-        client=client,
-        dry_run=True,
+        repo, run_id=run_id, gate="blocked", phase="implement",
+        action="resume 或 abort", summary="环境失败", client=client, dry_run=True,
     )
     assert result["sent"] is False
     assert result["dry_run"] is True
@@ -804,17 +692,11 @@ def test_notify_dry_run_does_not_send(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_notify_noop_when_disabled(tmp_path: Path) -> None:
-    (tmp_path / ".ai-workflow.yaml").write_text(
-        "repository: demo\n", encoding="utf-8"
-    )
+    (tmp_path / ".ai-workflow.yaml").write_text("repository: demo\n", encoding="utf-8")
     repo = tmp_path
     client, _ = _client()
     result = notify_command(
-        repo,
-        run_id="RUN-1",
-        gate="review",
-        action="x",
-        client=client,
+        repo, run_id="RUN-1", gate="review", action="x", client=client,
     )
     assert result["sent"] is False
     assert result["reason"] == "not_enabled"
@@ -831,11 +713,7 @@ def test_notify_gate_not_configured_is_noop(tmp_path: Path) -> None:
     repo = tmp_path
     client, _ = _client()
     result = notify_command(
-        repo,
-        run_id="RUN-1",
-        gate="blocked",
-        action="x",
-        client=client,
+        repo, run_id="RUN-1", gate="blocked", action="x", client=client,
     )
     assert result["sent"] is False
     assert result["reason"] == "gate_not_configured"
@@ -857,6 +735,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from uuid import uuid4
 
 from ai_workflow.config import RepositoryConfig
 from ai_workflow.errors import AppError
@@ -919,19 +798,31 @@ def _content_digest(*, gate: str, phase: str | None, content: str) -> str:
 def _load_log(path: Path) -> dict[str, object]:
     if not path.is_file():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # A truncated/corrupt log means "no prior notifications": never let a
+        # broken dedup log block or crash the notify step.
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
-def _default_client(config: RepositoryConfig) -> WeComApiClient:
-    corpid = os.environ.get(config.wecom_corpid_env or "", "")
-    agentid = os.environ.get(config.wecom_agentid_env or "", "")
-    corpsecret = os.environ.get(config.wecom_agent_secret_env or "", "")
-    if not (corpid and agentid and corpsecret):
+def _client_for_webhook() -> WeComApiClient:
+    # Webhook messages carry their key in the URL: the client is only a thin
+    # holder for the transport.
+    return WeComApiClient()
+
+
+def _webhook_url(config: RepositoryConfig) -> str | None:
+    if config.wecom_webhook_url_env is None:
+        return None
+    url = os.environ.get(config.wecom_webhook_url_env, "").strip()
+    if not url:
         raise AppError(
             "wecom_not_configured",
-            "WeCom credentials are not configured in the environment",
+            "WeCom webhook URL is not configured in the environment",
         )
-    return WeComApiClient(corpid=corpid, corpsecret=corpsecret, agentid=int(agentid))
+    return url
 
 
 def notify_command(
@@ -953,8 +844,9 @@ def notify_command(
         return {"sent": False, "reason": "not_enabled"}
     if gate not in config.wecom_gates:
         return {"sent": False, "reason": "gate_not_configured"}
-    if config.wecom_notify_tag is None:
-        return {"sent": False, "reason": "notify_tag_not_configured"}
+    webhook_url = _webhook_url(config)
+    if webhook_url is None:
+        return {"sent": False, "reason": "notify_target_not_configured"}
 
     service = WorkflowService(repo_root)
     state = service.status(run_id)
@@ -976,27 +868,38 @@ def notify_command(
     )
     log_path = notification_log_path(repo_root, run_id)
     log = _load_log(log_path)
-    existing = log.get(gate)
+    # Key the dedup log by gate plus phase so the same gate at different
+    # phases (review at plan vs review at verify) never collides.
+    log_key = f"{gate}:{phase or ''}"
+    existing = log.get(log_key)
     digest = _content_digest(gate=gate, phase=phase, content=content)
-    if existing == digest:
+    if not force and existing == digest:
         return {"sent": False, "dedup": "repeat", "targets": []}
 
     if dry_run:
         return {"sent": False, "dry_run": True, "dedup": "new", "payload": content}
 
-    send_client = client if client is not None else _default_client(config)
-    tag_id = send_client.resolve_tag(config.wecom_notify_tag)
-    result = send_client.send_message(content=content, msgtype="markdown", tag_id=tag_id)
+    send_client = client if client is not None else _client_for_webhook()
+    result = send_client.webhook_send(content=content, webhook_url=webhook_url)
 
-    log[gate] = digest
+    log[log_key] = digest
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text(
+    # Atomic write: crash mid-write must not corrupt the dedup log.
+    temporary = log_path.with_name(f".{log_path.name}.{uuid4().hex}.tmp")
+    temporary.write_text(
         json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    return {"sent": True, "dedup": "new", "result": result, "tag_id": tag_id}
+    temporary.replace(log_path)
+    # A first send is "new"; a resend after content changed is "content_changed";
+    # a forced resend of identical content counts as a fresh "new" send.
+    dedup = "new" if force or existing is None else "content_changed"
+    return {
+        "sent": True,
+        "dedup": dedup,
+        "result": result,
+        "webhook": webhook_url,
+    }
 ```
-
-Note: `log[gate] = digest` stores one digest per gate. A phase change for the same gate (e.g. review at plan vs verify) overwrites the same key. If you want per-phase dedup, key by `f"{gate}:{phase or ''}"` — choose this and adjust `test_notify_sends_once_then_dedups` assertions accordingly (the test uses one phase, so either keying works there).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1007,7 +910,7 @@ Expected: PASS
 
 ```bash
 git add src/ai_workflow/wecom/notify.py tests/unit/wecom/test_notify.py
-git commit -m "feat: add idempotent WeCom notify command"
+git commit -m "feat: add idempotent WeCom webhook notify command"
 ```
 
 ---
@@ -1028,11 +931,14 @@ Create `tests/contract/test_wecom_notify_cli.py`:
 
 ```python
 import json
-import os
+import urllib.error
 from pathlib import Path
 
 from ai_workflow.cli import main
 from ai_workflow.workflow.service import WorkflowService
+
+
+_WEBHOOK = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc123"
 
 
 def _write_config(repo: Path) -> None:
@@ -1040,36 +946,25 @@ def _write_config(repo: Path) -> None:
         "repository: demo\n"
         "wecom:\n"
         "  enabled: true\n"
-        "  corpid_env: WECOM_CORPID\n"
-        "  agentid_env: WECOM_AGENT_ID\n"
-        "  agent_secret_env: WECOM_AGENT_SECRET\n"
-        "  notify_tag: 工作流通知组\n",
+        "  webhook_url_env: WECOM_WEBHOOK_URL\n",
         encoding="utf-8",
     )
 
 
 def test_cli_wecom_notify_dry_run(monkeypatch, tmp_path: Path, capsys) -> None:
-    monkeypatch.setenv("WECOM_CORPID", "corp")
-    monkeypatch.setenv("WECOM_AGENT_ID", "1000002")
-    monkeypatch.setenv("WECOM_AGENT_SECRET", "secret")
+    monkeypatch.setenv("WECOM_WEBHOOK_URL", _WEBHOOK)
     _write_config(tmp_path)
     state = WorkflowService().init(
         tmp_path, source_revision="abc123", requirement="x", operators=("sunxianshun",)
     )
     status, out = main(
         [
-            "wecom",
-            "notify",
-            "--repo",
-            str(tmp_path),
-            "--run-id",
-            state.run_id,
-            "--gate",
-            "review",
-            "--phase",
-            "plan",
-            "--action",
-            "接受或修改 rerun",
+            "wecom", "notify",
+            "--repo", str(tmp_path),
+            "--run-id", state.run_id,
+            "--gate", "review",
+            "--phase", "plan",
+            "--action", "接受或修改 rerun",
             "--dry-run",
         ]
     ), capsys.readouterr().out
@@ -1085,16 +980,11 @@ def test_cli_wecom_notify_not_enabled(tmp_path: Path, capsys) -> None:
     state = WorkflowService().init(tmp_path, source_revision="abc123", requirement="x")
     status, out = main(
         [
-            "wecom",
-            "notify",
-            "--repo",
-            str(tmp_path),
-            "--run-id",
-            state.run_id,
-            "--gate",
-            "review",
-            "--action",
-            "x",
+            "wecom", "notify",
+            "--repo", str(tmp_path),
+            "--run-id", state.run_id,
+            "--gate", "review",
+            "--action", "x",
         ]
     ), capsys.readouterr().out
     assert status == 0
@@ -1308,7 +1198,7 @@ git commit -m "feat: wire skills to notify WeCom at human gates"
 
 - [ ] **Step 1: Write the e2e test**
 
-The CLI builds the real `WeComApiClient` via `_default_client` (env vars). To inject a fake transport end-to-end, set the env vars to fake values AND monkeypatch `ai_workflow.wecom.notify._default_client` to return a client backed by `FakeWeComTransport`:
+The CLI builds the real `WeComApiClient` via `_client_for_webhook` (env var). To inject a fake transport end-to-end, set the webhook URL env var AND monkeypatch `ai_workflow.wecom.notify._client_for_webhook` to return a client backed by `FakeWeComTransport`:
 
 ```python
 import json
@@ -1324,11 +1214,7 @@ class FakeWeComTransport:
         self.sent = 0
 
     def request_json(self, method, url, *, params=None, payload=None):
-        if url.endswith("/gettoken"):
-            return {"errcode": 0, "access_token": "TOK", "expires_in": 7200}
-        if url.endswith("/tag/list"):
-            return {"errcode": 0, "taglist": [{"tagid": 7, "tagname": "工作流通知组"}]}
-        if url.endswith("/message/send"):
+        if "/webhook/send" in url:
             self.sent += 1
             return {"errcode": 0, "errmsg": "ok"}
         raise AssertionError(url)
@@ -1339,19 +1225,17 @@ def test_wecom_notify_e2e_dedup(monkeypatch, tmp_path: Path, capsys) -> None:
         "repository: demo\n"
         "wecom:\n"
         "  enabled: true\n"
-        "  corpid_env: WECOM_CORPID\n"
-        "  agentid_env: WECOM_AGENT_ID\n"
-        "  agent_secret_env: WECOM_AGENT_SECRET\n"
-        "  notify_tag: 工作流通知组\n",
+        "  webhook_url_env: WECOM_WEBHOOK_URL\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("WECOM_CORPID", "corp")
-    monkeypatch.setenv("WECOM_AGENT_ID", "1000002")
-    monkeypatch.setenv("WECOM_AGENT_SECRET", "secret")
+    monkeypatch.setenv(
+        "WECOM_WEBHOOK_URL",
+        "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc123",
+    )
     transport = FakeWeComTransport()
     monkeypatch.setattr(
-        "ai_workflow.wecom.notify._default_client",
-        lambda config: WeComApiClient("corp", "secret", 1000002, transport=transport),
+        "ai_workflow.wecom.notify._client_for_webhook",
+        lambda: WeComApiClient(transport=transport),
     )
 
     state = WorkflowService().init(
@@ -1360,18 +1244,12 @@ def test_wecom_notify_e2e_dedup(monkeypatch, tmp_path: Path, capsys) -> None:
     )
     run_id = state.run_id
     base = [
-        "wecom",
-        "notify",
-        "--repo",
-        str(tmp_path),
-        "--run-id",
-        run_id,
-        "--gate",
-        "review",
-        "--phase",
-        "plan",
-        "--action",
-        "接受或修改 rerun",
+        "wecom", "notify",
+        "--repo", str(tmp_path),
+        "--run-id", run_id,
+        "--gate", "review",
+        "--phase", "plan",
+        "--action", "接受或修改 rerun",
     ]
 
     status1, out1 = main([*base]), capsys.readouterr().out
@@ -1416,10 +1294,10 @@ git commit -m "test: e2e WeCom notify dedup with fake transport"
 
 ## Self-Review
 
-**Spec coverage (Plan 1 scope):** `wecom:` config block ✓ (Task 1); operators recorded at init with creator default ✓ (Task 2); WeCom client + tag resolution + message/send ✓ (Task 3); Markdown message with `@开启者` / `🔑 授权操作者` ✓ (Task 4); idempotent dedup `(run_id, gate, phase, content_digest)` ✓ (Task 4); soft-fail / dry-run / no-op-when-disabled ✓ (Task 4); `ai-workflow wecom notify` CLI ✓ (Task 5); three skills call the command + reference doc ✓ (Task 6); `.ai-workflow/notifications/` gitignored, run state untouched ✓ (Task 7).
+**Spec coverage (Plan 1 scope):** `wecom:` config block with `webhook_url_env` ✓ (Task 1); operators recorded at init with creator default ✓ (Task 2); webhook-only client (`WeComApiClient` + `webhook_send`) ✓ (Task 3); Markdown message with `👤 开启者` / `🔑 授权操作者` ✓ (Task 4); idempotent dedup `(run_id, gate, phase, content_digest)` ✓ (Task 4); soft-fail / dry-run / no-op-when-disabled / unset-webhook surfaces stderr ✓ (Task 4/5); `ai-workflow wecom notify` CLI ✓ (Task 5); three skills call the command + reference doc ✓ (Task 6); `.ai-workflow/notifications/` gitignored, run state untouched ✓ (Task 7).
 
 **Placeholder scan:** Every step contains real code or explicit copy text. No "TBD"/"TODO".
 
-**Type consistency:** `notify_command(repo_root, *, run_id, gate, action, summary, phase, force, dry_run, client)` is defined in Task 4 and consumed identically in Task 5. `render_message` kwargs match Task 4's test. `init(..., operators=())` matches Task 2. `WeComApiClient(corpid, corpsecret, agentid, *, transport, clock)` matches Task 3.
+**Type consistency:** `notify_command(repo_root, *, run_id, gate, action, summary, phase, force, dry_run, client)` is defined in Task 4 and consumed identically in Task 5. `render_message` kwargs match Task 4's test. `init(..., operators=())` matches Task 2. `WeComApiClient(*, transport)` matches Task 3.
 
 **Deferred to Plan 2 (separate plan, not this one):** the local callback service `ai-workflow wecom serve` (crypto/signature verification, command parsing, authorization, execution of review/blocked/governance/git actions, second-confirmation for git commit/MR), which adds the `cryptography` dependency and the callback config fields (`callback_token_env`, `callback_aeskey_env`).

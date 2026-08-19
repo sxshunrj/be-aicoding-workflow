@@ -287,8 +287,7 @@ def test_notify_requires_a_target(tmp_path: Path) -> None:
     assert result["reason"] == "notify_target_not_configured"
 
 
-def test_notify_sends_to_webhook_without_credentials(tmp_path: Path, monkeypatch) -> None:
-    # Webhook target needs NO corpid/secret: it must work without WECOM_* creds.
+def test_notify_sends_to_webhook(tmp_path: Path, monkeypatch) -> None:
     _set_webhook_env(monkeypatch)
     _config(tmp_path)
     repo = tmp_path
@@ -309,16 +308,13 @@ def test_notify_sends_to_webhook_without_credentials(tmp_path: Path, monkeypatch
     assert result["sent"] is True
     assert result["dedup"] == "new"
     assert "webhook/send" in result["webhook"]
-    # webhook payload has no totag/touser and no agentid
     payload = transport.sent[0]
     assert payload["msgtype"] == "markdown"
-    assert "totag" not in payload
-    assert "touser" not in payload
-    assert "agentid" not in payload
+    assert payload["markdown"]["content"]
 
 
-def test_notify_webhook_via_cli_default_client(monkeypatch, tmp_path: Path, capsys) -> None:
-    # E2E-ish: real CLI path, no WECOM_CORPID/SECRET set, only webhook URL.
+def test_notify_webhook_via_cli(monkeypatch, tmp_path: Path, capsys) -> None:
+    # E2E-ish: real CLI path, webhook only — no CorpID/Secret involved.
     _set_webhook_env(monkeypatch)
     _config(tmp_path)
     from ai_workflow.cli import main
