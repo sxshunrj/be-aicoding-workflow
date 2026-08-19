@@ -370,6 +370,95 @@ def test_notify_webhook_via_cli(monkeypatch, tmp_path: Path, capsys) -> None:
     assert transport.sent
 
 
+def test_notify_dedup_log_write_failure_keeps_sent_true_and_warns(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The message is delivered before the dedup-log write; a write failure
+    (disk full / read-only) must not crash the notify step. sent stays true
+    because delivery already happened, and the failure is surfaced as a warning
+    so an operator knows the dedup log was not updated."""
+    from unittest import mock
+    from pathlib import Path as _Path
+
+    _set_webhook_env(monkeypatch)
+    _config(tmp_path)
+    repo = tmp_path
+    from ai_workflow.workflow.service import WorkflowService
+
+    state = WorkflowService().init(
+        repo, source_revision="abc123", requirement="实现订单导出"
+    )
+    run_id = state.run_id
+    client, transport = _client()
+
+    original_write = _Path.write_text
+
+    def _failing_write(self, *a, **k):
+        if "notifications" in str(self):
+            raise OSError(28, "No space left on device")
+        return original_write(self, *a, **k)
+
+    with mock.patch.object(_Path, "write_text", _failing_write):
+        result = notify_command(
+            repo,
+            run_id=run_id,
+            gate="review",
+            phase="plan",
+            action="接受或修改 rerun",
+            client=client,
+        )
+    captured = capsys.readouterr()
+    assert result["sent"] is True
+    assert result["dedup"] == "new"
+    assert result["warning"] == "notify_log_write_failed"
+    assert "notify_log_write_failed" not in captured.out
+    assert "dedup-log write failed" in captured.err
+
+
+def test_notify_unreadable_log_does_not_crash(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A dedup log that exists but cannot be read must be treated as "no prior
+    notifications" — the notify step must not crash on an unreadable file."""
+    from unittest import mock
+    from pathlib import Path as _Path
+
+    _set_webhook_env(monkeypatch)
+    _config(tmp_path)
+    repo = tmp_path
+    from ai_workflow.wecom.notify import notification_log_path
+    from ai_workflow.workflow.service import WorkflowService
+
+    state = WorkflowService().init(
+        repo, source_revision="abc123", requirement="实现订单导出"
+    )
+    run_id = state.run_id
+    client, transport = _client()
+    log_path = notification_log_path(repo, run_id)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text('{"review:plan": "abc"}', encoding="utf-8")
+
+    original_read = _Path.read_text
+
+    def _failing_read(self, *a, **k):
+        if "notifications" in str(self):
+            raise OSError(13, "Permission denied")
+        return original_read(self, *a, **k)
+
+    with mock.patch.object(_Path, "read_text", _failing_read):
+        result = notify_command(
+            repo,
+            run_id=run_id,
+            gate="review",
+            phase="plan",
+            action="接受或修改 rerun",
+            client=client,
+        )
+    assert result["sent"] is True
+    assert result["dedup"] == "new"
+    assert len(transport.sent) == 1
+
+
 def test_env_from_shell_files_parses_export_formats(tmp_path: Path) -> None:
     env_file = tmp_path / "env"
     env_file.write_text(
