@@ -18,6 +18,16 @@ def test_harness_skill_references_wecom_notify() -> None:
     assert "Review Gate" in skill and "wecom notify" in skill
 
 
+def test_harness_review_and_blocked_notify_pass_phase() -> None:
+    """Regression guard: review/blocked notify calls must pass ``--phase`` so the
+    per-phase dedup key never collides across phases (spec review vs plan review
+    share identical content when phase is absent, so the plan gate was silently
+    deduped)."""
+    skill = _read("harness")
+    assert "--gate review --phase <phase>" in skill
+    assert "--gate blocked --phase <phase>" in skill
+
+
 def test_git_handoff_skill_references_wecom_notify() -> None:
     skill = _read("git_handoff")
     assert "ai-workflow wecom notify" in skill
@@ -37,5 +47,9 @@ def test_harness_wecom_notify_reference_exists() -> None:
         "dry-run",
         "dedup",
         "不影响主流程",
+        # phase is mandatory for review/blocked so per-phase dedup keys never
+        # collide; only sent==true counts as "已通知团队".
+        "必须传 `--phase",
+        "sent == true",
     ):
         assert phrase in ref

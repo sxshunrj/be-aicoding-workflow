@@ -133,7 +133,7 @@ reason 必须可执行：包含要修正/重查的事实、证据来源和目标
 Review Gate 是 `finalize` 与 `transition` 之间的唯一关口。Harness 不直接读取配置决定是否等待人类，只消费 `workflow review` 的 JSON decision。
 
 - `human_review`：展示当前 phase、gate digest、产物摘要、需要重跑的节点和 reason，等待用户明确选择。
-- 进入 `human_review` 时，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate review --action "等待人工 Review 决定"` 通知团队；失败仅写 warning，不影响主流程。详见 [wecom notify](references/wecom-notify.md)。
+- 进入 `human_review` 时，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate review --phase <phase> --action "等待人工 Review 决定"` 通知团队；失败仅写 warning，不影响主流程。**`--phase` 必传**（去重键含 phase，缺省会导致 spec/plan/verify 各阶段 review 内容相同而误去重）。详见 [wecom notify](references/wecom-notify.md)。
 - `accept`：说明 Helper 已按当前 policy 接受，然后继续 transition。
 - 人类选择修改时，重新推导 rerun proposal，再次 `workflow review`。
 - 人类明确接受时，调用 `workflow review-accept --expected-digest <digest>`；digest 不匹配按 [review gate](references/review-gate.md) 恢复。
@@ -164,7 +164,7 @@ Review Gate 是 `finalize` 与 `transition` 之间的唯一关口。Harness 不�
 - 选 1：无反馈则 `workflow resume`；有反馈则映射到 `NODE=REASON` 后 `workflow resume --rerun NODE=REASON`。
 - 选 2：`workflow abort`，然后 terminal cleanup。
 - blocked 不自动恢复，不被 auto_accept 绕过。
-- 进入 blocked 时，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate blocked --action "请选择 resume / abort"` 通知团队；失败仅写 warning，不影响主流程。详见 [wecom notify](references/wecom-notify.md)。
+- 进入 blocked 时，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate blocked --phase <phase> --action "请选择 resume / abort"` 通知团队；失败仅写 warning，不影响主流程。**`--phase` 必传**（去重键含 phase，缺省会与同 gate 的先前通知误去重）。详见 [wecom notify](references/wecom-notify.md)。
 
 ### Terminal
 
