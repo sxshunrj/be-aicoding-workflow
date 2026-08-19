@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from typing import Sequence
 from uuid import uuid4
 
 from ai_workflow.config import RepositoryConfig
@@ -83,16 +84,56 @@ def _client_for_webhook() -> WeComApiClient:
     return WeComApiClient()
 
 
+def _shell_env_files() -> tuple[Path, ...]:
+    """User-level shell env files that may export the webhook variable.
+
+    Agents launched outside a login shell (GUI apps, services, some IDEs) do
+    not inherit a shell's exports, so the process environment can be missing a
+    variable that is configured in ``~/.zshenv``. Reading the file directly
+    keeps the notify working regardless of how the agent was launched. The
+    secret still lives only in the user's own shell config, never in the repo.
+    """
+    home = Path.home()
+    return tuple(
+        home / f".{name}"
+        for name in ("zshenv", "zshrc", "zprofile", "bash_profile", "profile")
+    )
+
+
+def _env_from_shell_files(name: str, paths: Sequence[Path]) -> str | None:
+    """Return the value of ``export NAME=...`` from the first file that sets it."""
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("export " + name + "="):
+                continue
+            value = stripped.split("=", 1)[1].strip()
+            if len(value) >= 2 and value[0] in {'"', "'"} and value[-1] == value[0]:
+                value = value[1:-1]
+            value = value.strip()
+            if value:
+                return value
+    return None
+
+
 def _webhook_url(config: RepositoryConfig) -> str | None:
     if config.wecom_webhook_url_env is None:
         return None
-    url = os.environ.get(config.wecom_webhook_url_env, "").strip()
-    if not url:
+    value = os.environ.get(config.wecom_webhook_url_env, "").strip()
+    if not value:
+        value = _env_from_shell_files(
+            config.wecom_webhook_url_env, _shell_env_files()
+        )
+    if not value:
         raise AppError(
             "wecom_not_configured",
-            "WeCom webhook URL is not configured in the environment",
+            f"WeCom webhook URL is not configured (env {config.wecom_webhook_url_env} missing)",
         )
-    return url
+    return value
 
 
 def notify_command(
