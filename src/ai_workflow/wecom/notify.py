@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Sequence
 from uuid import uuid4
@@ -71,9 +72,9 @@ def _load_log(path: Path) -> dict[str, object]:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        # A truncated/corrupt log means "no prior notifications": never let a
-        # broken dedup log block or crash the notify step.
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        # A truncated/corrupt/unreadable log means "no prior notifications":
+        # never let a broken dedup log block or crash the notify step.
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -193,17 +194,35 @@ def notify_command(
     send_client = client if client is not None else _client_for_webhook()
     result = send_client.webhook_send(content=content, webhook_url=webhook_url)
 
-    log[log_key] = digest
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    # Atomic write: crash mid-write must not corrupt the dedup log.
-    temporary = log_path.with_name(f".{log_path.name}.{uuid4().hex}.tmp")
-    temporary.write_text(
-        json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    temporary.replace(log_path)
     # A first send is "new"; a resend after content changed is "content_changed";
     # a forced resend of identical content counts as a fresh "new" send.
     dedup = "new" if force or existing is None else "content_changed"
+    # The message is already delivered; the dedup log is best-effort bookkeeping.
+    # A disk-full / read-only / permission failure here must never crash the
+    # enclosing workflow command — notify never blocks the main flow. If the log
+    # write fails, the next identical notify will simply re-send (over-notify
+    # beats a silent miss), and the failure is surfaced so it stays observable.
+    try:
+        log[log_key] = digest
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic write: crash mid-write must not corrupt the dedup log.
+        temporary = log_path.with_name(f".{log_path.name}.{uuid4().hex}.tmp")
+        temporary.write_text(
+            json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        temporary.replace(log_path)
+    except OSError as error:
+        print(
+            f"wecom notify dedup-log write failed: {error}",
+            file=sys.stderr,
+        )
+        return {
+            "sent": True,
+            "dedup": dedup,
+            "result": result,
+            "webhook": webhook_url,
+            "warning": "notify_log_write_failed",
+        }
     return {
         "sent": True,
         "dedup": dedup,

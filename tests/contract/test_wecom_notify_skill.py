@@ -44,11 +44,18 @@ def test_grill_skill_delegates_notify_to_helper() -> None:
 def test_git_handoff_skill_references_wecom_notify() -> None:
     skill = _read("git_handoff")
     assert "ai-workflow wecom notify" in skill
+    # the notify call must carry the correct gate so the team knows WHAT needs
+    # a human; and it must be non-blocking so a notify failure never stalls the
+    # git handoff
+    assert "--gate git_handoff" in skill
+    assert "失败仅写 warning，不影响主流程" in skill
 
 
 def test_governance_skill_references_wecom_notify() -> None:
     skill = _read("governance")
     assert "ai-workflow wecom notify" in skill
+    assert "--gate governance" in skill
+    assert "失败仅写 warning，不影响主流程" in skill
 
 
 def test_harness_wecom_notify_reference_exists() -> None:

@@ -38,3 +38,5 @@ ai-workflow wecom notify \
 ## 通知结果随命令返回（可观测）
 
 `workflow block` / `workflow review` / `workflow transition` / `workflow abort` 的返回 `data.notify` 字段包含本次通知结果：`{"sent": true, "dedup": "..."}`，或 `{"sent": false, "reason"/"error": "..."}`。通知是 Helper 机械推送、结果随命令返回，**任何软失败都可见、不静默**。若 `notify.sent=false` 且带 `error`（如 `wecom_not_configured`/`wecom_http_error`），说明通知未发出，应排查而非当作已通知。
+
+`notify.sent=true` 且带 `warning=notify_log_write_failed`：消息已送达、但去重日志写入失败（磁盘满/只读）。命令不受影响，但同一通知后续可能重发——over-notify 优于静默漏发，按已通知处理即可。
