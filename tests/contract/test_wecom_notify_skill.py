@@ -13,43 +13,32 @@ def _read(skill_key: str, relative: str = "SKILL.md") -> str:
     return (SKILL_DIRS[skill_key] / relative).read_text(encoding="utf-8")
 
 
-def test_harness_skill_references_wecom_notify() -> None:
+def test_harness_skill_delegates_notify_to_helper() -> None:
+    """review/blocked/terminal notifications are Helper-mechanical: the harness
+    skill must say the ``workflow`` commands auto-push them and must not rely on
+    the LLM calling ``wecom notify`` directly (that path could be skipped)."""
     skill = _read("harness")
-    assert "ai-workflow wecom notify" in skill
-    assert "Review Gate" in skill and "wecom notify" in skill
-
-
-def test_harness_review_notify_passes_phase_and_blocked_is_helper_enforced() -> None:
-    """Regression guard: review notify must pass ``--phase`` (per-phase dedup
-    keys never collide), while blocked notify is Helper-mechanical (``workflow
-    block`` auto-pushes) so it must not rely on the LLM calling it."""
-    skill = _read("harness")
-    assert "--gate review --phase <phase>" in skill
-    assert "--gate blocked" not in skill
+    assert "workflow review` 命令会自动推送" in skill
+    assert "workflow block` 命令会自动推送" in skill
+    assert "workflow transition` / `workflow abort` 命令会自动推送" in skill
     assert "机械保证" in skill
 
 
-def test_harness_terminal_completion_notify_present() -> None:
-    """Terminal completion is a mandatory human gate: the harness must notify
-    the team when waiting for terminal acceptance (completed/aborted)."""
+def test_harness_skill_has_no_llm_gate_notify_calls() -> None:
     skill = _read("harness")
-    assert "--gate terminal" in skill
-    assert "completed/aborted" in skill
-
-
-def test_grill_review_notify_passes_phase_and_blocked_is_helper_enforced() -> None:
-    """The grill harness variant has the same human gates: review notifies with
-    ``--phase``, blocked is Helper-mechanical (``workflow block`` auto-pushes)."""
-    skill = _read("grill")
-    assert "--gate review --phase <phase>" in skill
+    assert "--gate review" not in skill
     assert "--gate blocked" not in skill
-    assert "机械保证" in skill
+    assert "--gate terminal" not in skill
 
 
-def test_grill_terminal_notify_present() -> None:
+def test_grill_skill_delegates_notify_to_helper() -> None:
     skill = _read("grill")
-    assert "--gate terminal" in skill
-    assert "completed/aborted" in skill
+    assert "workflow review` 命令会自动推送" in skill
+    assert "workflow block` 命令会自动推送" in skill
+    assert "workflow transition` / `workflow abort` 命令会自动推送" in skill
+    assert "--gate review" not in skill
+    assert "--gate blocked" not in skill
+    assert "--gate terminal" not in skill
 
 
 def test_git_handoff_skill_references_wecom_notify() -> None:
@@ -71,11 +60,12 @@ def test_harness_wecom_notify_reference_exists() -> None:
         "dry-run",
         "dedup",
         "不影响主流程",
-        # phase is mandatory for review/blocked so per-phase dedup keys never
-        # collide; only sent==true counts as "已通知团队".
-        "必须传 `--phase",
+        # review/blocked/terminal are Helper-mechanical; only sent==true counts
+        # as "已通知团队".
+        "自动推送",
+        "机械保证",
         "sent == true",
-        # terminal gate covers run-completion acceptance.
+        # gate list covers the five gates.
         "git_handoff|terminal",
     ):
         assert phrase in ref

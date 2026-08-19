@@ -14,6 +14,7 @@ from ai_workflow.install import install_skills
 from ai_workflow.path_authorization import PathKind, RepositoryPathAuthorizer
 from ai_workflow.wecom.notify import notify_command
 from ai_workflow.workflow.models import Phase, RunState
+from ai_workflow.workflow.review import ReviewDecision
 from ai_workflow.workflow.service import WorkflowService
 from ai_workflow.wiki.repository import WikiRepository
 from ai_workflow.wiki.service import WikiService
@@ -213,6 +214,54 @@ def _auto_notify_blocked(repo_root: Path, state: RunState, reason: str) -> None:
         )
 
 
+def _auto_notify_review(repo_root: Path, decision: ReviewDecision) -> None:
+    """Mechanically push the review-gate notification when the Helper returns
+    ``human_review``, so a review the team must act on is always announced even
+    if the harness LLM skips the skill template call."""
+    if decision.decision != "human_review":
+        return
+    if decision.proposed_reruns:
+        summary = "重跑：" + "；".join(
+            f"{node}={reason}" for node, reason in decision.proposed_reruns
+        )
+    else:
+        summary = "无重跑节点，请验收产物"
+    try:
+        notify_command(
+            repo_root,
+            run_id=decision.run_id,
+            gate="review",
+            phase=decision.phase,
+            action="等待人工 Review 决定",
+            summary=summary,
+        )
+    except AppError as error:
+        print(
+            f"wecom notify soft-failed ({error.code}): {error.message}",
+            file=sys.stderr,
+        )
+
+
+def _auto_notify_terminal(repo_root: Path, run_id: str) -> None:
+    """Mechanically push the terminal-completion notification when a run
+    becomes completed/aborted, so the team is asked to accept the terminal
+    state even if the harness LLM skips the skill template call."""
+    try:
+        notify_command(
+            repo_root,
+            run_id=run_id,
+            gate="terminal",
+            phase=None,
+            action="请验收 run 终态（completed/aborted）",
+            summary="",
+        )
+    except AppError as error:
+        print(
+            f"wecom notify soft-failed ({error.code}): {error.message}",
+            file=sys.stderr,
+        )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
@@ -390,15 +439,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.run_id, args.decision, args.proposal
                 )
             elif args.workflow_command == "review":
-                data = service.review(
-                    args.run_id, _reruns(args.rerun)
-                ).to_dict()
+                decision = service.review(args.run_id, _reruns(args.rerun))
+                _auto_notify_review(args.repo, decision)
+                data = decision.to_dict()
             elif args.workflow_command == "review-accept":
                 data = service.record_review_acceptance(
                     args.run_id, args.expected_digest
                 ).to_dict()
             elif args.workflow_command == "transition":
-                data = service.transition(args.run_id).to_dict()
+                state = service.transition(args.run_id)
+                if state.status == "completed":
+                    _auto_notify_terminal(args.repo, args.run_id)
+                data = state.to_dict()
             elif args.workflow_command == "block":
                 state = service.block(args.run_id, args.reason)
                 _auto_notify_blocked(args.repo, state, args.reason)
@@ -408,7 +460,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.run_id, _reruns(args.rerun)
                 ).to_dict()
             else:
-                data = service.abort(args.run_id).to_dict()
+                state = service.abort(args.run_id)
+                _auto_notify_terminal(args.repo, args.run_id)
+                data = state.to_dict()
         envelope: dict[str, object] = {"ok": True, "data": data}
         status = 0
     except AppError as error:
