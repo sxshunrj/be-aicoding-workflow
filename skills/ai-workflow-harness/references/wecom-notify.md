@@ -34,3 +34,7 @@ ai-workflow wecom notify \
 - 仅当 `data.sent == true` 时才向人类报告「已通知团队」。
 - `sent=false` + `dedup=repeat`：已通知过、未重复推送，报告「已通知过，未重复推送」，不要写成「已通知团队」。
 - `sent=false` + `reason` 时按 no-op 处理。
+
+## 通知结果随命令返回（可观测）
+
+`workflow block` / `workflow review` / `workflow transition` / `workflow abort` 的返回 `data.notify` 字段包含本次通知结果：`{"sent": true, "dedup": "..."}`，或 `{"sent": false, "reason"/"error": "..."}`。通知是 Helper 机械推送、结果随命令返回，**任何软失败都可见、不静默**。若 `notify.sent=false` 且带 `error`（如 `wecom_not_configured`/`wecom_http_error`），说明通知未发出，应排查而非当作已通知。
