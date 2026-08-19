@@ -28,6 +28,22 @@ def notification_log_path(repo_root: Path, run_id: str) -> Path:
     return (repo_root / ".ai-workflow" / _NOTIFY_DIRNAME / f"{run_id}.json").resolve()
 
 
+def reset_notify_dedup(repo_root: Path, run_id: str) -> None:
+    """Forget this run's notification history.
+
+    A run that is blocked and then resumed starts a NEW human decision cycle:
+    the old dedup digests must not suppress the fresh review/blocked/terminal
+    notifications that the new cycle needs. Best-effort — an unreadable or
+    unwritable log must never break the resume command.
+    """
+    try:
+        path = notification_log_path(repo_root, run_id)
+        if path.is_file():
+            path.unlink()
+    except OSError:
+        pass
+
+
 def render_message(
     *,
     gate: str,

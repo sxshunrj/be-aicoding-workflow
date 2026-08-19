@@ -211,6 +211,132 @@ def test_governance_gate_notifies_then_dedups(
     assert len(transport.sent) == 1
 
 
+def test_review_after_resume_notifies_again_despite_stale_gate(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """A run that is blocked and resumed creates a NEW human decision cycle.
+    Resume must reset the notify dedup so the fresh review gate re-notifies the
+    team instead of being swallowed as a duplicate of the pre-block gate."""
+    project = project_template.copy_to(tmp_path / "stale-resume-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    for phase in ("spec", "plan"):
+        attempt = app.workflow_begin(run["run_id"], phase)
+        for item in attempt["dispatch_plan"]:
+            app.workflow_stage(run["run_id"], agent.run(Path(item["packet_file"])))
+        app.workflow_finalize(run["run_id"], attempt["attempt_id"])
+        app.workflow_review_transition(run["run_id"])
+
+    # implement phase, finalize, then a human review gate -> notify (cycle 1)
+    implement = app.workflow_begin(run["run_id"], "implement")
+    app.workflow_stage(
+        run["run_id"], agent.run(Path(implement["dispatch_plan"][0]["packet_file"]))
+    )
+    app.workflow_finalize(run["run_id"], implement["attempt_id"])
+    decision = app.workflow_review(run["run_id"])
+    assert decision["decision"] == "human_review"
+    review_implement = [p for p in transport.sent
+                        if "Review Gate（implement 阶段）" in p["markdown"]["content"]]
+    assert len(review_implement) == 1
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    def _call(argv):
+        with redirect_stdout(StringIO()) as out:
+            status = main(argv)
+        return status, json.loads(out.getvalue())
+
+    # block + resume -> state version advances, old gate is now stale
+    status, _ = _call(["workflow", "block", "--repo", str(project),
+                       "--run-id", run["run_id"], "--reason", "stakeholder wait"])
+    assert status == 0
+    status, _ = _call(["workflow", "resume", "--repo", str(project),
+                       "--run-id", run["run_id"]])
+    assert status == 0
+
+    # a fresh review creates a new gate — resume reset the dedup, so the team
+    # is notified again instead of being swallowed as "already notified"
+    status, payload = _call(["workflow", "review", "--repo", str(project),
+                             "--run-id", run["run_id"]])
+    assert status == 0
+    assert payload["data"]["decision"] == "human_review"
+    assert payload["data"]["notify"]["sent"] is True
+    review_implement = [p for p in transport.sent
+                        if "Review Gate（implement 阶段）" in p["markdown"]["content"]]
+    assert len(review_implement) == 2
+
+
+def test_stale_gate_after_checkpoint_autoblock_resume_notifies(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """A checkpoint-failure auto-block (which keeps the review gate in state,
+    unlike ``workflow block``) followed by resume leaves a stale gate. A fresh
+    ``workflow review`` then errors stale_review_gate — and must still notify
+    the team that the run is waiting, since the harness will re-generate the
+    decision. This mirrors the exact failure the user hit on jxedt_stars_api."""
+    project = project_template.copy_to(tmp_path / "stale-gate-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    for phase in ("spec", "plan"):
+        attempt = app.workflow_begin(run["run_id"], phase)
+        for item in attempt["dispatch_plan"]:
+            app.workflow_stage(run["run_id"], agent.run(Path(item["packet_file"])))
+        app.workflow_finalize(run["run_id"], attempt["attempt_id"])
+        app.workflow_review_transition(run["run_id"])
+
+    # implement with a pre-existing dirty path -> checkpoint failure auto-block
+    (project / "src" / "app.py").write_text("preexisting dirty\n", encoding="utf-8")
+    implement = app.workflow_begin(run["run_id"], "implement")
+    app.workflow_stage(
+        run["run_id"], agent.run(Path(implement["dispatch_plan"][0]["packet_file"]))
+    )
+    app.workflow_finalize(run["run_id"], implement["attempt_id"])
+    decision = app.workflow_review(run["run_id"])
+    assert decision["decision"] == "human_review"
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    def _call(argv):
+        with redirect_stdout(StringIO()) as out:
+            status = main(argv)
+        return status, json.loads(out.getvalue())
+
+    # review-accept triggers checkpoint_scope_ambiguous -> auto-block
+    status, payload = _call([
+        "workflow", "review-accept", "--repo", str(project),
+        "--run-id", run["run_id"], "--expected-digest", decision["digest"],
+    ])
+    assert status != 0
+    assert payload["error"]["code"] == "checkpoint_scope_ambiguous"
+    assert app.workflow_status(run["run_id"])["status"] == "blocked"
+
+    # resume -> state version advances; the old gate is now stale
+    status, _ = _call(["workflow", "resume", "--repo", str(project),
+                       "--run-id", run["run_id"]])
+    assert status == 0
+
+    # a fresh review errors stale_review_gate AND pushes a stale-review notice
+    status, payload = _call(["workflow", "review", "--repo", str(project),
+                             "--run-id", run["run_id"]])
+    assert status == 4
+    assert payload["error"]["code"] == "stale_review_gate"
+    stale_notes = [p for p in transport.sent
+                   if "需重新生成 Review 决策" in p["markdown"]["content"]]
+    assert len(stale_notes) == 1
+
+
 def test_notify_log_write_failure_does_not_break_block(
     tmp_path, project_template, monkeypatch
 ) -> None:

@@ -12,7 +12,7 @@ from ai_workflow.doctor import run_doctor
 from ai_workflow.errors import AppError
 from ai_workflow.install import install_skills
 from ai_workflow.path_authorization import PathKind, RepositoryPathAuthorizer
-from ai_workflow.wecom.notify import notify_command
+from ai_workflow.wecom.notify import notify_command, reset_notify_dedup
 from ai_workflow.workflow.models import Phase, RunState
 from ai_workflow.workflow.review import ReviewDecision
 from ai_workflow.workflow.service import WorkflowService
@@ -260,6 +260,35 @@ def _auto_notify_review(
         }
 
 
+def _auto_notify_stale_review(repo_root: Path, run_id: str) -> dict[str, object]:
+    """Push a review-gate notification when the review command hits a stale gate.
+
+    A blocked run that is resumed keeps its state version advanced, so the old
+    review gate is stale and ``workflow review`` must create a new decision. The
+    team is already waiting on this run though — the pending human review must
+    not be silent while the harness re-generates the gate. Enhancement-only: a
+    failure writes a warning and never breaks the review error path."""
+    try:
+        return notify_command(
+            repo_root,
+            run_id=run_id,
+            gate="review",
+            phase=None,
+            action="run 已 resume，需重新生成 Review 决策",
+            summary="旧 Review Gate 已失效（stale），harness 将创建新的 workflow decision",
+        )
+    except AppError as error:
+        print(
+            f"wecom notify soft-failed ({error.code}): {error.message}",
+            file=sys.stderr,
+        )
+        return {
+            "sent": False,
+            "error": error.code,
+            "message": error.message,
+        }
+
+
 def _auto_notify_terminal(repo_root: Path, run_id: str) -> dict[str, object]:
     """Mechanically push the terminal-completion notification when a run
     becomes completed/aborted, so the team is asked to accept the terminal
@@ -463,7 +492,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.run_id, args.decision, args.proposal
                 )
             elif args.workflow_command == "review":
-                decision = service.review(args.run_id, _reruns(args.rerun))
+                try:
+                    decision = service.review(args.run_id, _reruns(args.rerun))
+                except AppError as error:
+                    if error.code == "stale_review_gate":
+                        # A resumed run's old gate is stale: the review command
+                        # must create a new decision, but the team is already
+                        # waiting on this run — notify them so the pending human
+                        # decision is never silent.
+                        _auto_notify_stale_review(args.repo, args.run_id)
+                    raise
                 data = decision.to_dict()
                 data["notify"] = _auto_notify_review(args.repo, decision)
             elif args.workflow_command == "review-accept":
@@ -501,9 +539,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 data = state.to_dict()
                 data["notify"] = _auto_notify_blocked(args.repo, state, args.reason)
             elif args.workflow_command == "resume":
-                data = service.resume(
+                state = service.resume(
                     args.run_id, _reruns(args.rerun)
                 ).to_dict()
+                # A resumed run starts a NEW human decision cycle. Forget the
+                # old dedup digests so the fresh review/blocked/terminal gates
+                # always re-notify the team instead of being swallowed as
+                # "already notified".
+                reset_notify_dedup(args.repo, args.run_id)
+                data = state
             else:
                 state = service.abort(args.run_id)
                 data = state.to_dict()
