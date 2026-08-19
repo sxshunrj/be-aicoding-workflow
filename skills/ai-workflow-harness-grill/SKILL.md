@@ -141,9 +141,9 @@ Verification 发现 implementation 缺陷时，Harness 在 Review Gate 中把 fi
 - 有 proposed rerun：展示需要重跑的节点与 reason。
 - 无 proposed rerun：展示产物摘要和 digest。
 - `human_review` 时等待用户明确选择。
-- 进入 `human_review` 时，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate review --phase <phase> --action "等待人工 Review 决定"` 通知团队；失败仅写 warning，不影响主流程。**`--phase` 必传**（去重键含 phase，缺省会导致跨阶段误去重）。
+- 进入 `human_review` 时，`workflow review` 命令会自动推送 `gate=review` 的 WeCom 通知（Helper 机械保证，不依赖 skill 调用；phase 由 Helper 自动填写）。失败仅写 warning，不影响主流程。
 - `accept` 时可继续 transition。
-- terminal completion 仍需要人类确认，此时调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate terminal --action "请验收 run 终态（completed/aborted）"` 通知团队；失败仅写 warning，不影响主流程。
+- terminal completion 仍需要人类确认，`workflow transition` / `workflow abort` 命令会自动推送 `gate=terminal` 的 WeCom 通知（Helper 机械保证，不依赖 skill 调用）。失败仅写 warning，不影响主流程。
 
 人类反馈必须映射到 node reason，不能由 Harness 直接实现或验证。
 

@@ -133,7 +133,7 @@ reason 必须可执行：包含要修正/重查的事实、证据来源和目标
 Review Gate 是 `finalize` 与 `transition` 之间的唯一关口。Harness 不直接读取配置决定是否等待人类，只消费 `workflow review` 的 JSON decision。
 
 - `human_review`：展示当前 phase、gate digest、产物摘要、需要重跑的节点和 reason，等待用户明确选择。
-- 进入 `human_review` 时，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate review --phase <phase> --action "等待人工 Review 决定"` 通知团队；失败仅写 warning，不影响主流程。**`--phase` 必传**（去重键含 phase，缺省会导致 spec/plan/verify 各阶段 review 内容相同而误去重）。详见 [wecom notify](references/wecom-notify.md)。
+- 进入 `human_review` 时，`workflow review` 命令会自动推送 `gate=review` 的 WeCom 通知（Helper 机械保证，不依赖 skill 调用；phase 由 Helper 自动填写）。失败仅写 warning，不影响主流程。详见 [wecom notify](references/wecom-notify.md)。
 - `accept`：说明 Helper 已按当前 policy 接受，然后继续 transition。
 - 人类选择修改时，重新推导 rerun proposal，再次 `workflow review`。
 - 人类明确接受时，调用 `workflow review-accept --expected-digest <digest>`；digest 不匹配按 [review gate](references/review-gate.md) 恢复。
@@ -170,12 +170,12 @@ Review Gate 是 `finalize` 与 `transition` 之间的唯一关口。Harness 不�
 
 completed/aborted 后不再 begin/stage/finalize/review/transition。执行 terminal cleanup：
 
-0. 向人类展示终态并等待验收时，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate terminal --action "请验收 run 终态（completed/aborted）"` 通知团队；失败仅写 warning，不影响主流程。详见 [wecom notify](references/wecom-notify.md)。
+0. run 进入 completed/aborted 时，`workflow transition` / `workflow abort` 命令会自动推送 `gate=terminal` 的 WeCom 通知（Helper 机械保证，不依赖 skill 调用）。失败仅写 warning，不影响主流程。详见 [wecom notify](references/wecom-notify.md)。
 1. `workflow summary` 是纯读。
 2. 执行 terminal reflection。
 3. knowledge governance 必须有人类决定。
 4. Git handoff 必须有人类决定；不自动 commit、branch、push 或 MR。
-5. knowledge governance / Git handoff 等待人类决定时，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate governance|git_handoff --action "等待人工决定"` 通知团队；失败仅写 warning，不影响主流程。详见 [wecom notify](references/wecom-notify.md)。
+5. knowledge governance / Git handoff 的人工通知由 `$ai-knowledge-governance` / `$ai-git-handoff` 各自触发，无需在此重复调用。
 
 ### New conversation / stale
 
