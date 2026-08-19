@@ -57,8 +57,20 @@ def render_message(
 ) -> str:
     label = _GATE_LABELS.get(gate, gate)
     type_line = f"{label}（{phase} 阶段）" if phase else label
-    creator = operators[0] if operators else "未知"
-    operator_line = " ".join(f"@{op}" for op in operators) or "@无"
+    creator_raw = operators[0] if operators else "未知"
+    creator = "@all" if creator_raw == "@all" else creator_raw
+    # WeCom group-robot markdown force-notifies members with <@userid> syntax;
+    # plain "@name" is inert text. "@all" is the special group-wide ping and
+    # must render as <@all>, not <@@all>.
+    mentions = []
+    for op in operators:
+        if op == "@all":
+            mentions.append("<@all>")
+        elif op.startswith("<@"):
+            mentions.append(op)
+        else:
+            mentions.append(f"<@{op}>")
+    operator_line = " ".join(mentions) if mentions else "@无"
     summary_block = f"\n{summary}" if summary else ""
     return (
         "**🔔 工作流需要人工处理**\n\n"
@@ -81,6 +93,32 @@ def _content_digest(*, gate: str, phase: str | None, content: str) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _resolve_operators(
+    config: RepositoryConfig, operators: list[str]
+) -> list[str]:
+    """Ensure the message force-notifies at least one human.
+
+    WeCom group-robot webhooks only force-notify members whose userid appears
+    as ``<@userid>`` in the markdown. If a run recorded no operators (init had
+    no --operators and no WECOM_CREATOR_USERID), fall back to the configured
+    creator userid env, then to ``@all`` so the whole team is pinged — a message
+    with "@无" arrives in the group but never surfaces, which users experience
+    as "no notification at all".
+    """
+    resolved = [op for op in operators if isinstance(op, str) and op.strip()]
+    if resolved:
+        return resolved
+    if config.wecom_creator_userid_env:
+        value = os.environ.get(config.wecom_creator_userid_env, "").strip()
+        if not value:
+            value = _env_from_shell_files(
+                config.wecom_creator_userid_env, _shell_env_files()
+            )
+        if value:
+            return [value]
+    return ["@all"]
 
 
 def _load_log(path: Path) -> dict[str, object]:
@@ -183,6 +221,7 @@ def notify_command(
         isinstance(item, str) for item in operators
     ):
         raise AppError("invalid_state", "operators artifact is invalid")
+    operators = _resolve_operators(config, operators)
 
     content = render_message(
         gate=gate,

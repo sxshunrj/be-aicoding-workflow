@@ -150,7 +150,19 @@ ai-workflow workflow init --repo "$PWD" \
 
 ### 自动触发（推荐）
 
-`$ai-workflow-harness`、`$ai-git-handoff`、`$ai-knowledge-governance` 三个 skill 已内置：到达 Review Gate / Terminal Completion / governance / git handoff 节点时自动调用通知；**Blocked 由 `workflow block` 命令在 Helper 层机械自动推送**（不依赖 skill 调用）。正常跑工作流即可，无需手动操作。
+**5 个人工节点全部由 Helper 机械推送，不依赖任何 skill 或 LLM 遵守模板**：
+
+| 节点 | 触发命令 | 通知 |
+| --- | --- | --- |
+| Review Gate | `workflow review` 返回 `human_review` | 自动推送 |
+| Blocked | `workflow block`（含 checkpoint 失败内部 auto-block） | 自动推送 |
+| Terminal Completion | `workflow transition`→completed / `workflow abort`→aborted | 自动推送（同一条消息同时请团队验收终态并决定 Git 收尾方式，避免企业微信限频丢消息） |
+| Knowledge Governance | `workflow reflect-submit` 产出 candidate | 自动推送 |
+| Git Handoff | 并入 Terminal Completion 消息 | 自动推送 |
+
+另外，`workflow status`（恢复会话的入口）检测到 pending 且未通知过的 `human_review` gate 时会补发一条 review 通知——恢复流程不再静默卡住。
+
+正常跑工作流即可，无需手动操作。`$ai-git-handoff` / `$ai-knowledge-governance` skill 模板中的通知调用仍保留（须带 `--repo <repo> --run-id <run-id>`），但已由上面的机械推送兜底。
 
 ### 手动调用
 
@@ -196,7 +208,7 @@ ai-workflow wecom notify --repo "$PWD" --run-id RUN-xxx \
 **🔔 工作流需要人工处理**
 
 👤 开启者：@sunxianshun
-🔑 授权操作者：@sunxianshun @wangxiaofei
+🔑 授权操作者：<@1688852707310042> <@sunxianshun>
 📌 类型：Review Gate（plan 阶段）
 🆔 Run ID：`RUN-xxx`
 🏷 摘要：实现订单导出模块
@@ -207,7 +219,7 @@ plan.solution 已完成，需审核
 其他成员仅收到通知，请勿直接操作本工作流。
 ```
 
-> 注：当前「开启者 / 授权操作者」以纯文本 `@名字` 展示，**不会在企微里真正 @ 到人**。若需真 @ 提醒（`<@userid>` 语法），需扩展 `render_message`。
+> **@ 强提醒**：通知中的「授权操作者」以企业微信 `<@userid>` 提及语法渲染（真实 userid 或 `@all`），会真正 @ 到成员并触发强提醒。若 run 未记录操作者（`--operators` 与 `WECOM_CREATOR_USERID` 均缺失），自动回退为 `<@all>` @ 全群，保证一定有人被提醒。
 
 ## 七、行为细节
 

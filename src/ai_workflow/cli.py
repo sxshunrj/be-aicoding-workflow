@@ -292,16 +292,19 @@ def _auto_notify_stale_review(repo_root: Path, run_id: str) -> dict[str, object]
 def _auto_notify_terminal(repo_root: Path, run_id: str) -> dict[str, object]:
     """Mechanically push the terminal-completion notification when a run
     becomes completed/aborted, so the team is asked to accept the terminal
-    state even if the harness LLM skips the skill template call. Returns the
-    notify outcome for the command's response."""
+    state AND decide the git handoff in one message. Merging both decision
+    points into a single webhook send avoids the WeCom group-robot rate limit
+    (~1 msg / 20s) that would silently drop a second immediate message.
+    Enhancement-only: a failure writes a warning and never breaks the
+    transition."""
     try:
         return notify_command(
             repo_root,
             run_id=run_id,
             gate="terminal",
             phase=None,
-            action="请验收 run 终态（completed/aborted）",
-            summary="",
+            action="请验收 run 终态（completed/aborted），并决定 Git 收尾方式（skip / commit / MR）",
+            summary="run 已到终态，请验收并选择 Git 收尾方式",
         )
     except AppError as error:
         print(
@@ -313,6 +316,66 @@ def _auto_notify_terminal(repo_root: Path, run_id: str) -> dict[str, object]:
             "error": error.code,
             "message": error.message,
         }
+
+
+def _auto_notify_governance(
+    repo_root: Path, run_id: str, reason: str
+) -> dict[str, object]:
+    """Mechanically push the knowledge-governance notification when a run's
+    reflection produces a candidate that needs human promote/reject/keep, so the
+    team is asked to govern the knowledge even if the harness LLM never invokes
+    the ``$ai-knowledge-governance`` skill template (or invokes it without a
+    run-id). Enhancement-only: a failure writes a warning and never breaks the
+    reflection submit."""
+    try:
+        return notify_command(
+            repo_root,
+            run_id=run_id,
+            gate="governance",
+            phase=None,
+            action="请选择 promote / reject / 保持",
+            summary=reason,
+        )
+    except AppError as error:
+        print(
+            f"wecom notify soft-failed ({error.code}): {error.message}",
+            file=sys.stderr,
+        )
+        return {
+            "sent": False,
+            "error": error.code,
+            "message": error.message,
+        }
+
+
+def _notify_pending_review(
+    repo_root: Path, state: RunState
+) -> dict[str, object] | None:
+    """Re-announce a pending human review when recovering an existing run.
+
+    The recovery flow (recovery.md) re-displays a persisted human_review gate
+    without re-running ``workflow review``, so the mechanical notify would never
+    fire again on a resumed/short-lived session. Calling this from ``status``
+    re-pushes the review notification for a gate still waiting on a human. It is
+    idempotent: the dedup log suppresses a repeat of the same gate digest, so
+    already-notified gates stay quiet and only genuinely-unannounced ones ping.
+    Returns None when there is no pending human review to announce."""
+    gate = state.artifacts.get("review_gate")
+    if not isinstance(gate, dict):
+        return None
+    accepted_version = gate.get("accepted_version")
+    if gate.get("decision") != "human_review" or accepted_version is not None:
+        return None
+    try:
+        decision = ReviewDecision.from_dict(
+            {key: gate[key] for key in (
+                "decision", "run_id", "phase", "state_version",
+                "proposed_reruns", "effective_reruns", "digest",
+            )}
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    return _auto_notify_review(repo_root, decision)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -457,7 +520,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     operators=operators,
                 ).to_dict()
             elif args.workflow_command == "status":
-                data = service.status(args.run_id).to_dict()
+                state = service.status(args.run_id)
+                data = state.to_dict()
+                # A pending human_review gate that was never announced must be
+                # announced on recovery — status is the recovery entry point.
+                pending = _notify_pending_review(args.repo, state)
+                if pending is not None:
+                    data["notify_pending_review"] = pending
             elif args.workflow_command == "begin":
                 data = service.begin(
                     args.run_id, args.phase, args.skill_dir
@@ -488,9 +557,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "evidence_digest": packet.evidence_digest,
                 }
             elif args.workflow_command == "reflect-submit":
-                data = service.submit_reflection(
+                record = service.submit_reflection(
                     args.run_id, args.decision, args.proposal
                 )
+                data = record
+                # A candidate reflection needs a human governance decision
+                # (promote/reject/keep). Push it mechanically — the team must
+                # learn about the candidate even if the LLM skips the
+                # $ai-knowledge-governance skill's notify call.
+                if record.get("outcome") == "candidate":
+                    data = {**record, "notify": _auto_notify_governance(
+                        args.repo,
+                        args.run_id,
+                        "知识候选已产生，需人工选择 promote / reject / 保持",
+                    )}
             elif args.workflow_command == "review":
                 try:
                     decision = service.review(args.run_id, _reruns(args.rerun))

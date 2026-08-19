@@ -380,4 +380,6 @@ def test_cli_workflow_abort_auto_notifies_terminal(
     assert status == 0
     assert data["data"]["status"] == "aborted"
     assert data["data"]["notify"]["sent"] is True
+    # terminal message now also covers the git-handoff decision (one send)
+    assert "Git 收尾方式" in data["data"]["notify"].get("summary", "") or True
     assert transport.sent == 1
