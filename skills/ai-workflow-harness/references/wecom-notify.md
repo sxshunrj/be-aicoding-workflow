@@ -8,7 +8,7 @@
 ai-workflow wecom notify \
   --repo <repo> \
   --run-id <run-id> \
-  --gate <review|blocked|governance|git_handoff> \
+  --gate <review|blocked|governance|git_handoff|terminal> \
   --action "<人类需要做什么>" \
   [--phase <phase>] \
   [--summary "<摘要>"] \
@@ -24,6 +24,7 @@ ai-workflow wecom notify \
 
 - Review Gate：`workflow review` 返回 `human_review` 后。**必须带 `--phase <当前阶段>`**。
 - Blocked：进入 `run_blocked` 后。**必须带 `--phase <当前阶段>`**。
+- Terminal Completion：run 进入 `completed`/`aborted` 后、等待终态验收时。
 - Knowledge Governance：需要人工 promote/reject/保持时。
 - Git Handoff：需要人工 skip/commit/MR 时。
 

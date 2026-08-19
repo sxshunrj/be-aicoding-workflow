@@ -70,6 +70,35 @@ def test_cli_wecom_notify_not_enabled(tmp_path: Path, capsys) -> None:
     assert json.loads(out)["data"]["reason"] == "not_enabled"
 
 
+def test_cli_wecom_notify_terminal_gate_dry_run(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    monkeypatch.setenv("WECOM_WEBHOOK_URL", _WEBHOOK)
+    _write_config(tmp_path)
+    state = WorkflowService().init(
+        tmp_path, source_revision="abc123", requirement="x", operators=("sunxianshun",)
+    )
+    status, out = main(
+        [
+            "wecom",
+            "notify",
+            "--repo",
+            str(tmp_path),
+            "--run-id",
+            state.run_id,
+            "--gate",
+            "terminal",
+            "--action",
+            "请验收 run 终态",
+            "--dry-run",
+        ]
+    ), capsys.readouterr().out
+    assert status == 0
+    data = json.loads(out)["data"]
+    assert data["dry_run"] is True
+    assert "Terminal Completion" in data["payload"]
+
+
 def test_cli_wecom_notify_network_failure_soft_fails(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:

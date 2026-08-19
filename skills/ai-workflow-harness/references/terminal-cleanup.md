@@ -4,7 +4,7 @@
 
 ## 1. terminal human completion
 
-先运行 `workflow status` 确认 terminal。向人类重新展示最终 status、各 phase 结果、未解决 findings 和 aborted 原因（如有），等待明确验收；沉默不是接受。
+先运行 `workflow status` 确认 terminal。向人类重新展示最终 status、各 phase 结果、未解决 findings 和 aborted 原因（如有），等待明确验收；沉默不是接受。展示前调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate terminal --action "请验收 run 终态（completed/aborted）"` 通知团队；失败仅写 warning，不影响主流程。
 
 ## 2. terminal reflection
 

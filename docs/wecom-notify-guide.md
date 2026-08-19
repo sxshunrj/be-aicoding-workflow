@@ -2,7 +2,7 @@
 
 本指南说明如何为 `be-aicoding-workflow` 配置并启用**企业微信（WeCom）群机器人通知**。
 
-工作流中的 Review Gate、Blocked、Knowledge Governance、Git Handoff 是需要人工干预的节点。启用 WeCom 通知后，团队通过企业微信群机器人收到提醒，并标注「开启者」与「授权操作者」。
+工作流中的 Review Gate、Blocked、Terminal Completion（终态验收）、Knowledge Governance、Git Handoff 是需要人工干预的节点。启用 WeCom 通知后，团队通过企业微信群机器人收到提醒，并标注「开启者」与「授权操作者」。
 
 > 状态：**Plan 1（通知推送）已实现，且只支持群机器人 Webhook 通道**。"在企业微信中回复即处理"（回调服务）属于 Plan 2，尚未实现，见文末「当前限制」。
 
@@ -58,7 +58,7 @@ wecom:
   enabled: true
   webhook_url_env: WECOM_WEBHOOK_URL
   creator_userid_env: WECOM_CREATOR_USERID
-  gates: [review, blocked, governance, git_handoff]
+  gates: [review, blocked, governance, git_handoff, terminal]
 ```
 
 ### 4. 设置环境变量
@@ -111,7 +111,7 @@ wecom:
   enabled: true
   webhook_url_env: WECOM_WEBHOOK_URL    # 环境变量名（不是值！）
   creator_userid_env: WECOM_CREATOR_USERID
-  gates: [review, blocked, governance, git_handoff]   # 可只保留部分节点
+  gates: [review, blocked, governance, git_handoff, terminal]   # 可只保留部分节点
 ```
 
 字段说明：
@@ -121,7 +121,7 @@ wecom:
 | `enabled` | 是 | 是否启用通知（默认 false） |
 | `webhook_url_env` | 是 | 群机器人 Webhook URL 的**环境变量名** |
 | `creator_userid_env` | 否 | 创建者 userid 的环境变量名（默认 `WECOM_CREATOR_USERID`） |
-| `gates` | 否 | 启用通知的节点，默认全部四个 |
+| `gates` | 否 | 启用通知的节点，默认全部五个 |
 
 ## 三、设置环境变量
 
@@ -150,7 +150,7 @@ ai-workflow workflow init --repo "$PWD" \
 
 ### 自动触发（推荐）
 
-`$ai-workflow-harness`、`$ai-git-handoff`、`$ai-knowledge-governance` 三个 skill 已内置：到达 Review Gate / Blocked / terminal 的 governance / git handoff 节点时自动调用通知。正常跑工作流即可，无需手动操作。
+`$ai-workflow-harness`、`$ai-git-handoff`、`$ai-knowledge-governance` 三个 skill 已内置：到达 Review Gate / Blocked / Terminal Completion / governance / git handoff 节点时自动调用通知。正常跑工作流即可，无需手动操作。
 
 ### 手动调用
 
@@ -167,6 +167,11 @@ ai-workflow wecom notify --repo "$PWD" --run-id RUN-xxx \
   --action "请选择 resume 或 abort" \
   --summary "环境/权限失败"
 
+# Terminal Completion（终态验收）
+ai-workflow wecom notify --repo "$PWD" --run-id RUN-xxx \
+  --gate terminal \
+  --action "请验收 run 终态（completed/aborted）"
+
 # 不真发，只看消息内容（调试）
 ai-workflow wecom notify --repo "$PWD" --run-id RUN-xxx \
   --gate review --phase plan --action "x" --dry-run
@@ -178,7 +183,7 @@ ai-workflow wecom notify --repo "$PWD" --run-id RUN-xxx \
 | --- | --- | --- |
 | `--repo` | 是 | 仓库根目录 |
 | `--run-id` | 是 | 目标 run |
-| `--gate` | 是 | `review` / `blocked` / `governance` / `git_handoff` |
+| `--gate` | 是 | `review` / `blocked` / `governance` / `git_handoff` / `terminal` |
 | `--action` | 是 | 人类需要做什么（写入消息） |
 | `--phase` | 否 | 阶段（review/blocked 建议提供） |
 | `--summary` | 否 | 附加摘要 |

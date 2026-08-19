@@ -16,6 +16,7 @@ _GATE_LABELS = {
     "blocked": "Blocked",
     "governance": "Knowledge Governance",
     "git_handoff": "Git Handoff",
+    "terminal": "Terminal Completion",
 }
 
 _NOTIFY_DIRNAME = "notifications"

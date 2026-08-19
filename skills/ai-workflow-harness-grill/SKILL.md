@@ -141,14 +141,15 @@ Verification 发现 implementation 缺陷时，Harness 在 Review Gate 中把 fi
 - 有 proposed rerun：展示需要重跑的节点与 reason。
 - 无 proposed rerun：展示产物摘要和 digest。
 - `human_review` 时等待用户明确选择。
+- 进入 `human_review` 时，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate review --phase <phase> --action "等待人工 Review 决定"` 通知团队；失败仅写 warning，不影响主流程。**`--phase` 必传**（去重键含 phase，缺省会导致跨阶段误去重）。
 - `accept` 时可继续 transition。
-- terminal completion 仍需要人类确认。
+- terminal completion 仍需要人类确认，此时调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate terminal --action "请验收 run 终态（completed/aborted）"` 通知团队；失败仅写 warning，不影响主流程。
 
 人类反馈必须映射到 node reason，不能由 Harness 直接实现或验证。
 
 ## Blocked / terminal
 
-Blocked 菜单只允许继续或终止。blocked 不自动恢复，不受 auto_accept 影响。
+Blocked 菜单只允许继续或终止。blocked 不自动恢复，不受 auto_accept 影响。进入 blocked 时，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate blocked --phase <phase> --action "请选择 resume / abort"` 通知团队；失败仅写 warning，不影响主流程。**`--phase` 必传**（去重键含 phase，缺省会与同 gate 的先前通知误去重）。
 
 Terminal 完成后执行：
 
@@ -157,7 +158,7 @@ Terminal 完成后执行：
 3. knowledge governance；
 4. terminal Git handoff。
 
-terminal Git handoff 不自动 commit、branch、push 或 MR。
+terminal Git handoff 不自动 commit、branch、push 或 MR。knowledge governance / Git handoff 的人工通知由 `$ai-knowledge-governance` / `$ai-git-handoff` 各自触发，无需重复调用。
 
 ## References
 

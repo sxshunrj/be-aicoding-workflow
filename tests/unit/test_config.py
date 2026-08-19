@@ -175,7 +175,7 @@ def test_load_wecom_block_and_defaults(tmp_path: Path) -> None:
     assert config.wecom_enabled is True
     assert config.wecom_webhook_url_env == "WECOM_WEBHOOK_URL"
     assert config.wecom_creator_userid_env == "WECOM_CREATOR_USERID"
-    assert config.wecom_gates == ("review", "blocked", "governance", "git_handoff")
+    assert config.wecom_gates == ("review", "blocked", "governance", "git_handoff", "terminal")
 
 
 def test_load_wecom_disabled_by_default(tmp_path: Path) -> None:
@@ -185,7 +185,7 @@ def test_load_wecom_disabled_by_default(tmp_path: Path) -> None:
     config = RepositoryConfig.load(tmp_path)
     assert config.wecom_enabled is False
     assert config.wecom_webhook_url_env is None
-    assert config.wecom_gates == ("review", "blocked", "governance", "git_handoff")
+    assert config.wecom_gates == ("review", "blocked", "governance", "git_handoff", "terminal")
 
 
 def test_load_wecom_gates_restricts_choices(tmp_path: Path) -> None:

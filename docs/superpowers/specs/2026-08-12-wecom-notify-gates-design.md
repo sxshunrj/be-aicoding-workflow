@@ -22,7 +22,7 @@
 | 通道（Plan 2，未实现） | 企业微信自建应用（回调回复即处理） | 回复需回调，需要应用 + 回调 URL |
 | 回调域名（Plan 2） | 免费穿透随机域名（ZeroNews / Cloudflare Tunnel / ngrok） | 无域名、无备案；穿透借公网 HTTPS 域名 |
 | 回调宿主（Plan 2） | 本地回调（开跑者机器，run state 所在） | 回调需执行本地 run 操作；无共享状态 |
-| 回复处理（Plan 2） | 全部四类：review / blocked / governance / git_handoff | 所有需要人工处理的节点 |
+| 回复处理（Plan 2） | 全部五类：review / blocked / governance / git_handoff / terminal | 所有需要人工处理的节点 |
 | 阿里云服务器 | **不需要** | run state 在本地，服务器够不到；仅未来离线中继可考虑 |
 | 授权模型 | 指定操作者白名单（创建者默认） | 通知标注 + 回调鉴权 |
 | secret | 环境变量，不落盘 | 安全 |
@@ -49,7 +49,7 @@
      enabled: true
      webhook_url_env: WECOM_WEBHOOK_URL   # 群机器人 URL 的环境变量名
      creator_userid_env: WECOM_CREATOR_USERID
-     gates: [review, blocked, governance, git_handoff]
+     gates: [review, blocked, governance, git_handoff, terminal]
    ```
 
 3. **Helper 新增一条命令**（确定性、幂等、软失败、dry-run）
@@ -139,6 +139,7 @@ plan.solution 已完成，需要审核
 | blocked | `resume` / `abort` | `resume` / `abort` |
 | governance | `promote` / `reject` / `保持` | wiki lifecycle |
 | git_handoff | `skip` / `commit` / `MR`（commit/MR 需**二次确认**） | git-handoff 由回调在开跑者本地执行；commit/MR 不可逆，先发确认卡、授权者再回一条确认才执行 |
+| terminal | `接受` / `拒绝重跑` | 终态验收；aborted 时可返回指定 phase 重跑 |
 
 ## 错误处理与边界
 
