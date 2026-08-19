@@ -149,7 +149,7 @@ Verification 发现 implementation 缺陷时，Harness 在 Review Gate 中把 fi
 
 ## Blocked / terminal
 
-Blocked 菜单只允许继续或终止。blocked 不自动恢复，不受 auto_accept 影响。进入 blocked 时，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate blocked --phase <phase> --action "请选择 resume / abort"` 通知团队；失败仅写 warning，不影响主流程。**`--phase` 必传**（去重键含 phase，缺省会与同 gate 的先前通知误去重）。
+Blocked 菜单只允许继续或终止。blocked 不自动恢复，不受 auto_accept 影响。`workflow block` 命令会自动推送 `gate=blocked` 的 WeCom 通知（Helper 机械保证，不依赖 skill 调用；phase 由 Helper 自动填写）；失败仅写 warning，不影响主流程。
 
 Terminal 完成后执行：
 

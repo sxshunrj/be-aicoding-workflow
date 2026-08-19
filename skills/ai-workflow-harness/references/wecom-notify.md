@@ -23,7 +23,7 @@ ai-workflow wecom notify \
 ## 何时调用
 
 - Review Gate：`workflow review` 返回 `human_review` 后。**必须带 `--phase <当前阶段>`**。
-- Blocked：进入 `run_blocked` 后。**必须带 `--phase <当前阶段>`**。
+- Blocked：`workflow block` **自动推送**（Helper 机械保证，phase 由 Helper 从 run 状态自动填写），无需 skill 调用。
 - Terminal Completion：run 进入 `completed`/`aborted` 后、等待终态验收时。
 - Knowledge Governance：需要人工 promote/reject/保持时。
 - Git Handoff：需要人工 skip/commit/MR 时。
