@@ -225,7 +225,8 @@ def test_cli_workflow_block_auto_notifies_blocked_gate(
     state = WorkflowService().init(
         tmp_path, source_revision="abc123", requirement="x", operators=("sunxianshun",)
     )
-    status = main(
+    status, data = _call(
+        capsys,
         [
             "workflow",
             "block",
@@ -235,9 +236,10 @@ def test_cli_workflow_block_auto_notifies_blocked_gate(
             state.run_id,
             "--reason",
             "checkpoint_scope_ambiguous",
-        ]
+        ],
     )
     assert status == 0
+    assert data["data"]["notify"]["sent"] is True
     assert transport.sent == 1
 
 
@@ -268,6 +270,8 @@ def test_cli_workflow_block_auto_notify_soft_fails_without_breaking(
     envelope = json.loads(captured.out)
     assert envelope["ok"] is True
     assert envelope["data"]["status"] == "blocked"
+    assert envelope["data"]["notify"]["sent"] is False
+    assert envelope["data"]["notify"]["error"] == "wecom_not_configured"
     assert "wecom notify soft-failed" in captured.err
 
 
@@ -350,6 +354,7 @@ def test_cli_workflow_review_human_review_auto_notifies(
     )
     assert status == 0
     assert review["data"]["decision"] == "human_review"
+    assert review["data"]["notify"]["sent"] is True
     assert transport.sent == 1
 
 
@@ -374,4 +379,5 @@ def test_cli_workflow_abort_auto_notifies_terminal(
     )
     assert status == 0
     assert data["data"]["status"] == "aborted"
+    assert data["data"]["notify"]["sent"] is True
     assert transport.sent == 1

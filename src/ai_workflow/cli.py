@@ -189,7 +189,9 @@ def _reruns(values: list[str]) -> dict[str, str]:
     return reruns
 
 
-def _auto_notify_blocked(repo_root: Path, state: RunState, reason: str) -> None:
+def _auto_notify_blocked(
+    repo_root: Path, state: RunState, reason: str
+) -> dict[str, object]:
     """Mechanically push the blocked-gate notification.
 
     A blocked run needs a human resume/abort decision, so ``workflow block``
@@ -197,9 +199,12 @@ def _auto_notify_blocked(repo_root: Path, state: RunState, reason: str) -> None:
     skill template. Notification is enhancement-only: any failure writes a
     warning and never breaks the block. Phase comes from the run's current
     phase so the per-phase dedup key stays distinct.
+
+    Returns the notify outcome so the command's response exposes whether the
+    message was actually sent — a soft-failed notify is never silent.
     """
     try:
-        notify_command(
+        return notify_command(
             repo_root,
             run_id=state.run_id,
             gate="blocked",
@@ -212,14 +217,22 @@ def _auto_notify_blocked(repo_root: Path, state: RunState, reason: str) -> None:
             f"wecom notify soft-failed ({error.code}): {error.message}",
             file=sys.stderr,
         )
+        return {
+            "sent": False,
+            "error": error.code,
+            "message": error.message,
+        }
 
 
-def _auto_notify_review(repo_root: Path, decision: ReviewDecision) -> None:
+def _auto_notify_review(
+    repo_root: Path, decision: ReviewDecision
+) -> dict[str, object]:
     """Mechanically push the review-gate notification when the Helper returns
     ``human_review``, so a review the team must act on is always announced even
-    if the harness LLM skips the skill template call."""
+    if the harness LLM skips the skill template call. Returns the notify
+    outcome for the command's response."""
     if decision.decision != "human_review":
-        return
+        return {"sent": False, "reason": "auto_accepted"}
     if decision.proposed_reruns:
         summary = "重跑：" + "；".join(
             f"{node}={reason}" for node, reason in decision.proposed_reruns
@@ -227,7 +240,7 @@ def _auto_notify_review(repo_root: Path, decision: ReviewDecision) -> None:
     else:
         summary = "无重跑节点，请验收产物"
     try:
-        notify_command(
+        return notify_command(
             repo_root,
             run_id=decision.run_id,
             gate="review",
@@ -240,14 +253,20 @@ def _auto_notify_review(repo_root: Path, decision: ReviewDecision) -> None:
             f"wecom notify soft-failed ({error.code}): {error.message}",
             file=sys.stderr,
         )
+        return {
+            "sent": False,
+            "error": error.code,
+            "message": error.message,
+        }
 
 
-def _auto_notify_terminal(repo_root: Path, run_id: str) -> None:
+def _auto_notify_terminal(repo_root: Path, run_id: str) -> dict[str, object]:
     """Mechanically push the terminal-completion notification when a run
     becomes completed/aborted, so the team is asked to accept the terminal
-    state even if the harness LLM skips the skill template call."""
+    state even if the harness LLM skips the skill template call. Returns the
+    notify outcome for the command's response."""
     try:
-        notify_command(
+        return notify_command(
             repo_root,
             run_id=run_id,
             gate="terminal",
@@ -260,6 +279,11 @@ def _auto_notify_terminal(repo_root: Path, run_id: str) -> None:
             f"wecom notify soft-failed ({error.code}): {error.message}",
             file=sys.stderr,
         )
+        return {
+            "sent": False,
+            "error": error.code,
+            "message": error.message,
+        }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -440,29 +464,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             elif args.workflow_command == "review":
                 decision = service.review(args.run_id, _reruns(args.rerun))
-                _auto_notify_review(args.repo, decision)
                 data = decision.to_dict()
+                data["notify"] = _auto_notify_review(args.repo, decision)
             elif args.workflow_command == "review-accept":
                 data = service.record_review_acceptance(
                     args.run_id, args.expected_digest
                 ).to_dict()
             elif args.workflow_command == "transition":
                 state = service.transition(args.run_id)
-                if state.status == "completed":
-                    _auto_notify_terminal(args.repo, args.run_id)
                 data = state.to_dict()
+                data["notify"] = (
+                    _auto_notify_terminal(args.repo, args.run_id)
+                    if state.status == "completed"
+                    else {"sent": False, "reason": "not_terminal"}
+                )
             elif args.workflow_command == "block":
                 state = service.block(args.run_id, args.reason)
-                _auto_notify_blocked(args.repo, state, args.reason)
                 data = state.to_dict()
+                data["notify"] = _auto_notify_blocked(args.repo, state, args.reason)
             elif args.workflow_command == "resume":
                 data = service.resume(
                     args.run_id, _reruns(args.rerun)
                 ).to_dict()
             else:
                 state = service.abort(args.run_id)
-                _auto_notify_terminal(args.repo, args.run_id)
                 data = state.to_dict()
+                data["notify"] = _auto_notify_terminal(args.repo, args.run_id)
         envelope: dict[str, object] = {"ok": True, "data": data}
         status = 0
     except AppError as error:
