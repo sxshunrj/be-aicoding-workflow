@@ -24,8 +24,14 @@ ai-workflow wecom notify \
 
 - Review Gate：`workflow review` 返回 `human_review` 时**自动推送**（Helper 机械保证，phase 由 Helper 自动填写），无需 skill 调用。
 - Blocked：`workflow block` **自动推送**（Helper 机械保证，phase 由 Helper 自动填写），无需 skill 调用。
-- Terminal Completion：`workflow transition`（→completed）/ `workflow abort`（→aborted）**自动推送**（Helper 机械保证），无需 skill 调用。
-- Knowledge Governance / Git Handoff：由 `$ai-knowledge-governance` / `$ai-git-handoff` skill 各自触发。
+- Terminal Completion + Git Handoff：`workflow transition`（→completed）/ `workflow abort`（→aborted）时**自动推送一条消息**，同时请团队验收终态并决定 Git 收尾方式（合并单条发送，避免企业微信群机器人 ~20s/条 限频导致第二条被丢弃）。
+- Knowledge Governance：`workflow reflect-submit` 产出 candidate 时**自动推送**（Helper 机械保证），无需 skill 调用。
+- 恢复补发：`workflow status` 检测到 pending 且未通知过的 `human_review` gate 时补发一条 review 通知（幂等，dedup 抑制已通知过的）。恢复会话不再静默卡住。
+- `$ai-git-handoff` / `$ai-knowledge-governance` skill 模板中的 notify 调用仍需带 `--repo <repo> --run-id <run-id>`（skill 驱动的增强通知，已由 Helper 机械兜底）。
+
+## @ 强提醒
+
+所有通知的「授权操作者」以企业微信 `<@userid>` 提及语法渲染（真实 userid 或 `@all`），会真正 @ 到成员并触发强提醒。若 run 未记录操作者（`--operators` 与 `WECOM_CREATOR_USERID` 均缺失），自动回退 `<@all>` @ 全群，保证一定有人被提醒。企业微信群机器人 markdown 里纯文本 `@名字` 不触发强提醒，勿用。
 
 ## 输出
 

@@ -337,6 +337,227 @@ def test_stale_gate_after_checkpoint_autoblock_resume_notifies(
     assert len(stale_notes) == 1
 
 
+def test_reflect_submit_candidate_mechanically_notifies_governance(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """A candidate reflection outcome requires a human governance decision
+    (promote/reject/keep). The reflect-submit command must push the governance
+    notification mechanically — the team learns about the candidate even if the
+    harness LLM never invokes the $ai-knowledge-governance skill's notify call."""
+    project = project_template.copy_to(tmp_path / "gov-notify-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    for phase in ("spec", "plan", "implement", "verify"):
+        _run_phase(app, agent, run["run_id"], phase)
+    assert app.workflow_status(run["run_id"])["status"] == "completed"
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    # build the reflection decision + proposal (candidate outcome)
+    from ai_workflow.workflow.service import WorkflowService
+    packet = WorkflowService(project).reflection_packet(run["run_id"])
+    decision = project / "knowledge-reflection-decision.json"
+    proposal = project / "knowledge-proposal.json"
+    decision.write_text(json.dumps({
+        "schema_version": 1,
+        "run_id": run["run_id"],
+        "evidence_digest": packet.evidence_digest,
+        "outcome": "candidate",
+        "reason": "reusable pattern",
+    }), encoding="utf-8")
+    proposal.write_text(json.dumps({
+        "schema_version": 1,
+        "title": "Reusable pattern",
+        "type": "rule",
+        "summary": "Keep the retry branch.",
+        "body": "# Reusable pattern\n\nKeep the retry branch.",
+        "scope": {"repos": ["demo"], "services": ["example"], "paths": [],
+                  "languages": [], "phases": ["implement"]},
+        "tags": ["retry"],
+        "sources": [{"kind": "run", "ref": run["run_id"]}],
+        "reuse_reason": "reusable",
+        "confidence": "high",
+        "possible_conflicts": [],
+        "suggested_owners": ["example-team"],
+        "review_after": "2099-01-01",
+        "raw_logs": "bounded log",
+    }), encoding="utf-8")
+
+    with redirect_stdout(StringIO()) as out:
+        status = main(["workflow", "reflect-submit", "--repo", str(project),
+                       "--run-id", run["run_id"], "--decision", str(decision),
+                       "--proposal", str(proposal)])
+    payload = json.loads(out.getvalue())
+    assert status == 0
+    assert payload["data"]["outcome"] == "candidate"
+    assert payload["data"]["notify"]["sent"] is True
+    gov_sends = [p for p in transport.sent
+                 if "Knowledge Governance" in p["markdown"]["content"]]
+    assert len(gov_sends) == 1
+
+
+def test_terminal_transition_mechanically_notifies_git_handoff(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """A completed run always needs the git-handoff decision (skip/commit/MR).
+    The transition command must push it mechanically, so the team is told even
+    if the harness LLM never invokes $ai-git-handoff's notify call."""
+    project = project_template.copy_to(tmp_path / "git-notify-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    for phase in ("spec", "plan", "implement", "verify"):
+        _run_phase(app, agent, run["run_id"], phase)
+    assert app.workflow_status(run["run_id"])["status"] == "completed"
+
+    # the terminal message covers both acceptance and git-handoff in one send
+    terminal = [p for p in transport.sent
+                if "Terminal Completion" in p["markdown"]["content"]]
+    assert len(terminal) == 1
+    assert "Git 收尾方式" in terminal[0]["markdown"]["content"]
+    assert "skip / commit / MR" in terminal[0]["markdown"]["content"]
+
+
+def test_abort_mechanically_notifies_git_handoff(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """An aborted run also needs the git-handoff decision; the terminal
+    notification covers it in a single send (avoids the WeCom rate limit)."""
+    project = project_template.copy_to(tmp_path / "git-abort-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    run = app.workflow_init(profile="full")
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    with redirect_stdout(StringIO()) as out:
+        status = main(["workflow", "abort", "--repo", str(project),
+                       "--run-id", run["run_id"]])
+    payload = json.loads(out.getvalue())
+    assert status == 0
+    assert payload["data"]["status"] == "aborted"
+    assert payload["data"]["notify"]["sent"] is True
+    terminal = [p for p in transport.sent
+                if "Terminal Completion" in p["markdown"]["content"]]
+    assert len(terminal) == 1
+    assert "Git 收尾方式" in terminal[0]["markdown"]["content"]
+
+
+def test_status_reannounces_pending_review_gate(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """The recovery flow re-displays a persisted human_review gate without
+    re-running ``workflow review``, so its mechanical notify would never fire
+    again. ``workflow status`` (the recovery entry point) must re-announce a
+    pending gate whose notification was cleared — mirroring a resumed session."""
+    project = project_template.copy_to(tmp_path / "status-resume-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    _run_phase(app, agent, run["run_id"], "spec")
+    _run_phase(app, agent, run["run_id"], "plan")
+
+    # implement: review -> human_review (notified), then checkpoint auto-block
+    (project / "src" / "app.py").write_text("preexisting dirty\n", encoding="utf-8")
+    implement = app.workflow_begin(run["run_id"], "implement")
+    app.workflow_stage(
+        run["run_id"], agent.run(Path(implement["dispatch_plan"][0]["packet_file"]))
+    )
+    app.workflow_finalize(run["run_id"], implement["attempt_id"])
+    decision = app.workflow_review(run["run_id"])
+    assert decision["decision"] == "human_review"
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    def _call(argv):
+        with redirect_stdout(StringIO()) as out:
+            status = main(argv)
+        return status, json.loads(out.getvalue())
+
+    # review-accept triggers checkpoint failure -> auto-block
+    status, payload = _call([
+        "workflow", "review-accept", "--repo", str(project),
+        "--run-id", run["run_id"], "--expected-digest", decision["digest"],
+    ])
+    assert status != 0
+    assert payload["error"]["code"] == "checkpoint_scope_ambiguous"
+
+    # resume -> the persisted gate is human_review but its notification was
+    # cleared by resume's reset_notify_dedup; status must re-announce it
+    status, _ = _call(["workflow", "resume", "--repo", str(project),
+                       "--run-id", run["run_id"]])
+    assert status == 0
+
+    review_before = [p for p in transport.sent
+                     if "Review Gate（implement 阶段）" in p["markdown"]["content"]]
+    assert len(review_before) == 1
+
+    status, payload = _call(["workflow", "status", "--repo", str(project),
+                             "--run-id", run["run_id"]])
+    assert status == 0
+    assert payload["data"]["notify_pending_review"]["sent"] is True
+    review_after = [p for p in transport.sent
+                    if "Review Gate（implement 阶段）" in p["markdown"]["content"]]
+    assert len(review_after) == 2
+
+
+def test_status_does_not_resend_already_notified_review(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """status re-announcement is idempotent: a gate already notified stays
+    quiet (dedup suppresses the repeat) — status must not spam the team."""
+    project = project_template.copy_to(tmp_path / "status-quiet-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    _run_phase(app, agent, run["run_id"], "spec")
+    _run_phase(app, agent, run["run_id"], "plan")
+
+    implement = app.workflow_begin(run["run_id"], "implement")
+    app.workflow_stage(
+        run["run_id"], agent.run(Path(implement["dispatch_plan"][0]["packet_file"]))
+    )
+    app.workflow_finalize(run["run_id"], implement["attempt_id"])
+    decision = app.workflow_review(run["run_id"])
+    assert decision["decision"] == "human_review"
+    review_after_first = [p for p in transport.sent
+                          if "Review Gate（implement 阶段）" in p["markdown"]["content"]]
+    assert len(review_after_first) == 1
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    with redirect_stdout(StringIO()) as out:
+        status = main(["workflow", "status", "--repo", str(project),
+                       "--run-id", run["run_id"]])
+    payload = json.loads(out.getvalue())
+    assert status == 0
+    assert "notify_pending_review" not in payload["data"] or payload["data"]["notify_pending_review"]["sent"] is False
+    review_after = [p for p in transport.sent
+                    if "Review Gate（implement 阶段）" in p["markdown"]["content"]]
+    assert len(review_after) == 1
+
+
 def test_notify_log_write_failure_does_not_break_block(
     tmp_path, project_template, monkeypatch
 ) -> None:
@@ -396,7 +617,7 @@ def test_full_lifecycle_notifies_review_each_phase_and_terminal(
     final = app.workflow_status(run["run_id"])
     assert final["status"] == "completed"
 
-    # review gate fired once per phase (4) + terminal completion (1) = 5
+    # review gate once per phase (4) + terminal covering git-handoff (1) = 5
     assert len(transport.sent) == 5
     contents = [payload["markdown"]["content"] for payload in transport.sent]
     assert sum("Review Gate（spec 阶段）" in c for c in contents) == 1
@@ -404,6 +625,7 @@ def test_full_lifecycle_notifies_review_each_phase_and_terminal(
     assert sum("Review Gate（implement 阶段）" in c for c in contents) == 1
     assert sum("Review Gate（verify 阶段）" in c for c in contents) == 1
     assert sum("Terminal Completion" in c for c in contents) == 1
+    assert sum("Git 收尾方式" in c for c in contents) == 1
 
 
 def test_transition_to_completed_notifies_terminal_once(

@@ -7,6 +7,7 @@ from ai_workflow.config import RepositoryConfig
 from ai_workflow.wecom.client import WeComApiClient
 from ai_workflow.wecom.notify import (
     _env_from_shell_files,
+    _resolve_operators,
     _webhook_url,
     notify_command,
     render_message,
@@ -61,7 +62,8 @@ def test_render_message_includes_owner_and_operators() -> None:
     )
     assert "🔔 工作流需要人工处理" in content
     assert "👤 开启者：@sunxianshun" in content
-    assert "🔑 授权操作者：@sunxianshun @wangxiaofei" in content
+    # operators now render as WeCom <@userid> mentions for force-notify
+    assert "🔑 授权操作者：<@sunxianshun> <@wangxiaofei>" in content
     assert "Review Gate（plan 阶段）" in content
     assert "RUN-1" in content
     assert "接受或修改 rerun" in content
@@ -516,3 +518,67 @@ def test_webhook_url_falls_back_to_shell_file_when_env_missing(
         _webhook_url(config)
         == "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc"
     )
+
+
+def test_render_message_force_notifies_with_wecom_mention_syntax() -> None:
+    """Operators must render as WeCom <@userid> mention syntax so the message
+    actually force-notifies the member — plain '@name' is inert text that
+    arrives in the group but never surfaces."""
+    content = render_message(
+        gate="review",
+        phase="plan",
+        run_id="RUN-1",
+        requirement="x",
+        repo="demo",
+        operators=["1688852707310042", "sunxianshun"],
+        action="a",
+        summary="",
+    )
+    assert "<@1688852707310042> <@sunxianshun>" in content
+    assert "@1688852707310042" in content  # creator display keeps a plain @
+
+
+def test_render_message_at_all_is_single_mention() -> None:
+    """The @all fallback renders as <@all>, never <@@all>."""
+    content = render_message(
+        gate="review", phase="plan", run_id="RUN-1", requirement="x",
+        repo="demo", operators=["@all"], action="a", summary="",
+    )
+    assert "<@all>" in content
+    assert "<@@all>" not in content
+
+
+def test_resolve_operators_uses_recorded_operators(tmp_path: Path) -> None:
+    """Recorded operators win — no fallback needed."""
+    (tmp_path / ".ai-workflow.yaml").write_text(
+        "repository: demo\nwecom:\n  enabled: true\n", encoding="utf-8"
+    )
+    config = RepositoryConfig.load(tmp_path)
+    assert _resolve_operators(config, ["sunxianshun"]) == ["sunxianshun"]
+
+
+def test_resolve_operators_falls_back_to_creator_userid(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When a run has no operators, fall back to the configured creator userid
+    env so the message still force-notifies someone."""
+    (tmp_path / ".ai-workflow.yaml").write_text(
+        "repository: demo\n"
+        "wecom:\n"
+        "  enabled: true\n"
+        "  creator_userid_env: WECOM_CREATOR_USERID\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("WECOM_CREATOR_USERID", "1688852707310042")
+    config = RepositoryConfig.load(tmp_path)
+    assert _resolve_operators(config, []) == ["1688852707310042"]
+
+
+def test_resolve_operators_falls_back_to_at_all(tmp_path: Path) -> None:
+    """Last-resort: no operators and no creator userid -> ping the whole group
+    so a human is always force-notified."""
+    (tmp_path / ".ai-workflow.yaml").write_text(
+        "repository: demo\nwecom:\n  enabled: true\n", encoding="utf-8"
+    )
+    config = RepositoryConfig.load(tmp_path)
+    assert _resolve_operators(config, []) == ["@all"]
