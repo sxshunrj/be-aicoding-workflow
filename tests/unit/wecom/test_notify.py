@@ -3,8 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ai_workflow.config import RepositoryConfig
 from ai_workflow.wecom.client import WeComApiClient
-from ai_workflow.wecom.notify import notify_command, render_message
+from ai_workflow.wecom.notify import (
+    _env_from_shell_files,
+    _webhook_url,
+    notify_command,
+    render_message,
+)
 
 
 class FakeWeComTransport:
@@ -362,3 +368,62 @@ def test_notify_webhook_via_cli(monkeypatch, tmp_path: Path, capsys) -> None:
     assert status == 0
     assert json.loads(out)["data"]["sent"] is True
     assert transport.sent
+
+
+def test_env_from_shell_files_parses_export_formats(tmp_path: Path) -> None:
+    env_file = tmp_path / "env"
+    env_file.write_text(
+        "# a comment\n"
+        'export WECOM_WEBHOOK_URL="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc"\n'
+        "export OTHER_VAR=x\n",
+        encoding="utf-8",
+    )
+    assert (
+        _env_from_shell_files("WECOM_WEBHOOK_URL", [env_file])
+        == "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc"
+    )
+    assert _env_from_shell_files("MISSING_VAR", [env_file]) is None
+
+
+def test_env_from_shell_files_handles_quote_styles_and_equals(tmp_path: Path) -> None:
+    env_file = tmp_path / "env"
+    env_file.write_text(
+        'export A="double quote value"\n'
+        "export B='single quote'\n"
+        "export C=unquoted-value\n"
+        'export D="https://x/?key=a=b=c"\n',
+        encoding="utf-8",
+    )
+    assert _env_from_shell_files("A", [env_file]) == "double quote value"
+    assert _env_from_shell_files("B", [env_file]) == "single quote"
+    assert _env_from_shell_files("C", [env_file]) == "unquoted-value"
+    assert _env_from_shell_files("D", [env_file]) == "https://x/?key=a=b=c"
+
+
+def test_webhook_url_falls_back_to_shell_file_when_env_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Agents launched outside a login shell (GUI apps, services) miss the env
+    var even though it is exported in ~/.zshenv; the notify must still resolve
+    the webhook by reading the shell file directly."""
+    (tmp_path / ".ai-workflow.yaml").write_text(
+        "repository: demo\n"
+        "wecom:\n"
+        "  enabled: true\n"
+        "  webhook_url_env: BE_AI_WORKFLOW_WECOM_WEBHOOK_URL\n",
+        encoding="utf-8",
+    )
+    env_file = tmp_path / "zshenv"
+    env_file.write_text(
+        'export BE_AI_WORKFLOW_WECOM_WEBHOOK_URL="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("BE_AI_WORKFLOW_WECOM_WEBHOOK_URL", raising=False)
+    monkeypatch.setattr(
+        "ai_workflow.wecom.notify._shell_env_files", lambda: (env_file,)
+    )
+    config = RepositoryConfig.load(tmp_path)
+    assert (
+        _webhook_url(config)
+        == "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc"
+    )
