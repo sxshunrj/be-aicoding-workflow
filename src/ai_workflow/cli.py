@@ -13,7 +13,7 @@ from ai_workflow.errors import AppError
 from ai_workflow.install import install_skills
 from ai_workflow.path_authorization import PathKind, RepositoryPathAuthorizer
 from ai_workflow.wecom.notify import notify_command
-from ai_workflow.workflow.models import Phase
+from ai_workflow.workflow.models import Phase, RunState
 from ai_workflow.workflow.service import WorkflowService
 from ai_workflow.wiki.repository import WikiRepository
 from ai_workflow.wiki.service import WikiService
@@ -186,6 +186,31 @@ def _reruns(values: list[str]) -> dict[str, str]:
             raise AppError("invalid_arguments", f"duplicate rerun node: {name}")
         reruns[name] = reason
     return reruns
+
+
+def _auto_notify_blocked(repo_root: Path, state: RunState, reason: str) -> None:
+    """Mechanically push the blocked-gate notification.
+
+    A blocked run needs a human resume/abort decision, so ``workflow block``
+    always notifies the team regardless of whether the harness LLM follows the
+    skill template. Notification is enhancement-only: any failure writes a
+    warning and never breaks the block. Phase comes from the run's current
+    phase so the per-phase dedup key stays distinct.
+    """
+    try:
+        notify_command(
+            repo_root,
+            run_id=state.run_id,
+            gate="blocked",
+            phase=state.current_phase,
+            action="请选择 resume / abort",
+            summary=reason,
+        )
+    except AppError as error:
+        print(
+            f"wecom notify soft-failed ({error.code}): {error.message}",
+            file=sys.stderr,
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -375,7 +400,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             elif args.workflow_command == "transition":
                 data = service.transition(args.run_id).to_dict()
             elif args.workflow_command == "block":
-                data = service.block(args.run_id, args.reason).to_dict()
+                state = service.block(args.run_id, args.reason)
+                _auto_notify_blocked(args.repo, state, args.reason)
+                data = state.to_dict()
             elif args.workflow_command == "resume":
                 data = service.resume(
                     args.run_id, _reruns(args.rerun)

@@ -164,7 +164,7 @@ Review Gate 是 `finalize` 与 `transition` 之间的唯一关口。Harness 不�
 - 选 1：无反馈则 `workflow resume`；有反馈则映射到 `NODE=REASON` 后 `workflow resume --rerun NODE=REASON`。
 - 选 2：`workflow abort`，然后 terminal cleanup。
 - blocked 不自动恢复，不被 auto_accept 绕过。
-- 进入 blocked 时，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate blocked --phase <phase> --action "请选择 resume / abort"` 通知团队；失败仅写 warning，不影响主流程。**`--phase` 必传**（去重键含 phase，缺省会与同 gate 的先前通知误去重）。详见 [wecom notify](references/wecom-notify.md)。
+- 进入 blocked 时，`workflow block` 命令会自动推送 `gate=blocked` 的 WeCom 通知（Helper 机械保证，不依赖 skill 调用；phase 由 Helper 自动填写）。失败仅写 warning，不影响主流程。详见 [wecom notify](references/wecom-notify.md)。
 
 ### Terminal
 

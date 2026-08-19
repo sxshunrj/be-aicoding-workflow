@@ -3,6 +3,7 @@ import urllib.error
 from pathlib import Path
 
 from ai_workflow.cli import main
+from ai_workflow.wecom.client import WeComApiClient
 from ai_workflow.workflow.service import WorkflowService
 
 
@@ -179,3 +180,76 @@ def test_cli_wecom_notify_unset_webhook_surfaces_stderr(
     assert "wecom_not_configured" in captured.err
     assert "webhook URL is not configured" in captured.err
     assert "webhook URL is not configured" in envelope["data"]["error"]
+
+
+class _FakeWeComTransport:
+    def __init__(self) -> None:
+        self.sent = 0
+
+    def request_json(self, method, url, *, params=None, payload=None):
+        if "/webhook/send" in url:
+            self.sent += 1
+            return {"errcode": 0, "errmsg": "ok"}
+        raise AssertionError(url)
+
+
+def test_cli_workflow_block_auto_notifies_blocked_gate(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """``workflow block`` mechanically pushes the blocked notification so a
+    blocked run is always visible to the team, independent of the harness LLM
+    following the skill template."""
+    _write_config(tmp_path)
+    monkeypatch.setenv("WECOM_WEBHOOK_URL", _WEBHOOK)
+    transport = _FakeWeComTransport()
+    monkeypatch.setattr(
+        "ai_workflow.wecom.notify._client_for_webhook",
+        lambda: WeComApiClient(transport=transport),
+    )
+    state = WorkflowService().init(
+        tmp_path, source_revision="abc123", requirement="x", operators=("sunxianshun",)
+    )
+    status = main(
+        [
+            "workflow",
+            "block",
+            "--repo",
+            str(tmp_path),
+            "--run-id",
+            state.run_id,
+            "--reason",
+            "checkpoint_scope_ambiguous",
+        ]
+    )
+    assert status == 0
+    assert transport.sent == 1
+
+
+def test_cli_workflow_block_auto_notify_soft_fails_without_breaking(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """A blocked run with WeCom enabled but no webhook env must still block:
+    the notify soft-fails to a warning and never breaks the block."""
+    _write_config(tmp_path)
+    monkeypatch.delenv("WECOM_WEBHOOK_URL", raising=False)
+    state = WorkflowService().init(
+        tmp_path, source_revision="abc123", requirement="x", operators=("sunxianshun",)
+    )
+    status = main(
+        [
+            "workflow",
+            "block",
+            "--repo",
+            str(tmp_path),
+            "--run-id",
+            state.run_id,
+            "--reason",
+            "checkpoint_scope_ambiguous",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert status == 0
+    envelope = json.loads(captured.out)
+    assert envelope["ok"] is True
+    assert envelope["data"]["status"] == "blocked"
+    assert "wecom notify soft-failed" in captured.err

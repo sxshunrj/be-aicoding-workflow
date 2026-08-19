@@ -19,14 +19,14 @@ def test_harness_skill_references_wecom_notify() -> None:
     assert "Review Gate" in skill and "wecom notify" in skill
 
 
-def test_harness_review_and_blocked_notify_pass_phase() -> None:
-    """Regression guard: review/blocked notify calls must pass ``--phase`` so the
-    per-phase dedup key never collides across phases (spec review vs plan review
-    share identical content when phase is absent, so the plan gate was silently
-    deduped)."""
+def test_harness_review_notify_passes_phase_and_blocked_is_helper_enforced() -> None:
+    """Regression guard: review notify must pass ``--phase`` (per-phase dedup
+    keys never collide), while blocked notify is Helper-mechanical (``workflow
+    block`` auto-pushes) so it must not rely on the LLM calling it."""
     skill = _read("harness")
     assert "--gate review --phase <phase>" in skill
-    assert "--gate blocked --phase <phase>" in skill
+    assert "--gate blocked" not in skill
+    assert "机械保证" in skill
 
 
 def test_harness_terminal_completion_notify_present() -> None:
@@ -37,12 +37,13 @@ def test_harness_terminal_completion_notify_present() -> None:
     assert "completed/aborted" in skill
 
 
-def test_grill_review_and_blocked_notify_pass_phase() -> None:
-    """The grill harness variant has the same human gates and must notify with
-    ``--phase`` so per-phase dedup keys never collide."""
+def test_grill_review_notify_passes_phase_and_blocked_is_helper_enforced() -> None:
+    """The grill harness variant has the same human gates: review notifies with
+    ``--phase``, blocked is Helper-mechanical (``workflow block`` auto-pushes)."""
     skill = _read("grill")
     assert "--gate review --phase <phase>" in skill
-    assert "--gate blocked --phase <phase>" in skill
+    assert "--gate blocked" not in skill
+    assert "机械保证" in skill
 
 
 def test_grill_terminal_notify_present() -> None:

@@ -150,7 +150,7 @@ ai-workflow workflow init --repo "$PWD" \
 
 ### 自动触发（推荐）
 
-`$ai-workflow-harness`、`$ai-git-handoff`、`$ai-knowledge-governance` 三个 skill 已内置：到达 Review Gate / Blocked / Terminal Completion / governance / git handoff 节点时自动调用通知。正常跑工作流即可，无需手动操作。
+`$ai-workflow-harness`、`$ai-git-handoff`、`$ai-knowledge-governance` 三个 skill 已内置：到达 Review Gate / Terminal Completion / governance / git handoff 节点时自动调用通知；**Blocked 由 `workflow block` 命令在 Helper 层机械自动推送**（不依赖 skill 调用）。正常跑工作流即可，无需手动操作。
 
 ### 手动调用
 

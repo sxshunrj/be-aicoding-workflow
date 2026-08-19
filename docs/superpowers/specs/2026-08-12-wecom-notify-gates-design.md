@@ -57,7 +57,7 @@
 
 4. **授权标注**：`workflow init --operators` 指定操作者（创建者默认），写入 `artifacts["operators"]`；通知从这里读取并标注
 
-5. **Skill 集成**：四个 Skill 在人工 gate 处调用 `wecom notify`
+5. **Skill 集成**：四个 Skill 在人工 gate 处调用 `wecom notify`（**blocked 例外**：由 `workflow block` 命令在 Helper 层机械自动推送，不依赖 skill/LLM 调用）
 
 ## 架构（Plan 2：未实现，回调回复即处理）
 
