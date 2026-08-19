@@ -76,22 +76,10 @@ def _load_log(path: Path) -> dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
-def _default_client(config: RepositoryConfig) -> WeComApiClient:
-    corpid = os.environ.get(config.wecom_corpid_env or "", "")
-    agentid = os.environ.get(config.wecom_agentid_env or "", "")
-    corpsecret = os.environ.get(config.wecom_agent_secret_env or "", "")
-    if not (corpid and agentid and corpsecret):
-        raise AppError(
-            "wecom_not_configured",
-            "WeCom credentials are not configured in the environment",
-        )
-    return WeComApiClient(corpid=corpid, corpsecret=corpsecret, agentid=int(agentid))
-
-
 def _client_for_webhook() -> WeComApiClient:
     # Webhook messages need no corpid/secret/access_token: the webhook URL
     # carries the key. The client is only a thin holder for the transport.
-    return WeComApiClient(corpid="", corpsecret="", agentid=0)
+    return WeComApiClient()
 
 
 def _webhook_url(config: RepositoryConfig) -> str | None:
@@ -126,13 +114,7 @@ def notify_command(
     if gate not in config.wecom_gates:
         return {"sent": False, "reason": "gate_not_configured"}
     webhook_url = _webhook_url(config)
-    configured_targets = sum(
-        target is not None
-        for target in (config.wecom_notify_tag, config.wecom_notify_user, webhook_url)
-    )
-    if configured_targets > 1:
-        return {"sent": False, "reason": "notify_target_ambiguous"}
-    if configured_targets == 0:
+    if webhook_url is None:
         return {"sent": False, "reason": "notify_target_not_configured"}
 
     service = WorkflowService(repo_root)
@@ -166,29 +148,8 @@ def notify_command(
     if dry_run:
         return {"sent": False, "dry_run": True, "dedup": "new", "payload": content}
 
-    if webhook_url is not None:
-        # Webhook needs no corpid/secret/access_token, so it also bypasses the
-        # trusted-IP whitelist. Construct a client only for the message itself.
-        send_client = client if client is not None else _client_for_webhook()
-        result = send_client.webhook_send(content=content, webhook_url=webhook_url)
-        target_key = "webhook"
-        target_value = webhook_url
-    else:
-        send_client = client if client is not None else _default_client(config)
-        if config.wecom_notify_user is not None:
-            result = send_client.send_message(
-                content=content, msgtype="markdown", to_user=config.wecom_notify_user
-            )
-            target_key = "to_user"
-            target_value = config.wecom_notify_user
-        else:
-            assert config.wecom_notify_tag is not None
-            tag_id = send_client.resolve_tag(config.wecom_notify_tag)
-            result = send_client.send_message(
-                content=content, msgtype="markdown", tag_id=tag_id
-            )
-            target_key = "tag_id"
-            target_value = tag_id
+    send_client = client if client is not None else _client_for_webhook()
+    result = send_client.webhook_send(content=content, webhook_url=webhook_url)
 
     log[log_key] = digest
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -205,5 +166,5 @@ def notify_command(
         "sent": True,
         "dedup": dedup,
         "result": result,
-        target_key: target_value,
+        "webhook": webhook_url,
     }

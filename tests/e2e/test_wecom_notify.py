@@ -11,11 +11,7 @@ class FakeWeComTransport:
         self.sent = 0
 
     def request_json(self, method, url, *, params=None, payload=None):
-        if url.endswith("/gettoken"):
-            return {"errcode": 0, "access_token": "TOK", "expires_in": 7200}
-        if url.endswith("/tag/list"):
-            return {"errcode": 0, "taglist": [{"tagid": 7, "tagname": "工作流通知组"}]}
-        if url.endswith("/message/send"):
+        if "/webhook/send" in url:
             self.sent += 1
             return {"errcode": 0, "errmsg": "ok"}
         raise AssertionError(url)
@@ -26,19 +22,17 @@ def test_wecom_notify_e2e_dedup(monkeypatch, tmp_path: Path, capsys) -> None:
         "repository: demo\n"
         "wecom:\n"
         "  enabled: true\n"
-        "  corpid_env: WECOM_CORPID\n"
-        "  agentid_env: WECOM_AGENT_ID\n"
-        "  agent_secret_env: WECOM_AGENT_SECRET\n"
-        "  notify_tag: 工作流通知组\n",
+        "  webhook_url_env: WECOM_WEBHOOK_URL\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("WECOM_CORPID", "corp")
-    monkeypatch.setenv("WECOM_AGENT_ID", "1000002")
-    monkeypatch.setenv("WECOM_AGENT_SECRET", "secret")
+    monkeypatch.setenv(
+        "WECOM_WEBHOOK_URL",
+        "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc123",
+    )
     transport = FakeWeComTransport()
     monkeypatch.setattr(
-        "ai_workflow.wecom.notify._default_client",
-        lambda config: WeComApiClient("corp", "secret", 1000002, transport=transport),
+        "ai_workflow.wecom.notify._client_for_webhook",
+        lambda: WeComApiClient(transport=transport),
     )
 
     state = WorkflowService().init(

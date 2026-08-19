@@ -1,11 +1,12 @@
 import json
-import os
 import urllib.error
 from pathlib import Path
 
 from ai_workflow.cli import main
-from ai_workflow.wecom.client import WeComApiClient
 from ai_workflow.workflow.service import WorkflowService
+
+
+_WEBHOOK = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc123"
 
 
 def _write_config(repo: Path) -> None:
@@ -13,18 +14,13 @@ def _write_config(repo: Path) -> None:
         "repository: demo\n"
         "wecom:\n"
         "  enabled: true\n"
-        "  corpid_env: WECOM_CORPID\n"
-        "  agentid_env: WECOM_AGENT_ID\n"
-        "  agent_secret_env: WECOM_AGENT_SECRET\n"
-        "  notify_tag: 工作流通知组\n",
+        "  webhook_url_env: WECOM_WEBHOOK_URL\n",
         encoding="utf-8",
     )
 
 
 def test_cli_wecom_notify_dry_run(monkeypatch, tmp_path: Path, capsys) -> None:
-    monkeypatch.setenv("WECOM_CORPID", "corp")
-    monkeypatch.setenv("WECOM_AGENT_ID", "1000002")
-    monkeypatch.setenv("WECOM_AGENT_SECRET", "secret")
+    monkeypatch.setenv("WECOM_WEBHOOK_URL", _WEBHOOK)
     _write_config(tmp_path)
     state = WorkflowService().init(
         tmp_path, source_revision="abc123", requirement="x", operators=("sunxianshun",)
@@ -79,9 +75,7 @@ def test_cli_wecom_notify_network_failure_soft_fails(
 ) -> None:
     """A network-failing transport must not block the workflow: the CLI returns
     exit 0 with {"ok": true, "data": {"sent": false, "error": ...}}."""
-    monkeypatch.setenv("WECOM_CORPID", "corp")
-    monkeypatch.setenv("WECOM_AGENT_ID", "1000002")
-    monkeypatch.setenv("WECOM_AGENT_SECRET", "secret")
+    monkeypatch.setenv("WECOM_WEBHOOK_URL", _WEBHOOK)
     _write_config(tmp_path)
     state = WorkflowService().init(
         tmp_path, source_revision="abc123", requirement="x", operators=("sunxianshun",)
@@ -93,10 +87,6 @@ def test_cli_wecom_notify_network_failure_soft_fails(
         raise urllib.error.URLError("offline")
 
     monkeypatch.setattr("ai_workflow.wecom.client.urlopen", _offline)
-    offline_client = WeComApiClient("corp", "secret", 1000002)
-    monkeypatch.setattr(
-        "ai_workflow.wecom.notify._default_client", lambda config: offline_client
-    )
 
     status, out = main(
         [

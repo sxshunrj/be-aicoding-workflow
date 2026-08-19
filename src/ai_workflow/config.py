@@ -57,11 +57,6 @@ class RepositoryConfig:
     adapter_generated_test_destinations: tuple[str, ...]
     adapter_report_paths: tuple[str, ...]
     wecom_enabled: bool = False
-    wecom_corpid_env: str | None = None
-    wecom_agentid_env: str | None = None
-    wecom_agent_secret_env: str | None = None
-    wecom_notify_tag: str | None = None
-    wecom_notify_user: str | None = None
     wecom_webhook_url_env: str | None = None
     wecom_creator_userid_env: str | None = None
     wecom_gates: tuple[str, ...] = ("review", "blocked", "governance", "git_handoff")
@@ -153,15 +148,6 @@ class RepositoryConfig:
                 adapter.get("report_paths"), "adapter.report_paths"
             ),
             wecom_enabled=bool(wecom.get("enabled", False)),
-            wecom_corpid_env=_optional_env_name(wecom.get("corpid_env"), "wecom.corpid_env"),
-            wecom_agentid_env=_optional_env_name(wecom.get("agentid_env"), "wecom.agentid_env"),
-            wecom_agent_secret_env=_optional_env_name(
-                wecom.get("agent_secret_env"), "wecom.agent_secret_env"
-            ),
-            wecom_notify_tag=_optional_env_name(wecom.get("notify_tag"), "wecom.notify_tag"),
-            wecom_notify_user=_optional_env_name(
-                wecom.get("notify_user"), "wecom.notify_user"
-            ),
             wecom_webhook_url_env=_optional_env_name(
                 wecom.get("webhook_url_env"), "wecom.webhook_url_env"
             ),
