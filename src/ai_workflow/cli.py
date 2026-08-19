@@ -467,9 +467,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 data = decision.to_dict()
                 data["notify"] = _auto_notify_review(args.repo, decision)
             elif args.workflow_command == "review-accept":
-                data = service.record_review_acceptance(
-                    args.run_id, args.expected_digest
-                ).to_dict()
+                try:
+                    data = service.record_review_acceptance(
+                        args.run_id, args.expected_digest
+                    ).to_dict()
+                except AppError as error:
+                    if error.code in {
+                        "checkpoint_scope_ambiguous",
+                        "checkpoint_creation_failed",
+                        "checkpoint_unavailable",
+                        "path_not_authorized",
+                    }:
+                        # The Helper auto-blocks the run inside
+                        # record_review_acceptance when checkpoint creation
+                        # fails, bypassing `workflow block`; push the blocked
+                        # notification here so a checkpoint-driven block is
+                        # never silent. The command still re-raises so the
+                        # checkpoint failure stays the reported outcome.
+                        _auto_notify_blocked(
+                            args.repo, service.status(args.run_id), error.message
+                        )
+                    raise
             elif args.workflow_command == "transition":
                 state = service.transition(args.run_id)
                 data = state.to_dict()
