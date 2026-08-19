@@ -148,7 +148,7 @@ def _parser() -> argparse.ArgumentParser:
     wecom_notify.add_argument("--repo", type=Path, required=True)
     wecom_notify.add_argument("--run-id", required=True)
     wecom_notify.add_argument(
-        "--gate", required=True, choices=("review", "blocked", "governance", "git_handoff")
+        "--gate", required=True, choices=("review", "blocked", "governance", "git_handoff", "terminal")
     )
     wecom_notify.add_argument("--action", required=True)
     wecom_notify.add_argument("--summary", default="")

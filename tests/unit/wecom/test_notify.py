@@ -62,6 +62,21 @@ def test_render_message_includes_owner_and_operators() -> None:
     assert "请勿直接操作本工作流" in content
 
 
+def test_render_message_terminal_gate_label() -> None:
+    content = render_message(
+        gate="terminal",
+        phase=None,
+        run_id="RUN-1",
+        requirement="x",
+        repo="demo",
+        operators=["sunxianshun"],
+        action="请验收 run 终态",
+        summary="",
+    )
+    assert "Terminal Completion" in content
+    assert "请验收 run 终态" in content
+
+
 def test_notify_sends_once_then_dedups(tmp_path: Path, monkeypatch) -> None:
     _set_webhook_env(monkeypatch)
     _config(tmp_path)

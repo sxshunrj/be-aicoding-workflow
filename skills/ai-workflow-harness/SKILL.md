@@ -170,6 +170,7 @@ Review Gate 是 `finalize` 与 `transition` 之间的唯一关口。Harness 不�
 
 completed/aborted 后不再 begin/stage/finalize/review/transition。执行 terminal cleanup：
 
+0. 向人类展示终态并等待验收时，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate terminal --action "请验收 run 终态（completed/aborted）"` 通知团队；失败仅写 warning，不影响主流程。详见 [wecom notify](references/wecom-notify.md)。
 1. `workflow summary` 是纯读。
 2. 执行 terminal reflection。
 3. knowledge governance 必须有人类决定。

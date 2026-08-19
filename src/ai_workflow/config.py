@@ -29,7 +29,7 @@ def _strings(value: object, name: str) -> tuple[str, ...]:
     return tuple(value)
 
 
-_WECOM_GATES = ("review", "blocked", "governance", "git_handoff")
+_WECOM_GATES = ("review", "blocked", "governance", "git_handoff", "terminal")
 
 
 def _optional_env_name(value: object, name: str) -> str | None:
@@ -59,7 +59,7 @@ class RepositoryConfig:
     wecom_enabled: bool = False
     wecom_webhook_url_env: str | None = None
     wecom_creator_userid_env: str | None = None
-    wecom_gates: tuple[str, ...] = ("review", "blocked", "governance", "git_handoff")
+    wecom_gates: tuple[str, ...] = ("review", "blocked", "governance", "git_handoff", "terminal")
 
     def command(self, name: str) -> tuple[str, ...] | None:
         return self.commands.get(name)

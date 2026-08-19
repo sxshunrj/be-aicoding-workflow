@@ -3,6 +3,7 @@ from pathlib import Path
 
 SKILL_DIRS = {
     "harness": Path("skills/ai-workflow-harness"),
+    "grill": Path("skills/ai-workflow-harness-grill"),
     "git_handoff": Path("skills/ai-git-handoff"),
     "governance": Path("skills/ai-knowledge-governance"),
 }
@@ -28,6 +29,28 @@ def test_harness_review_and_blocked_notify_pass_phase() -> None:
     assert "--gate blocked --phase <phase>" in skill
 
 
+def test_harness_terminal_completion_notify_present() -> None:
+    """Terminal completion is a mandatory human gate: the harness must notify
+    the team when waiting for terminal acceptance (completed/aborted)."""
+    skill = _read("harness")
+    assert "--gate terminal" in skill
+    assert "completed/aborted" in skill
+
+
+def test_grill_review_and_blocked_notify_pass_phase() -> None:
+    """The grill harness variant has the same human gates and must notify with
+    ``--phase`` so per-phase dedup keys never collide."""
+    skill = _read("grill")
+    assert "--gate review --phase <phase>" in skill
+    assert "--gate blocked --phase <phase>" in skill
+
+
+def test_grill_terminal_notify_present() -> None:
+    skill = _read("grill")
+    assert "--gate terminal" in skill
+    assert "completed/aborted" in skill
+
+
 def test_git_handoff_skill_references_wecom_notify() -> None:
     skill = _read("git_handoff")
     assert "ai-workflow wecom notify" in skill
@@ -51,5 +74,7 @@ def test_harness_wecom_notify_reference_exists() -> None:
         # collide; only sent==true counts as "已通知团队".
         "必须传 `--phase",
         "sent == true",
+        # terminal gate covers run-completion acceptance.
+        "git_handoff|terminal",
     ):
         assert phrase in ref
