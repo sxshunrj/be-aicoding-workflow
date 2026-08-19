@@ -77,8 +77,8 @@ def _load_log(path: Path) -> dict[str, object]:
 
 
 def _client_for_webhook() -> WeComApiClient:
-    # Webhook messages need no corpid/secret/access_token: the webhook URL
-    # carries the key. The client is only a thin holder for the transport.
+    # Webhook messages carry their key in the URL: the client is only a thin
+    # holder for the transport.
     return WeComApiClient()
 
 

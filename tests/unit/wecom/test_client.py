@@ -45,7 +45,7 @@ def test_urllib_transport_converts_timeout_to_apperror(monkeypatch) -> None:
     assert exc.value.code == "wecom_http_error"
 
 
-def test_webhook_send_posts_without_access_token() -> None:
+def test_webhook_send_posts_with_embedded_key() -> None:
     transport = FakeWeComTransport()
     client = WeComApiClient(transport=transport)
     webhook = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc123"

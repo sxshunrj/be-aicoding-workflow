@@ -75,7 +75,7 @@ class WeComApiClient:
         """Send a group-robot webhook message.
 
         The webhook URL itself carries the key (``.../webhook/send?key=...``),
-        so no access_token or trusted-IP whitelist is needed. Markdown supports
+        so the message is sent directly. Markdown supports
         ``<@userid>`` in ``content`` to force-notify members.
         """
         payload: dict[str, object] = {
