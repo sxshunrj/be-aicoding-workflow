@@ -18,23 +18,29 @@
 
 如果已经通过 `$ai-workflow-init` 安装过这套 skill，启用 WeCom 通知只需按下面的步骤升级你的环境。**前提要清楚：真正执行 `ai-workflow wecom notify` 的是 Python Helper Core，不是 skill。** skill 只在人工节点调用该命令，所以 Helper 代码必须同步更新，否则 skill 会自动触发但命令不存在。
 
-### 1. 确认 Helper 已带 WeCom 命令
+### 1. 拉取含 WeCom 的源码分支并更新 Helper
+
+> **前提**：WeCom 通知功能（含 webhook-only 精简版）目前位于 `wecom-notify-gates` 分支，**尚未合入 `main`**。只 `git pull main` 拿不到该功能；务必先切到该分支。（待该分支合入 `main` 后，此前提不再需要，直接 `git pull` 即可。）
+
+```bash
+cd <你 clone 的 be-aicoding-workflow 仓库>
+git fetch origin
+git checkout wecom-notify-gates       # 含 wecom notify（webhook-only 在最顶部两个提交）
+git pull origin wecom-notify-gates
+pip install -e '.[dev]'               # 更新 Helper Core
+```
+
+确认命令已存在：
 
 ```bash
 ai-workflow --help 2>&1 | grep -c wecom    # ≥1 说明已支持
 ```
 
-若为 0，说明 Helper 是旧版本，先更新：
-
-```bash
-cd <你 clone 的 be-aicoding-workflow 仓库>
-git pull                                   # 拉取含 wecom notify 的版本
-pip install -e '.[dev]'                    # 更新 Helper Core
-```
+若仍为 0，检查是否切到了正确分支、或 Helper 重装是否成功。
 
 ### 2. 刷新 skill 安装
 
-- **link 安装**（macOS/Linux 默认）：skill 是符号链接，`git pull` 后自动跟随仓库，可跳过重装。
+- **link 安装**（macOS/Linux 默认）：skill 是符号链接，切到新分支后自动跟随仓库，可跳过重装。
 - **copy 安装**（Windows 默认）：必须重跑，否则仍是旧版 SKILL.md：
 
 ```bash
@@ -79,7 +85,7 @@ ai-workflow workflow init --repo "$PWD" \
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
-| `wecom notify` 命令不存在 | Helper 未更新（命令在 Helper，不在 skill） | `git pull` + `pip install -e '.[dev]'` |
+| `wecom notify` 命令不存在 | Helper 未更新（命令在 Helper，不在 skill） | 切到 `wecom-notify-gates` 分支 + `pip install -e '.[dev]'` |
 | skill 自动调用但没收到微信 | `wecom:` 未配 / `WECOM_WEBHOOK_URL` 未设（如变量只在 `~/.zshrc`，GUI/非交互启动时缺失） | 按第 3、4 步配置，变量写入 `~/.zshenv`；软失败原因会打到 stderr |
 | Windows 更新 skill 后仍是旧版 | copy 安装不跟随仓库 | 重跑 `init.sh` |
 | `--operators` 没生效 | `WECOM_CREATOR_USERID` 未设置 | 设置后重新 `workflow init` |
