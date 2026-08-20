@@ -78,7 +78,7 @@ ai-workflow config authorize-path --repo REPO --kind report --path PATH
 
 | error.code | Harness action |
 | --- | --- |
-| `config_not_found` / `config_invalid` | 展示字段错误，等待用户修配置。 |
+| `config_not_found` / `config_invalid` | 展示字段错误，等待用户修配置。**进入等待前**，若已配置通知通道，调用 `ai-workflow wecom notify --repo REPO --gate blocked --action "仓库配置错误，需人工修复" --summary "config_not_found / config_invalid"` 通知团队；失败仅写 warning，不影响主流程。 |
 | `invalid_requirement` / `invalid_profile` | 修正 caller 输入后重试。 |
 | `state_exists` | 走 bootstrap/status，不覆盖旧 run。 |
 
@@ -130,7 +130,7 @@ workflow-owned item（当前为 Grill `plan.prd`）返回：
 | `artifact_digest_mismatch` | 原 Child 修复 artifact/ChildResult。 |
 | `invalid_result` | 原 Child 修复 schema/owner/evidence。 |
 | `path_not_authorized` | fail closed；不扩大路径。 |
-| `result_conflict` | 保留冲突证据，报告人类。 |
+| `result_conflict` | 保留冲突证据，报告人类。**进入人工等待前**，若已配置通知通道，调用 `ai-workflow wecom notify --repo REPO [--run-id RUN] --gate blocked --action "staged result 冲突，需人工处置"` 通知团队；失败仅写 warning，不影响主流程。 |
 
 ### `workflow stage-owned`
 

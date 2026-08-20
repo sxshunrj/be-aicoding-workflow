@@ -68,3 +68,54 @@ def test_webhook_send_raises_on_errcode() -> None:
             webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=bad",
         )
     assert exc.value.code == "wecom_api_error"
+    # business rejection is deterministic — never retried
+    assert len(transport.calls) == 1
+
+
+def test_webhook_send_retries_transient_http_errors(monkeypatch) -> None:
+    """Network-level failures (connection refused, timeout, DNS) are transient:
+    the client retries with backoff instead of dropping the notification — a
+    human gate that went unnoticed is worse than a late ping."""
+    from ai_workflow.errors import AppError as _AppError
+
+    failures = {"failures": 2}
+
+    def _flaky(*args, **kwargs):
+        if failures["failures"] > 0:
+            failures["failures"] -= 1
+            raise _AppError("wecom_http_error", "connection refused")
+        return {"errcode": 0, "errmsg": "ok"}
+
+    transport = FakeWeComTransport()
+    monkeypatch.setattr(transport, "request_json", _flaky)
+    client = WeComApiClient(transport=transport, backoff_seconds=0)
+    result = client.webhook_send(
+        content="x",
+        webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
+    )
+    assert result == {"errcode": 0, "errmsg": "ok"}
+
+
+def test_webhook_send_gives_up_after_retries(monkeypatch) -> None:
+    from ai_workflow.errors import AppError as _AppError
+
+    calls = {"n": 0}
+
+    def _always_fail(*args, **kwargs):
+        calls["n"] += 1
+        raise _AppError("wecom_http_error", "timeout")
+
+    transport = FakeWeComTransport()
+    monkeypatch.setattr(transport, "request_json", _always_fail)
+    client = WeComApiClient(
+        transport=transport, retries=2, backoff_seconds=0
+    )
+    with pytest.raises(AppError) as exc:
+        client.webhook_send(
+            content="x",
+            webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
+        )
+    assert exc.value.code == "wecom_http_error"
+    # 1 initial attempt + 2 retries = 3 calls, then give up
+    assert calls["n"] == 3
+

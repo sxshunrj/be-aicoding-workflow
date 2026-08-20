@@ -23,7 +23,7 @@ Git 收尾是人类 gate。先取证，再给选择；没有选择就不改 Git�
 
 向人类展示以上三个选择和每个选择会包含的文件。`execute only the chosen scope`：只 stage 人类确认的任务文件；Never stage unrelated files。
 
-展示选择前，若已配置通知通道，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate git_handoff --action "请选择 skip / commit / MR"` 通知团队；失败仅写 warning，不影响主流程。`<repo>` 为当前仓库路径、`<run-id>` 为当前 run（若不在 run 内则省略 `--run-id`）。
+展示选择前，若已配置通知通道，调用 `ai-workflow wecom notify --repo <repo> [--run-id <run-id>] --gate git_handoff --action "请选择 skip / commit / MR"` 通知团队；失败仅写 warning，不影响主流程。`<repo>` 为当前仓库路径；`--run-id` 仅在当前处于某个 run 内时传（run 外独立 Git 收尾可省略，Helper 自动降级为 repo 级通知并 @ 全群，保证团队一定被提醒）。
 
 ## Authorization gates
 

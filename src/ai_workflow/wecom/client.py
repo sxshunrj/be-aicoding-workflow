@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Protocol
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -66,10 +67,26 @@ class UrllibTransport:
 
 
 class WeComApiClient:
+    """Send group-robot webhook messages.
+
+    Network-level failures (DNS, connection refused, timeout) are transient and
+    retried a few times with backoff so a single blip never silently drops the
+    notification — a human gate that went unnoticed is worse than a late ping.
+    Business rejections (``errcode != 0``) are NOT retried: they are
+    deterministic (bad key, invalid content) and retrying would just spam the
+    API. ``wecom_api_error`` therefore surfaces immediately.
+    """
+
     def __init__(
-        self, *, transport: WeComTransport | None = None
+        self,
+        *,
+        transport: WeComTransport | None = None,
+        retries: int = 3,
+        backoff_seconds: float = 1.0,
     ) -> None:
         self._transport = transport if transport is not None else UrllibTransport()
+        self._retries = retries
+        self._backoff_seconds = backoff_seconds
 
     def webhook_send(self, *, content: str, webhook_url: str) -> dict[str, object]:
         """Send a group-robot webhook message.
@@ -82,10 +99,24 @@ class WeComApiClient:
             "msgtype": "markdown",
             "markdown": {"content": content},
         }
-        data = self._transport.request_json("POST", webhook_url, payload=payload)
-        if data.get("errcode", 0) != 0:
-            raise AppError(
-                "wecom_api_error",
-                f"webhook/send failed: {data.get('errmsg')}",
-            )
-        return data
+        attempt = 0
+        while True:
+            try:
+                data = self._transport.request_json(
+                    "POST", webhook_url, payload=payload
+                )
+            except AppError as error:
+                if (
+                    error.code == "wecom_http_error"
+                    and attempt < self._retries
+                ):
+                    attempt += 1
+                    time.sleep(self._backoff_seconds * attempt)
+                    continue
+                raise
+            if data.get("errcode", 0) != 0:
+                raise AppError(
+                    "wecom_api_error",
+                    f"webhook/send failed: {data.get('errmsg')}",
+                )
+            return data

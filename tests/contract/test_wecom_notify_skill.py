@@ -37,8 +37,15 @@ def test_grill_skill_delegates_notify_to_helper() -> None:
     assert "workflow block` 命令会自动推送" in skill
     assert "workflow transition` / `workflow abort` 命令会自动推送" in skill
     assert "--gate review" not in skill
-    assert "--gate blocked" not in skill
     assert "--gate terminal" not in skill
+    # EXCEPTION: grill's plan phase is a pure Q&A loop with NO Helper command to
+    # carry a mechanical notify — blocking questions wait for human answers
+    # across sessions. That one wait must use a template-driven `--gate blocked`
+    # (with --phase plan so it never collides with a real workflow-block dedup).
+    assert "--gate blocked --phase plan" in skill
+    assert "blocking questions" in skill
+    # every other blocked/terminal gate stays Helper-mechanical
+    assert "自动推送" in skill
 
 
 def test_git_handoff_skill_references_wecom_notify() -> None:

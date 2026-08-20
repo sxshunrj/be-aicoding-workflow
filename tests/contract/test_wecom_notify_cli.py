@@ -383,3 +383,68 @@ def test_cli_workflow_abort_auto_notifies_terminal(
     # terminal message now also covers the git-handoff decision (one send)
     assert "Git 收尾方式" in data["data"]["notify"].get("summary", "") or True
     assert transport.sent == 1
+
+
+def test_cli_wiki_propose_auto_notifies_governance(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """A candidate created via direct ``wiki propose`` (outside the
+    reflect-submit channel) mechanically pushes a governance notification —
+    a human promote/reject decision is never silently waited on."""
+    _write_config(tmp_path)
+    monkeypatch.setenv("WECOM_WEBHOOK_URL", _WEBHOOK)
+    transport = _FakeWeComTransport()
+    monkeypatch.setattr(
+        "ai_workflow.wecom.notify._client_for_webhook",
+        lambda: WeComApiClient(transport=transport),
+    )
+    wiki_root = tmp_path / "wiki"
+    wiki_root.mkdir(parents=True)
+    for name in ("approved", "candidates", "archive"):
+        (wiki_root / name).mkdir()
+    (wiki_root / "taxonomy.yaml").write_text(
+        "schema_version: 1\n"
+        "types: [rule, decision, pattern, pitfall, procedure]\n"
+        "phases: [implement]\n",
+        encoding="utf-8",
+    )
+    proposal_path = tmp_path / "proposal.json"
+    proposal_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "title": "Promote deterministic wiki knowledge",
+                "type": "rule",
+                "summary": "Approved knowledge should not depend on stale candidate content.",
+                "body": "# Claim\n\nPromotions must check the current digest before approval.",
+                "scope": {
+                    "repos": ["demo"],
+                    "services": ["workflow"],
+                    "paths": [],
+                    "languages": [],
+                    "phases": ["implement"],
+                },
+                "tags": ["wiki", "lifecycle"],
+                "sources": [{"kind": "run", "ref": "RUN-20260714-123456-abcdef"}],
+                "reuse_reason": "The guard applies to every future review of the same entry.",
+                "confidence": "high",
+                "possible_conflicts": [],
+                "suggested_owners": ["team-wiki"],
+                "review_after": "2026-10-14",
+                "raw_logs": "bounded log excerpt",
+            }
+        ),
+        encoding="utf-8",
+    )
+    status, data = _call(
+        capsys,
+        [
+            "wiki", "propose", "--wiki", str(wiki_root),
+            "--proposal", str(proposal_path), "--repo", str(tmp_path),
+        ],
+    )
+    assert status == 0
+    assert data["data"]["status"] == "candidate"
+    # run-less governance notify fires (repo-level, @all fallback)
+    assert data["data"]["notify"]["sent"] is True
+    assert transport.sent == 1

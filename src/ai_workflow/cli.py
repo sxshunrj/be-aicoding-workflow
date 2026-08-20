@@ -132,6 +132,7 @@ def _parser() -> argparse.ArgumentParser:
     propose = wiki_commands.add_parser("propose")
     propose.add_argument("--wiki", type=Path, required=True)
     propose.add_argument("--proposal", type=Path, required=True)
+    propose.add_argument("--repo", type=Path, default=None)
     wiki_review = wiki_commands.add_parser("review")
     wiki_review.add_argument("--wiki", type=Path, required=True)
     wiki_review.add_argument("--id", required=True)
@@ -147,7 +148,7 @@ def _parser() -> argparse.ArgumentParser:
     wecom_commands = wecom.add_subparsers(dest="wecom_command", required=True)
     wecom_notify = wecom_commands.add_parser("notify")
     wecom_notify.add_argument("--repo", type=Path, required=True)
-    wecom_notify.add_argument("--run-id", required=True)
+    wecom_notify.add_argument("--run-id", default=None)
     wecom_notify.add_argument(
         "--gate", required=True, choices=("review", "blocked", "governance", "git_handoff", "terminal")
     )
@@ -319,14 +320,15 @@ def _auto_notify_terminal(repo_root: Path, run_id: str) -> dict[str, object]:
 
 
 def _auto_notify_governance(
-    repo_root: Path, run_id: str, reason: str
+    repo_root: Path, run_id: str | None, reason: str
 ) -> dict[str, object]:
     """Mechanically push the knowledge-governance notification when a run's
     reflection produces a candidate that needs human promote/reject/keep, so the
     team is asked to govern the knowledge even if the harness LLM never invokes
     the ``$ai-knowledge-governance`` skill template (or invokes it without a
-    run-id). Enhancement-only: a failure writes a warning and never breaks the
-    reflection submit."""
+    run-id). Also fires for candidates created via direct ``wiki propose``
+    (run-less, repo-level). Enhancement-only: a failure writes a warning and
+    never breaks the reflection submit / wiki propose."""
     try:
         return notify_command(
             repo_root,
@@ -335,6 +337,37 @@ def _auto_notify_governance(
             phase=None,
             action="请选择 promote / reject / 保持",
             summary=reason,
+        )
+    except AppError as error:
+        print(
+            f"wecom notify soft-failed ({error.code}): {error.message}",
+            file=sys.stderr,
+        )
+        return {
+            "sent": False,
+            "error": error.code,
+            "message": error.message,
+        }
+
+
+def _auto_notify_git_handoff(
+    repo_root: Path, run_id: str | None
+) -> dict[str, object]:
+    """Mechanically push the git-handoff notification when a Git decision is
+    needed outside the terminal path (mid-run git handoff, standalone repo
+    cleanup). The terminal gate already merges the git decision into its single
+    message; this helper covers every other git decision point so a human is
+    always asked regardless of whether the LLM follows the ``$ai-git-handoff``
+    template. Enhancement-only: a failure writes a warning and never breaks the
+    enclosing flow."""
+    try:
+        return notify_command(
+            repo_root,
+            run_id=run_id,
+            gate="git_handoff",
+            phase=None,
+            action="请选择 skip / commit / MR",
+            summary="Git 收尾需要人工决定（skip / commit current branch / create branch+MR）",
         )
     except AppError as error:
         print(
@@ -450,6 +483,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 path = service.repository.root / "candidates" / f"{entry.id}.md"
                 data = {"id": entry.id, "status": entry.status.value, "path": str(path),
                         "digest": _file_digest(path)}
+                # A candidate created outside the reflect-submit channel still
+                # needs a human governance decision. Push mechanically so a
+                # direct `wiki propose` never silently waits for a human who
+                # was never told. Repo-level (run-less) notify — the wiki has
+                # no run context. Requires --repo for the wecom config.
+                if args.repo is not None:
+                    data = {**data, "notify": _auto_notify_governance(
+                        args.repo,
+                        run_id=None,
+                        reason=f"知识候选 {entry.id} 已产生，需人工选择 promote / reject / 保持",
+                    )}
             elif args.wiki_command == "review":
                 data = service.review_candidate(args.id, args.max_related)
             elif args.wiki_command == "promote":
