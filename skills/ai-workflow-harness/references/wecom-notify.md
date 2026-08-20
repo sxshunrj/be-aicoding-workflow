@@ -34,7 +34,7 @@ ai-workflow wecom notify \
 
 ## @ 强提醒
 
-所有通知的「授权操作者」以企业微信 `<@userid>` 提及语法渲染（真实 userid 或 `@all`），会真正 @ 到成员并触发强提醒。若 run 未记录操作者（`--operators` 与 `WECOM_CREATOR_USERID` 均缺失），自动回退 `<@all>` @ 全群，保证一定有人被提醒。企业微信群机器人 markdown 里纯文本 `@名字` 不触发强提醒，勿用。
+所有通知的「授权操作者」以企业微信 `<@userid>` 提及语法渲染（真实 userid 或 `@all`），会真正 @ 到成员并触发强提醒。若 run 未记录操作者（`--operators` 与 `WECOM_CREATOR_USERID` 均缺失），依次回退：机器主机名（首段 label，可作为 userid 时）→ `<@all>` @ 全群，保证一定有人被提醒。企业微信群机器人 markdown 里纯文本 `@名字` 不触发强提醒，勿用。
 
 ## 输出
 

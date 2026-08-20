@@ -4,10 +4,28 @@ import json
 import time
 from typing import Protocol
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from ai_workflow.errors import AppError
+
+_WECOM_WEBHOOK_HOST = "qyapi.weixin.qq.com"
+
+
+def _validated_webhook_url(webhook_url: str) -> str:
+    """Group-robot webhooks only ever target the official WeCom API over
+    HTTPS. Rejecting anything else up front keeps a misconfigured (or
+    hostilely swapped) env value from turning the notifier into a request
+    forger aimed at arbitrary internal hosts (SSRF). Only scheme and host
+    are reported — the query carries the secret key."""
+    split = urlsplit(webhook_url)
+    if split.scheme != "https" or (split.hostname or "") != _WECOM_WEBHOOK_HOST:
+        raise AppError(
+            "wecom_invalid_webhook",
+            f"webhook URL must be https://{_WECOM_WEBHOOK_HOST}/... "
+            f"(got scheme={split.scheme or 'none'}, host={split.hostname or 'none'})",
+        )
+    return webhook_url
 
 
 class WeComTransport(Protocol):
@@ -30,6 +48,10 @@ class UrllibTransport:
         params: dict[str, object] | None = None,
         payload: dict[str, object] | None = None,
     ) -> dict[str, object]:
+        # Sink-side allowlist: no request leaves this process unless it
+        # targets the official WeCom API over HTTPS, whatever the caller
+        # derived the URL from (env var, config, run state).
+        _validated_webhook_url(url)
         target = url
         if params:
             target = f"{url}?{urlencode({k: str(v) for k, v in params.items()})}"
@@ -95,6 +117,7 @@ class WeComApiClient:
         so the message is sent directly. Markdown supports
         ``<@userid>`` in ``content`` to force-notify members.
         """
+        _validated_webhook_url(webhook_url)
         payload: dict[str, object] = {
             "msgtype": "markdown",
             "markdown": {"content": content},

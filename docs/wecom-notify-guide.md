@@ -119,7 +119,7 @@ wecom:
 | 字段 | 必填 | 含义 |
 | --- | --- | --- |
 | `enabled` | 是 | 是否启用通知（默认 false） |
-| `webhook_url_env` | 是 | 群机器人 Webhook URL 的**环境变量名** |
+| `webhook_url_env` | 是 | 群机器人 Webhook URL 的**环境变量名**。发送前会校验 URL 必须为 `https` 且指向官方域名 `qyapi.weixin.qq.com`，否则软失败（`wecom_invalid_webhook`），不会向任意地址发请求 |
 | `creator_userid_env` | 否 | 创建者 userid 的环境变量名（默认 `WECOM_CREATOR_USERID`） |
 | `gates` | 否 | 启用通知的节点，默认全部五个 |
 
@@ -215,7 +215,7 @@ ai-workflow wecom notify --repo "$PWD" --run-id RUN-xxx \
 plan.solution 已完成，需审核
 ```
 
-> **@ 强提醒**：动作行以企业微信 `<@userid>` 提及语法渲染授权操作者（真实 userid 或 `@all`），会真正 @ 到成员并触发强提醒。若 run 未记录操作者（`--operators` 与 `WECOM_CREATOR_USERID` 均缺失），自动回退为 `<@all>` @ 全群，保证一定有人被提醒。
+> **@ 强提醒**：动作行以企业微信 `<@userid>` 提及语法渲染授权操作者（真实 userid 或 `@all`），会真正 @ 到成员并触发强提醒。若 run 未记录操作者（`--operators` 与 `WECOM_CREATOR_USERID` 均缺失），依次回退：机器主机名（`platform.node()` 首段，如 `sunxianshundeMacBook-Pro`；含非 ASCII 字符等无法作为 userid 时跳过）→ `<@all>` @ 全群，保证一定有人被提醒。注意：主机名若与企微 userid 不一致，`<@主机名>` 不会触发任何人的强提醒（消息仍送达群里），此时设置 `WECOM_CREATOR_USERID` 或 init 传 `--operators` 即可精确 @。
 >
 > **紧凑格式**：需求只取首个非空行作为标题（去 `#` 标记，跳过 `---` 分隔线，按 UTF-8 字符边界截断至 160 字节）；`--summary` 超长导致整条消息超过 4096 字节上限时同样按字符边界截断，固定骨架与 `<@userid>` 永远保留。全文 PRD 不进群，完整内容在 run 状态里看。
 
