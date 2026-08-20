@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -164,6 +165,22 @@ def _content_digest(*, gate: str, phase: str | None, content: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _hostname_operator() -> str | None:
+    """Best-effort zero-config operator from the machine's host name.
+
+    Users who configure neither ``--operators`` nor the creator env still get a
+    targeted mention instead of ``@all`` whenever the host name (first label of
+    ``platform.node()``) is usable as a WeCom userid. A localized or empty host
+    name cannot appear in a WeCom userid, and an invalid ``<@id>`` silently
+    notifies no one — worse than ``@all`` — so it returns None to keep the
+    ``@all`` fallback.
+    """
+    name = platform.node().split(".", 1)[0].strip()
+    if name and all(ch.isascii() and (ch.isalnum() or ch in "-_") for ch in name):
+        return name
+    return None
+
+
 def _resolve_operators(
     config: RepositoryConfig, operators: list[str]
 ) -> list[str]:
@@ -172,9 +189,9 @@ def _resolve_operators(
     WeCom group-robot webhooks only force-notify members whose userid appears
     as ``<@userid>`` in the markdown. If a run recorded no operators (init had
     no --operators and no WECOM_CREATOR_USERID), fall back to the configured
-    creator userid env, then to ``@all`` so the whole team is pinged — a message
-    with "@无" arrives in the group but never surfaces, which users experience
-    as "no notification at all".
+    creator userid env, then to the machine's host name, then to ``@all`` so
+    the whole team is pinged — a message with "@无" arrives in the group but
+    never surfaces, which users experience as "no notification at all".
     """
     resolved = [op for op in operators if isinstance(op, str) and op.strip()]
     if resolved:
@@ -187,6 +204,9 @@ def _resolve_operators(
             )
         if value:
             return [value]
+    hostname = _hostname_operator()
+    if hostname:
+        return [hostname]
     return ["@all"]
 
 

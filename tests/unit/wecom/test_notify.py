@@ -322,6 +322,7 @@ def test_notify_run_less_sends_with_repo_context(tmp_path: Path, monkeypatch) ->
     repo-level context instead of hard-failing on state_not_found."""
     _set_webhook_env(monkeypatch)
     _config(tmp_path)
+    monkeypatch.setattr("ai_workflow.wecom.notify.platform.node", lambda: "")
     repo = tmp_path
     client, transport = _client()
 
@@ -352,6 +353,7 @@ def test_notify_unknown_run_id_degrades_to_repo_notify(
     repo-level notification instead of raising state_not_found."""
     _set_webhook_env(monkeypatch)
     _config(tmp_path)
+    monkeypatch.setattr("ai_workflow.wecom.notify.platform.node", lambda: "")
     repo = tmp_path
     client, transport = _client()
 
@@ -662,14 +664,45 @@ def test_resolve_operators_falls_back_to_creator_userid(
     assert _resolve_operators(config, []) == ["1688852707310042"]
 
 
-def test_resolve_operators_falls_back_to_at_all(tmp_path: Path) -> None:
-    """Last-resort: no operators and no creator userid -> ping the whole group
-    so a human is always force-notified."""
+def test_resolve_operators_falls_back_to_at_all(tmp_path: Path, monkeypatch) -> None:
+    """Last-resort: no operators, no creator userid, no usable host name ->
+    ping the whole group so a human is always force-notified."""
     (tmp_path / ".ai-workflow.yaml").write_text(
         "repository: demo\nwecom:\n  enabled: true\n", encoding="utf-8"
     )
+    monkeypatch.setattr("ai_workflow.wecom.notify.platform.node", lambda: "")
     config = RepositoryConfig.load(tmp_path)
     assert _resolve_operators(config, []) == ["@all"]
+
+
+def test_resolve_operators_falls_back_to_hostname(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Zero-config default: no operators and no creator userid -> mention the
+    machine's host name instead of @all, so a single-member machine gets a
+    targeted ping."""
+    (tmp_path / ".ai-workflow.yaml").write_text(
+        "repository: demo\nwecom:\n  enabled: true\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "ai_workflow.wecom.notify.platform.node",
+        lambda: "sunxianshundeMacBook-Pro.local",
+    )
+    config = RepositoryConfig.load(tmp_path)
+    assert _resolve_operators(config, []) == ["sunxianshundeMacBook-Pro"]
+
+
+def test_hostname_operator_rejects_unusable_host_names(monkeypatch) -> None:
+    """A localized (non-ASCII) or empty host name cannot be a WeCom userid; an
+    invalid <@id> silently notifies no one, so @all must stay the fallback."""
+    from ai_workflow.wecom.notify import _hostname_operator
+
+    monkeypatch.setattr(
+        "ai_workflow.wecom.notify.platform.node", lambda: "张三的MacBook"
+    )
+    assert _hostname_operator() is None
+    monkeypatch.setattr("ai_workflow.wecom.notify.platform.node", lambda: ".local")
+    assert _hostname_operator() is None
 
 
 def test_fit_bytes_keeps_short_text_unchanged() -> None:

@@ -6,3 +6,6 @@ __pycache__/
 # Helper-owned runtime dirs (never committed)
 .ai-workflow/notifications/
 .ai-workflow/runs/
+
+# Mimosa security-scan plugin runtime state (session-local)
+.mimosa/

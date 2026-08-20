@@ -480,6 +480,31 @@ def test_cli_workflow_init_default_operator_uses_configured_env(
     assert data["data"]["artifacts"]["operators"] == ["1688852707310042"]
 
 
+def test_cli_workflow_init_default_operator_falls_back_to_hostname(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """Zero-config default: with no --operators, no creator env, and no shell
+    config, ``workflow init`` records the machine's host name as the operator
+    so notifications target a single member instead of @all."""
+    _write_config(tmp_path)
+    monkeypatch.delenv("WECOM_CREATOR_USERID", raising=False)
+    monkeypatch.setattr(
+        "ai_workflow.wecom.notify.platform.node",
+        lambda: "sunxianshundeMacBook-Pro.local",
+    )
+    status, data = _call(
+        capsys,
+        [
+            "workflow", "init",
+            "--repo", str(tmp_path),
+            "--source-revision", "abc123",
+            "--requirement", "x",
+        ],
+    )
+    assert status == 0
+    assert data["data"]["artifacts"]["operators"] == ["sunxianshundeMacBook-Pro"]
+
+
 def test_cli_workflow_init_default_operator_falls_back_to_shell_files(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:

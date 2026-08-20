@@ -14,6 +14,7 @@ from ai_workflow.install import install_skills
 from ai_workflow.path_authorization import PathKind, RepositoryPathAuthorizer
 from ai_workflow.wecom.notify import (
     _env_from_shell_files,
+    _hostname_operator,
     _shell_env_files,
     notify_command,
     reset_notify_dedup,
@@ -359,8 +360,10 @@ def _default_operator(repo_root: Path) -> str:
     """Resolve the default WeCom operator for ``workflow init`` when
     ``--operators`` is omitted. Mirrors the notify side: the env variable name
     comes from ``wecom.creator_userid_env`` (falling back to
-    ``WECOM_CREATOR_USERID``), and GUI-launched agents that miss the shell's
-    exports still resolve the value from the user's shell config files."""
+    ``WECOM_CREATOR_USERID``), GUI-launched agents that miss the shell's
+    exports still resolve the value from the user's shell config files, and a
+    machine with neither configured falls back to its host name before the
+    notify-side ``@all``."""
     try:
         creator_env = (
             RepositoryConfig.load(repo_root).wecom_creator_userid_env
@@ -371,6 +374,8 @@ def _default_operator(repo_root: Path) -> str:
     creator = os.environ.get(creator_env, "").strip()
     if not creator:
         creator = (_env_from_shell_files(creator_env, _shell_env_files()) or "").strip()
+    if not creator:
+        creator = _hostname_operator() or ""
     return creator
 
 
@@ -522,6 +527,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 except AppError as error:
                     if error.code not in {
                         "wecom_not_configured",
+                        "wecom_invalid_webhook",
                         "wecom_api_error",
                         "wecom_http_error",
                         "wecom_tag_not_found",

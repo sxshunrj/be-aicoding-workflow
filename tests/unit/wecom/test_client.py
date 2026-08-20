@@ -27,7 +27,7 @@ def test_urllib_transport_converts_urlerror_to_apperror(monkeypatch) -> None:
     monkeypatch.setattr("ai_workflow.wecom.client.urlopen", _offline)
     transport = UrllibTransport()
     with pytest.raises(AppError) as exc:
-        transport.request_json("GET", "https://example.com/webhook/send")
+        transport.request_json("GET", "https://qyapi.weixin.qq.com/webhook/send")
     assert exc.value.code == "wecom_http_error"
     assert "offline" in exc.value.message
 
@@ -41,7 +41,7 @@ def test_urllib_transport_converts_timeout_to_apperror(monkeypatch) -> None:
     monkeypatch.setattr("ai_workflow.wecom.client.urlopen", _timeout)
     transport = UrllibTransport()
     with pytest.raises(AppError) as exc:
-        transport.request_json("GET", "https://example.com/webhook/send")
+        transport.request_json("GET", "https://qyapi.weixin.qq.com/webhook/send")
     assert exc.value.code == "wecom_http_error"
 
 
@@ -56,6 +56,36 @@ def test_webhook_send_posts_with_embedded_key() -> None:
     assert url == webhook  # exact webhook URL, key included
     assert payload["msgtype"] == "markdown"
     assert payload["markdown"]["content"] == "**hi**"
+
+
+def test_webhook_send_rejects_non_https_webhook() -> None:
+    """An http:// webhook (misconfigured env) is refused before any request —
+    the notifier must only talk to the official WeCom API over HTTPS."""
+    transport = FakeWeComTransport()
+    client = WeComApiClient(transport=transport)
+    with pytest.raises(AppError) as exc:
+        client.webhook_send(
+            content="**hi**",
+            webhook_url="http://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
+        )
+    assert exc.value.code == "wecom_invalid_webhook"
+    assert transport.calls == []
+
+
+def test_webhook_send_rejects_foreign_host_webhook() -> None:
+    """A webhook pointing anywhere but qyapi.weixin.qq.com is refused before
+    any request, so a swapped env value cannot forge requests to arbitrary
+    internal hosts (SSRF). The error never echoes the key-bearing query."""
+    transport = FakeWeComTransport()
+    client = WeComApiClient(transport=transport)
+    with pytest.raises(AppError) as exc:
+        client.webhook_send(
+            content="**hi**",
+            webhook_url="https://internal.example.com/webhook/send?key=secret",
+        )
+    assert exc.value.code == "wecom_invalid_webhook"
+    assert "secret" not in exc.value.message
+    assert transport.calls == []
 
 
 def test_webhook_send_raises_on_errcode() -> None:
