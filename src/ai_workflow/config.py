@@ -58,7 +58,7 @@ class RepositoryConfig:
     adapter_report_paths: tuple[str, ...]
     wecom_enabled: bool = False
     wecom_webhook_url_env: str | None = None
-    wecom_creator_userid_env: str | None = None
+    wecom_creator_userid_env: str = "WECOM_CREATOR_USERID"
     wecom_gates: tuple[str, ...] = ("review", "blocked", "governance", "git_handoff", "terminal")
 
     def command(self, name: str) -> tuple[str, ...] | None:
@@ -152,7 +152,9 @@ class RepositoryConfig:
                 wecom.get("webhook_url_env"), "wecom.webhook_url_env"
             ),
             wecom_creator_userid_env=_optional_env_name(
-                wecom.get("creator_userid_env"), "wecom.creator_userid_env"
-            ),
+                wecom.get("creator_userid_env", "WECOM_CREATOR_USERID"),
+                "wecom.creator_userid_env",
+            )
+            or "WECOM_CREATOR_USERID",
             wecom_gates=wecom_gates,
         )

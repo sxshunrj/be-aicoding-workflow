@@ -17,6 +17,17 @@ Status: P0 workflow correctness locally verified; real-client parity evidence pe
 4. 诊断环境：`ai-workflow doctor --source-root "$PWD/skills" --repo "$PWD/examples/language-neutral" --client all`。
 5. 运行离线验证：`python -m pytest -q`。
 
+## Helper CLI 概览
+
+除 Skill 文档中的 workflow 生命周期命令（`workflow init/status/resume/begin/stage/finalize/review/transition/...`）外，Helper 还提供：
+
+- `ai-workflow install / doctor`：安装与诊断 Skill 套件。
+- `ai-workflow config show --repo <path>`：查看某仓库解析后的 `.ai-workflow.yaml` 配置。
+- `ai-workflow config authorize-path --repo <path> --kind input|generated-test|report --path <p>`：向 adapter 追加一条授权路径。
+- `ai-workflow workflow review-accept --run-id ... --expected-digest ...`：digest 保护的 review gate 接受。
+- `ai-workflow wiki lint/search/packet/propose/review/promote/reject/archive`：Wiki 检索与治理生命周期。
+- `ai-workflow wecom notify`：企业微信人工干预通知（见 guide）。
+
 ## Skill Overview
 
 Skill 名称保持英文，便于在 Codex/Claude Code 中稳定调用；说明和流程以中文为主。调用时使用 `$skill-name`，不是 `/skills` 列表里的展示标题。

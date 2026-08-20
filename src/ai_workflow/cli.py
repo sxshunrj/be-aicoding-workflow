@@ -12,7 +12,12 @@ from ai_workflow.doctor import run_doctor
 from ai_workflow.errors import AppError
 from ai_workflow.install import install_skills
 from ai_workflow.path_authorization import PathKind, RepositoryPathAuthorizer
-from ai_workflow.wecom.notify import notify_command, reset_notify_dedup
+from ai_workflow.wecom.notify import (
+    _env_from_shell_files,
+    _shell_env_files,
+    notify_command,
+    reset_notify_dedup,
+)
 from ai_workflow.workflow.models import Phase, RunState
 from ai_workflow.workflow.review import ReviewDecision
 from ai_workflow.workflow.service import WorkflowService
@@ -350,35 +355,23 @@ def _auto_notify_governance(
         }
 
 
-def _auto_notify_git_handoff(
-    repo_root: Path, run_id: str | None
-) -> dict[str, object]:
-    """Mechanically push the git-handoff notification when a Git decision is
-    needed outside the terminal path (mid-run git handoff, standalone repo
-    cleanup). The terminal gate already merges the git decision into its single
-    message; this helper covers every other git decision point so a human is
-    always asked regardless of whether the LLM follows the ``$ai-git-handoff``
-    template. Enhancement-only: a failure writes a warning and never breaks the
-    enclosing flow."""
+def _default_operator(repo_root: Path) -> str:
+    """Resolve the default WeCom operator for ``workflow init`` when
+    ``--operators`` is omitted. Mirrors the notify side: the env variable name
+    comes from ``wecom.creator_userid_env`` (falling back to
+    ``WECOM_CREATOR_USERID``), and GUI-launched agents that miss the shell's
+    exports still resolve the value from the user's shell config files."""
     try:
-        return notify_command(
-            repo_root,
-            run_id=run_id,
-            gate="git_handoff",
-            phase=None,
-            action="请选择 skip / commit / MR",
-            summary="Git 收尾需要人工决定（skip / commit current branch / create branch+MR）",
+        creator_env = (
+            RepositoryConfig.load(repo_root).wecom_creator_userid_env
+            or "WECOM_CREATOR_USERID"
         )
-    except AppError as error:
-        print(
-            f"wecom notify soft-failed ({error.code}): {error.message}",
-            file=sys.stderr,
-        )
-        return {
-            "sent": False,
-            "error": error.code,
-            "message": error.message,
-        }
+    except AppError:
+        creator_env = "WECOM_CREATOR_USERID"
+    creator = os.environ.get(creator_env, "").strip()
+    if not creator:
+        creator = (_env_from_shell_files(creator_env, _shell_env_files()) or "").strip()
+    return creator
 
 
 def _notify_pending_review(
@@ -553,9 +546,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if item.strip()
                 )
                 if not operators:
-                    creator = os.environ.get("WECOM_CREATOR_USERID", "")
-                    if creator.strip():
-                        operators = (creator.strip(),)
+                    creator = _default_operator(args.repo)
+                    if creator:
+                        operators = (creator,)
                 data = service.init(
                     args.repo,
                     args.source_revision,

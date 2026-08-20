@@ -57,7 +57,7 @@
 
 4. **授权标注**：`workflow init --operators` 指定操作者（创建者默认），写入 `artifacts["operators"]`；通知从这里读取并标注
 
-5. **Skill 集成**：四个 Skill 在人工 gate 处调用 `wecom notify`（**blocked 例外**：由 `workflow block` 命令在 Helper 层机械自动推送，不依赖 skill/LLM 调用）
+5. **Skill 集成 + Helper 机械推送**：run 内所有 gate（review / blocked / governance / terminal+git_handoff 合并单条）由 Helper 在对应 CLI 命令内机械自动推送（不依赖 skill/LLM 调用）；`workflow status` 恢复时补发未通知的 pending review；run 外候选（`wiki propose`）由命令层推送。Skill 仍可在人工 gate 处补充调用 `wecom notify`，但不是通知的唯一来源。
 
 ## 架构（Plan 2：未实现，回调回复即处理）
 
@@ -112,24 +112,18 @@ Plan 2 组件与流程（保留设计，当前未实现）：
 
 ## 消息内容与 @ 标识（Plan 1）
 
-Markdown 格式（企微群机器人 markdown 支持；操作者为纯文本标注，不会真 @）：
+Markdown 格式（企微群机器人 markdown 支持；操作者以 `<@userid>` 真正强提醒，未解析到具体 userid 时回退 `@all`）。当前实现为紧凑格式（行动项置首，PRD 标题只取 160 字节 gist，整条消息 4096 字节截断）：
 
 ```markdown
 **🔔 工作流需要人工处理**
-
-👤 开启者：@sunxianshun
-🔑 授权操作者：@sunxianshun @wangxiaofei
+<@sunxianshun> <@wangxiaofei>
+👉 请审核 plan.solution（接受或提出 rerun proposal）
 📌 类型：Review Gate（plan 阶段）
 🆔 Run ID：`a1b2c3d4`
-🏷 摘要：实现订单导出模块，含单元测试
-📁 仓库：your-repo
-
-plan.solution 已完成，需要审核
-请授权操作者处理：接受或修改 rerun proposal
-其他成员仅收到通知，请勿直接操作本工作流。
+🏷 摘要：实现订单导出模块…
 ```
 
-> 备注：群机器人 markdown 支持 `<@userid>` 真 @，但当前 `render_message` 以纯文本 `@名字` 展示，如需真 @ 需扩展。
+> 状态更新（2026-08-20）：早期版本的「👤 开启者 / 🔑 授权操作者纯文本标注、不支持真 @」格式已被替换；`render_message` 现使用 `<@userid>` 强提醒。
 
 ## 回复命令语法（Plan 2）
 
@@ -157,8 +151,8 @@ plan.solution 已完成，需要审核
 | 层 | 覆盖 | 落点 |
 | --- | --- | --- |
 | unit | 配置解析、webhook 发送、幂等去重、消息渲染 | `tests/unit/wecom/` |
-| contract | 四个 Skill 契约引用 `wecom notify`；CLI envelope（dry-run / not_enabled / 网络失败软失败 / 未设 webhook 报错） | `tests/contract/test_wecom_notify_*.py` |
-| e2e | fake transport：notify → dedup 全链路 | `tests/e2e/test_wecom_notify.py` |
+| contract | 四个 Skill 契约引用 `wecom notify`；CLI envelope（dry-run / not_enabled / 网络失败软失败 / 未设 webhook 报错）；block / review / abort / wiki propose 的 Helper 自动推送 | `tests/contract/test_wecom_notify_*.py` |
+| e2e | fake transport：notify → dedup 全链路、resume 后重发、status 补发 pending review、checkpoint auto-block、dedup 日志写失败不 crash | `tests/e2e/test_wecom_notify.py`、`tests/e2e/test_wecom_notify_gates.py`、`tests/e2e/test_wecom_notify_gates_deep.py` |
 
 测试不真连企微；用 fake transport，本地离线跑。真实对接用 `--dry-run` + 手动脚本验证一次。
 
