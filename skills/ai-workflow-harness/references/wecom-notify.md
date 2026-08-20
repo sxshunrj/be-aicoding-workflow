@@ -7,15 +7,17 @@
 ```bash
 ai-workflow wecom notify \
   --repo <repo> \
-  --run-id <run-id> \
+  [--run-id <run-id>] \
   --gate <review|blocked|governance|git_handoff|terminal> \
   --action "<人类需要做什么>" \
-  [--phase <phase>] \
   [--summary "<摘要>"] \
   [--dry-run]
 ```
 
+- `--run-id` 可选：run 内传 run-id；**run 外（独立 Git 收尾、`wiki propose` 直建候选、仓库级治理）可省略**，Helper 自动降级为 repo 级通知（requirement 显示仓库名、操作者回退创建者/@all），不再因 `state_not_found` 硬失败。
 - `--dry-run`：只打印 payload，不真发。
+- 内容上限：企业微信群机器人 markdown 消息内容上限 **4096 字节**。`render_message` 会按 UTF-8 字符边界截断超长的 requirement / summary（不拆多字节字符），固定骨架与 `<@userid>` 强提醒 @ 永远保留，截断处追加「（内容过长已截断）」标记。超长内容不再被 API 拒绝（否则通知静默丢失）。
+- 网络级发送失败自动重试 3 次（退避），业务拒绝（`errcode != 0`）不重试。
 - 幂等：同一 `(run_id, gate, phase, 内容摘要)` 不重复推送；`--force` 强制重发。
 - **Review / Blocked 必须传 `--phase <phase>`**：去重键含 phase，缺省时不同阶段同 gate 的内容完全相同，会互相误去重（spec 门发过后，plan 门不再推送）。
 - 失败只写 warning，不中断 workflow。
@@ -25,9 +27,10 @@ ai-workflow wecom notify \
 - Review Gate：`workflow review` 返回 `human_review` 时**自动推送**（Helper 机械保证，phase 由 Helper 自动填写），无需 skill 调用。
 - Blocked：`workflow block` **自动推送**（Helper 机械保证，phase 由 Helper 自动填写），无需 skill 调用。
 - Terminal Completion + Git Handoff：`workflow transition`（→completed）/ `workflow abort`（→aborted）时**自动推送一条消息**，同时请团队验收终态并决定 Git 收尾方式（合并单条发送，避免企业微信群机器人 ~20s/条 限频导致第二条被丢弃）。
-- Knowledge Governance：`workflow reflect-submit` 产出 candidate 时**自动推送**（Helper 机械保证），无需 skill 调用。
+- Knowledge Governance：`workflow reflect-submit` 产出 candidate 时**自动推送**（Helper 机械保证），无需 skill 调用；直接 `wiki propose --repo <repo>` 建候选也**自动推送**（run 外 repo 级通知）。
+- Git Handoff：并入 Terminal Completion 消息（`workflow transition`/`workflow abort`）。run 外独立 Git 收尾时用 `$ai-git-handoff` 模板调用 `--gate git_handoff`（`--run-id` 可省略）。
 - 恢复补发：`workflow status` 检测到 pending 且未通知过的 `human_review` gate 时补发一条 review 通知（幂等，dedup 抑制已通知过的）。恢复会话不再静默卡住。
-- `$ai-git-handoff` / `$ai-knowledge-governance` skill 模板中的 notify 调用仍需带 `--repo <repo> --run-id <run-id>`（skill 驱动的增强通知，已由 Helper 机械兜底）。
+- `$ai-git-handoff` / `$ai-knowledge-governance` skill 模板中的 notify 调用仍需带 `--repo <repo>`（`--run-id` 仅 run 内传；run 外省略自动降级）。
 
 ## @ 强提醒
 

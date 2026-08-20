@@ -150,19 +150,21 @@ ai-workflow workflow init --repo "$PWD" \
 
 ### 自动触发（推荐）
 
-**5 个人工节点全部由 Helper 机械推送，不依赖任何 skill 或 LLM 遵守模板**：
+**5 个人工节点由 Helper 机械推送，不依赖任何 skill 或 LLM 遵守模板**：
 
 | 节点 | 触发命令 | 通知 |
 | --- | --- | --- |
 | Review Gate | `workflow review` 返回 `human_review` | 自动推送 |
 | Blocked | `workflow block`（含 checkpoint 失败内部 auto-block） | 自动推送 |
 | Terminal Completion | `workflow transition`→completed / `workflow abort`→aborted | 自动推送（同一条消息同时请团队验收终态并决定 Git 收尾方式，避免企业微信限频丢消息） |
-| Knowledge Governance | `workflow reflect-submit` 产出 candidate | 自动推送 |
-| Git Handoff | 并入 Terminal Completion 消息 | 自动推送 |
+| Knowledge Governance | `workflow reflect-submit` 产出 candidate；直接 `wiki propose --repo <repo>` 建候选 | 自动推送（后者为 run 外 repo 级通知） |
+| Git Handoff | 并入 Terminal Completion 消息；run 外独立收尾由 `$ai-git-handoff` 模板调用 | 自动推送 / 模板调用 |
 
 另外，`workflow status`（恢复会话的入口）检测到 pending 且未通知过的 `human_review` gate 时会补发一条 review 通知——恢复流程不再静默卡住。
 
-正常跑工作流即可，无需手动操作。`$ai-git-handoff` / `$ai-knowledge-governance` skill 模板中的通知调用仍保留（须带 `--repo <repo> --run-id <run-id>`），但已由上面的机械推送兜底。
+**机械 gate 之外的所有人工等待都必须显式通知**（澄清循环、bootstrap run 选择、config 错误等待修复、result_conflict / invalid_state 人工处置、Grill plan blocking questions）：进入等待前调用 `ai-workflow wecom notify --repo <repo> [--run-id <run-id>] --gate blocked ...`。run 外场景（独立 Git 收尾、`wiki propose`、仓库级治理）可省略 `--run-id`，Helper 自动降级为 repo 级通知并 @ 全群，不再因 run 不存在而硬失败。
+
+正常跑工作流即可，无需手动操作。`$ai-git-handoff` / `$ai-knowledge-governance` skill 模板中的通知调用仍保留（须带 `--repo <repo>`，`--run-id` 仅 run 内传），但已由上面的机械推送兜底。
 
 ### 手动调用
 
@@ -194,7 +196,7 @@ ai-workflow wecom notify --repo "$PWD" --run-id RUN-xxx \
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
 | `--repo` | 是 | 仓库根目录 |
-| `--run-id` | 是 | 目标 run |
+| `--run-id` | 否 | 目标 run（run 外可省略，自动降级为 repo 级通知） |
 | `--gate` | 是 | `review` / `blocked` / `governance` / `git_handoff` / `terminal` |
 | `--action` | 是 | 人类需要做什么（写入消息） |
 | `--phase` | 否 | 阶段（review/blocked 建议提供） |

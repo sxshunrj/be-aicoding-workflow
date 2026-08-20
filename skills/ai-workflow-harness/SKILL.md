@@ -14,6 +14,7 @@ description: Use when 用户显式要求持久化四阶段 AI 编码工作流、
 - `dispatch all sibling children before waiting`；`silence is not failure`，无显式 `ChildResult` 就继续等待。
 - `ChildResult-only completion`：消息、沉默、tool error、部分报告都不算 child 完成。
 - `mandatory human gates`：blocked 的 `resume`/`abort`、要求人工的 review、terminal completion、knowledge governance 与 Git handoff 都必须等待人类明确决定；到点即通过 `ai-workflow wecom notify` 通知团队，失败仅写 warning，不影响主流程。
+- `notify before every human wait`：任何需要人类回答才能继续的环节——澄清循环（反馈无法唯一映射）、bootstrap run 选择/切换、config 错误等待修复、result_conflict / invalid_state 报告人工处置、Grill plan blocking questions——都必须在进入等待前调用 `ai-workflow wecom notify`（run 内带 `--run-id`，run 外省略自动降级 repo 级通知）。机械 gate（review/blocked/terminal/governance）由 Helper 自动推送；此规则覆盖机械 gate 之外的所有人工等待，保证 run 不会在人类离开会话后无限静默。
 - `run_graph 是唯一调度真值`：pending/valid/rerun 与 reason 只能由 Helper state 表达；聊天、记忆或单个 child 反馈不能替代 graph。
 - 先推导 rerun proposal，再进入 Review Gate；Review Gate accept 后才允许 transition。
 - blocked 不受 auto_accept 影响；terminal completion、knowledge governance 和 Git handoff 也不受 auto_accept 影响。

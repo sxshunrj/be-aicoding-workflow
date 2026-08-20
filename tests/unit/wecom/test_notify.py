@@ -7,8 +7,10 @@ from ai_workflow.config import RepositoryConfig
 from ai_workflow.wecom.client import WeComApiClient
 from ai_workflow.wecom.notify import (
     _env_from_shell_files,
+    _fit_bytes,
     _resolve_operators,
     _webhook_url,
+    _WECOM_MARKDOWN_MAX_BYTES,
     notify_command,
     render_message,
 )
@@ -310,6 +312,89 @@ def test_notify_requires_a_target(tmp_path: Path) -> None:
     assert result["reason"] == "notify_target_not_configured"
 
 
+def test_notify_run_less_sends_with_repo_context(tmp_path: Path, monkeypatch) -> None:
+    """Standalone (run-less) flows — direct `wiki propose`, manual git handoff —
+    must still reach the team. Without a run, the message degrades to a
+    repo-level context instead of hard-failing on state_not_found."""
+    _set_webhook_env(monkeypatch)
+    _config(tmp_path)
+    repo = tmp_path
+    client, transport = _client()
+
+    result = notify_command(
+        repo,
+        run_id=None,
+        gate="governance",
+        action="请选择 promote / reject / 保持",
+        summary="知识候选 KB-1 已产生",
+        client=client,
+    )
+    assert result["sent"] is True
+    assert result["dedup"] == "new"
+    payload = transport.sent[0]
+    content = payload["markdown"]["content"]
+    # run-less message uses repo name as context and falls back to @all ping
+    assert "demo" in content
+    assert "<@all>" in content
+    assert "（run 外）" in content
+    assert "知识候选 KB-1 已产生" in content
+
+
+def test_notify_unknown_run_id_degrades_to_repo_notify(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A run-id that no longer exists (run cleaned up) must not hard-fail the
+    notify: the team still needs the ping, so the message degrades to a
+    repo-level notification instead of raising state_not_found."""
+    _set_webhook_env(monkeypatch)
+    _config(tmp_path)
+    repo = tmp_path
+    client, transport = _client()
+
+    result = notify_command(
+        repo,
+        run_id="RUN-DOES-NOT-EXIST",
+        gate="git_handoff",
+        action="请选择 skip / commit / MR",
+        client=client,
+    )
+    assert result["sent"] is True
+    content = transport.sent[0]["markdown"]["content"]
+    assert "Git Handoff" in content
+    assert "<@all>" in content
+
+
+def test_notify_run_less_dedup_uses_standalone_log(tmp_path: Path, monkeypatch) -> None:
+    """Run-less notifications dedup against a standalone log key so repeated
+    identical repo-level pings are suppressed without a run context."""
+    _set_webhook_env(monkeypatch)
+    _config(tmp_path)
+    repo = tmp_path
+    client, transport = _client()
+
+    first = notify_command(
+        repo,
+        run_id=None,
+        gate="governance",
+        action="请选择 promote / reject / 保持",
+        summary="知识候选 KB-1 已产生",
+        client=client,
+    )
+    assert first["sent"] is True
+
+    second = notify_command(
+        repo,
+        run_id=None,
+        gate="governance",
+        action="请选择 promote / reject / 保持",
+        summary="知识候选 KB-1 已产生",
+        client=client,
+    )
+    assert second["sent"] is False
+    assert second["dedup"] == "repeat"
+    assert len(transport.sent) == 1
+
+
 def test_notify_sends_to_webhook(tmp_path: Path, monkeypatch) -> None:
     _set_webhook_env(monkeypatch)
     _config(tmp_path)
@@ -582,3 +667,128 @@ def test_resolve_operators_falls_back_to_at_all(tmp_path: Path) -> None:
     )
     config = RepositoryConfig.load(tmp_path)
     assert _resolve_operators(config, []) == ["@all"]
+
+
+def test_fit_bytes_keeps_short_text_unchanged() -> None:
+    assert _fit_bytes("abc", 100) == "abc"
+    assert _fit_bytes("", 100) == ""
+    assert _fit_bytes("abc", 0) == ""
+
+
+def test_fit_bytes_truncates_within_budget_and_never_splits_multibyte() -> None:
+    text = "问小通" * 100  # 300 CJK chars = 900 bytes
+    result = _fit_bytes(text, 300)
+    # the suffix itself costs bytes; result must fit the budget
+    assert len(result.encode("utf-8")) <= 300
+    # the kept prefix is whole characters, never a split UTF-8 sequence
+    assert "�" not in result
+    assert result.endswith("（内容过长已截断）")
+
+
+def test_fit_bytes_tiny_budget_returns_marker() -> None:
+    # budget smaller than the marker: still never returns text longer than the
+    # marker, and never splits a multibyte character
+    result = _fit_bytes("问小通" * 10, 5)
+    assert len(result.encode("utf-8")) <= len("…（内容过长已截断）".encode("utf-8"))
+    assert "�" not in result
+
+
+def test_render_message_truncates_oversized_requirement() -> None:
+    """A requirement far past WeCom's 4096-byte markdown cap must be truncated
+    (at a character boundary) so the whole message fits and the API accepts it —
+    otherwise the team never gets the notification."""
+    requirement = "问小通" * 2000  # 6000 CJK chars = 12000 bytes
+    content = render_message(
+        gate="review",
+        phase="plan",
+        run_id="RUN-1",
+        requirement=requirement,
+        repo="demo",
+        operators=["@all"],
+        action="等待人工 Review 决定",
+        summary="无重跑节点，请验收产物",
+    )
+    assert len(content.encode("utf-8")) <= _WECOM_MARKDOWN_MAX_BYTES
+    assert "（内容过长已截断）" in content
+    # the fixed skeleton and the actionable summary survive the truncation
+    assert "🔔 工作流需要人工处理" in content
+    assert "<@all>" in content
+    assert "无重跑节点，请验收产物" in content
+    assert "请勿直接操作本工作流" in content
+    assert "�" not in content
+
+
+def test_render_message_truncates_oversized_summary() -> None:
+    """When the summary (rerun reasons) itself is huge, it gets truncated too —
+    the requirement keeps priority and the whole message still fits."""
+    requirement = "短需求"
+    summary = "重跑：" + "问" * 3000  # huge rerun reason
+    content = render_message(
+        gate="review",
+        phase="plan",
+        run_id="RUN-1",
+        requirement=requirement,
+        repo="demo",
+        operators=["@all"],
+        action="接受或修改 rerun",
+        summary=summary,
+    )
+    assert len(content.encode("utf-8")) <= _WECOM_MARKDOWN_MAX_BYTES
+    assert "重跑：" in content
+    assert "�" not in content
+
+
+def test_render_message_short_content_untouched() -> None:
+    content = render_message(
+        gate="review",
+        phase="plan",
+        run_id="RUN-1",
+        requirement="实现订单导出",
+        repo="demo",
+        operators=["sunxianshun"],
+        action="接受或修改 rerun",
+        summary="plan.solution 已完成",
+    )
+    assert "（内容过长已截断）" not in content
+    assert "🏷 摘要：实现订单导出" in content
+    assert "plan.solution 已完成" in content
+
+
+def test_notify_sends_oversized_requirement_within_wecom_limit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """End-to-end: a run with an oversized requirement must still send — the
+    rendered payload fits WeCom's markdown cap instead of being rejected."""
+    _set_webhook_env(monkeypatch)
+    _config(tmp_path)
+    repo = tmp_path
+    from ai_workflow.workflow.service import WorkflowService
+
+    state = WorkflowService().init(
+        repo,
+        source_revision="abc123",
+        requirement="问小通" * 2000,  # 12000 bytes, far over the 4096 cap
+        operators=("sunxianshun",),
+    )
+    run_id = state.run_id
+    client, transport = _client()
+
+    result = notify_command(
+        repo,
+        run_id=run_id,
+        gate="review",
+        phase="plan",
+        action="等待人工 Review 决定",
+        summary="无重跑节点，请验收产物",
+        client=client,
+    )
+    assert result["sent"] is True
+    payload = transport.sent[0]
+    content = payload["markdown"]["content"]
+    assert len(content.encode("utf-8")) <= _WECOM_MARKDOWN_MAX_BYTES
+    assert "（内容过长已截断）" in content
+    # dedup log is written after a successful send
+    from ai_workflow.wecom.notify import notification_log_path
+
+    log = json.loads(notification_log_path(repo, run_id).read_text(encoding="utf-8"))
+    assert "review:plan" in log

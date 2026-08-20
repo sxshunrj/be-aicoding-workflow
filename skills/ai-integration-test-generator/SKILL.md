@@ -23,12 +23,12 @@ description: Use when 用户要求基于 repository adapter 生成或更新 inte
 - 读取任何 input 前，先运行 `ai-workflow config authorize-path --repo REPO --kind input --path PATH`。
 - 写 generated test 前，先运行 `ai-workflow config authorize-path --repo REPO --kind generated-test --path PATH`，优先写入 `generated_test_destinations`。
 - 写 report 前，先运行 `ai-workflow config authorize-path --repo REPO --kind report --path PATH`。
-- 任一授权命令返回 `path_not_authorized` 时 fail closed：停止该读写动作，不扩大路径范围，不猜测替代目录。
+- 任一授权命令返回 `path_not_authorized` 时 fail closed：停止该读写动作，不扩大路径范围，不猜测替代目录。**进入人工处置等待前**，若已配置通知通道，调用 `ai-workflow wecom notify --repo REPO --gate blocked --action "adapter 路径授权失败，需人工修复 adapter 配置" --summary "path_not_authorized: <path>"` 通知团队；失败仅写 warning，不影响主流程。
 - 只写被 adapter 授权的测试路径。
 - 不得修改生产代码，不得改 workflow state，不得写 protected paths。
 - 生成前先读取已有测试资产，避免重复 case。
 - 每个新 case 必须对应 checklist evidence 或明确需求来源。
-- 如果 adapter 不足，停止并列出缺失字段，不要猜测目录。
+- 如果 adapter 不足，停止并列出缺失字段，不要猜测目录。**停止等待用户补 adapter 前**，若已配置通知通道，调用 `ai-workflow wecom notify --repo REPO --gate blocked --action "repository adapter 缺失字段，需人工补充" --summary "缺失字段：<缺失列表>"` 通知团队；失败仅写 warning，不影响主流程。
 
 ## Output
 

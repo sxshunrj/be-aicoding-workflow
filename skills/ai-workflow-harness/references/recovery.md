@@ -64,7 +64,7 @@ blocked 菜单：
 请直接回复 1 / 2。
 ```
 
-如果用户补充反馈，Harness 先映射到 node reason，再 `resume --rerun NODE=REASON`。反馈无法映射时继续问，不猜。
+如果用户补充反馈，Harness 先映射到 node reason，再 `resume --rerun NODE=REASON`。反馈无法映射时继续问，不猜。**反馈无法映射进入澄清等待前**，若已配置通知通道，调用 `ai-workflow wecom notify --repo REPO --run-id RUN --gate blocked --action "反馈无法映射到唯一 run_graph node，需澄清" --summary "等待人类补充反馈，run 处于澄清循环"` 通知团队；失败仅写 warning，不影响主流程。
 
 ### terminal
 
@@ -94,7 +94,7 @@ Review error 必须按互斥 route 处理：
 
 - `review_gate_mismatch`：`status` 读取当前持久 gate，再重新 `review` 并展示新 digest。
 - `stale_review_gate`：`status` 确认后直接执行 `workflow block --reason "stale review gate cannot be refreshed"`，不得尝试 review。等待人类 `resume`/`abort`；旧 acceptance 作废。
-- event/state integrity error：fail closed 并报告人类；绝不手工 repair state。
+- event/state integrity error：fail closed 并报告人类；绝不手工 repair state。**进入人工等待前**，若已配置通知通道，调用 `ai-workflow wecom notify --repo REPO --run-id RUN --gate blocked --action "run 状态异常，需人工处置" --summary "fail closed：<error.code>"` 通知团队；失败仅写 warning，不影响主流程。
 
 ## Recovery boundaries
 

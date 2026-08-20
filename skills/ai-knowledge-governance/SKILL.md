@@ -15,7 +15,7 @@ Knowledge governance 是人类 gate。Agent 只负责收集事实、比较 mater
 
 人类选择只有 `promote`、`reject` 或 `leave candidate unchanged`。No choice may default to promote；沉默等于保持不变。
 
-展示人类选择前，若已配置通知通道，调用 `ai-workflow wecom notify --repo <repo> --run-id <run-id> --gate governance --action "请选择 promote / reject / 保持"` 通知团队；失败仅写 warning，不影响主流程。`<repo>` 为当前仓库路径、`<run-id>` 为当前 run（若本流程不在某个 run 内则省略 `--run-id`）。
+展示人类选择前，若已配置通知通道，调用 `ai-workflow wecom notify --repo <repo> [--run-id <run-id>] --gate governance --action "请选择 promote / reject / 保持"` 通知团队；失败仅写 warning，不影响主流程。`<repo>` 为当前仓库路径；`--run-id` 仅在当前处于某个 run 内时传（run 外治理可省略，Helper 自动降级为 repo 级通知并 @ 全群，保证团队一定被提醒）。candidate 产生时 Helper 已通过 `reflect-submit` / `wiki propose` 机械推送，此处为审查时刻的增强通知。
 
 如果人类选择 `promote`，用 candidate `expected-digest` 调用 `wiki promote`。如果人类选择 `reject`，用 `expected-digest` 和明确 reason 调用 `wiki reject`。不要在 candidate flow 中 archive approved entries，除非人类另行发起 approved-retirement action。
 

@@ -95,6 +95,8 @@ Plan phase 的唯一目标是得到 workflow-owned PRD artifact。
 9. 写临时 PRD 到 run storage 外的普通路径。
 10. 调 workflow-owned staging 入口登记 PRD。
 
+**等待人工回答前必须通知团队**：每轮提问结束进入等待时（尤其是出现 blocking questions、需要人类逐条回答的场景），若已配置通知通道，调用 `ai-workflow wecom notify --repo REPO [--run-id RUN] --gate blocked --phase plan --action "plan 阶段有 blocking questions 需要回答" --summary "等待人工回答，否则 run 静默卡在 plan"` 通知团队；失败仅写 warning，不影响主流程。`--run-id` 仅在 run 内传。逐问 Q&A 可能跨会话持续，通知保证人类离开后团队仍被提醒，run 不会无限静默等待。
+
 PRD 必须可执行，不是会议纪要。它要让 implement child 不再依赖聊天记录。
 
 ## Implement phase
