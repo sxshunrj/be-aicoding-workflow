@@ -14,9 +14,9 @@ ai-workflow wecom notify \
   [--dry-run]
 ```
 
-- `--run-id` 可选：run 内传 run-id；**run 外（独立 Git 收尾、`wiki propose` 直建候选、仓库级治理）可省略**，Helper 自动降级为 repo 级通知（requirement 显示仓库名、操作者回退创建者/@all），不再因 `state_not_found` 硬失败。
+- `--run-id` 可选：run 内传 run-id；**run 外（独立 Git 收尾、`wiki propose` 直建候选、仓库级治理）可省略**，Helper 自动降级为 repo 级通知（摘要行显示仓库名、操作者回退创建者/@all），不再因 `state_not_found` 硬失败。
 - `--dry-run`：只打印 payload，不真发。
-- 内容上限：企业微信群机器人 markdown 消息内容上限 **4096 字节**。`render_message` 会按 UTF-8 字符边界截断超长的 requirement / summary（不拆多字节字符），固定骨架与 `<@userid>` 强提醒 @ 永远保留，截断处追加「（内容过长已截断）」标记。超长内容不再被 API 拒绝（否则通知静默丢失）。
+- 消息紧凑直指要点：`<@userid>` @ 操作者 + 动作在第一行；需求（requirement）只取首个非空行作为标题 gist（去 `#`、跳过 `---`，超 160 字节按 UTF-8 字符边界截断），**全文 PRD 不进群**。`--summary` 超长导致整条超过企业微信群机器人 markdown **4096 字节**上限时，同样按字符边界截断 summary，固定骨架与 `<@userid>` 强提醒 @ 永远保留。超长内容不再被 API 拒绝（否则通知静默丢失）。
 - 网络级发送失败自动重试 3 次（退避），业务拒绝（`errcode != 0`）不重试。
 - 幂等：同一 `(run_id, gate, phase, 内容摘要)` 不重复推送；`--force` 强制重发。
 - **Review / Blocked 必须传 `--phase <phase>`**：去重键含 phase，缺省时不同阶段同 gate 的内容完全相同，会互相误去重（spec 门发过后，plan 门不再推送）。
