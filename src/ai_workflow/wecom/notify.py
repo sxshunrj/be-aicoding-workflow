@@ -27,6 +27,11 @@ _GATE_LABELS = {
 _WECOM_MARKDOWN_MAX_BYTES = 4096
 _TRUNCATION_SUFFIX = "…（内容过长已截断）"
 
+# The requirement often holds a full pasted PRD (thousands of bytes). The
+# notification only shows its title line so the group sees what the run is
+# about at a glance — the full text stays in the run state.
+_REQUIREMENT_GIST_MAX_BYTES = 160
+
 _NOTIFY_DIRNAME = "notifications"
 
 
@@ -55,6 +60,22 @@ def _fit_bytes(text: str, budget: int) -> str:
         else:
             hi = mid - 1
     return text[:lo] + suffix
+
+
+def _requirement_gist(requirement: str) -> str:
+    """One-line gist of a (possibly huge) requirement.
+
+    Runs paste full PRDs into the requirement field; the notification shows
+    only the first meaningful line (typically the ``## 功能名称：...`` title
+    heading) with markdown heading markers stripped, byte-capped so the line
+    stays scannable in the group chat.
+    """
+    for line in requirement.splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        if not stripped or stripped == "---":
+            continue
+        return _fit_bytes(stripped, _REQUIREMENT_GIST_MAX_BYTES)
+    return ""
 
 
 def notification_log_path(repo_root: Path, run_id: str) -> Path:
@@ -90,8 +111,6 @@ def render_message(
 ) -> str:
     label = _GATE_LABELS.get(gate, gate)
     type_line = f"{label}（{phase} 阶段）" if phase else label
-    creator_raw = operators[0] if operators else "未知"
-    creator = "@all" if creator_raw == "@all" else creator_raw
     # WeCom group-robot markdown force-notifies members with <@userid> syntax;
     # plain "@name" is inert text. "@all" is the special group-wide ping and
     # must render as <@all>, not <@@all>.
@@ -104,45 +123,36 @@ def render_message(
         else:
             mentions.append(f"<@{op}>")
     operator_line = " ".join(mentions) if mentions else "@无"
+    gist = _requirement_gist(requirement)
 
-    def _compose(requirement_shown: str, summary_shown: str) -> str:
-        summary_block = f"\n{summary_shown}" if summary_shown else ""
+    # Compact layout: the mention and the action share the first line so the
+    # pinged operator immediately sees what to do; context (gate/repo/run/what
+    # the run is about) follows. No field-by-field metadata walls.
+    def _compose(summary_shown: str) -> str:
+        gist_line = f"🏷 {gist}\n" if gist else ""
+        summary_line = f"{summary_shown}\n" if summary_shown else ""
         return (
-            "**🔔 工作流需要人工处理**\n\n"
-            f"👤 开启者：@{creator}\n"
-            f"🔑 授权操作者：{operator_line}\n"
-            f"📌 类型：{type_line}\n"
-            f"🆔 Run ID：`{run_id}`\n"
-            f"🏷 摘要：{requirement_shown}\n"
-            f"📁 仓库：{repo}\n"
-            f"{summary_block}\n\n"
-            f"请授权操作者处理：{action}\n"
-            "其他成员仅收到通知，请勿直接操作本工作流。"
+            "**🔔 工作流需要人工处理**\n"
+            f"👉 {operator_line}：{action}\n"
+            f"📌 {type_line}｜📁 {repo}\n"
+            f"🆔 `{run_id}`\n"
+            f"{gist_line}"
+            f"{summary_line}"
         )
 
-    message = _compose(requirement, summary)
+    message = _compose(summary)
     if len(message.encode("utf-8")) <= _WECOM_MARKDOWN_MAX_BYTES:
         return message
-    # WeCom caps group-robot markdown at 4096 bytes; a long requirement (pasted
-    # spec) or long rerun reasons push the message over and the API rejects it,
-    # so the team never gets pinged. Truncate the variable fields at UTF-8
-    # character boundaries — the fixed skeleton and the <@userid> force-notify
-    # mentions always survive. The summary (actionable rerun reasons) is kept
-    # intact when it fits; the requirement gets the remaining budget. The
-    # summary block's leading "\n" costs one extra byte, so it is reserved too.
-    fixed = _compose("", "")
-    budget = _WECOM_MARKDOWN_MAX_BYTES - len(fixed.encode("utf-8"))
-    if summary:
-        requirement_shown = _fit_bytes(
-            requirement, max(0, budget - len(summary.encode("utf-8")) - 1)
-        )
-        summary_shown = _fit_bytes(
-            summary, max(0, budget - len(requirement_shown.encode("utf-8")) - 1)
-        )
-    else:
-        requirement_shown = _fit_bytes(requirement, budget)
-        summary_shown = ""
-    return _compose(requirement_shown, summary_shown)
+    # WeCom caps group-robot markdown at 4096 bytes; a longer message is
+    # rejected by the API and the team never gets pinged. The gist is
+    # byte-capped above, so only a long summary (rerun/block reasons) can push
+    # the message over — truncate it at UTF-8 character boundaries; the fixed
+    # skeleton and the <@userid> force-notify mentions always survive.
+    fixed = _compose("")
+    summary_shown = _fit_bytes(
+        summary, _WECOM_MARKDOWN_MAX_BYTES - len(fixed.encode("utf-8"))
+    )
+    return _compose(summary_shown)
 
 
 def _content_digest(*, gate: str, phase: str | None, content: str) -> str:

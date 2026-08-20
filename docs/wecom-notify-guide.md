@@ -2,14 +2,14 @@
 
 本指南说明如何为 `be-aicoding-workflow` 配置并启用**企业微信（WeCom）群机器人通知**。
 
-工作流中的 Review Gate、Blocked、Terminal Completion（终态验收）、Knowledge Governance、Git Handoff 是需要人工干预的节点。启用 WeCom 通知后，团队通过企业微信群机器人收到提醒，并标注「开启者」与「授权操作者」。
+工作流中的 Review Gate、Blocked、Terminal Completion（终态验收）、Knowledge Governance、Git Handoff 是需要人工干预的节点。启用 WeCom 通知后，团队通过企业微信群机器人收到提醒。消息直指要点：`<@userid>` @ 授权操作者 + 需要做的动作放第一行，gate 类型、仓库、Run ID、需求标题各占一行；需求全文 PRD 不进群，只取标题行。
 
 > 状态：**Plan 1（通知推送）已实现，且只支持群机器人 Webhook 通道**。"在企业微信中回复即处理"（回调服务）属于 Plan 2，尚未实现，见文末「当前限制」。
 
 ## 功能概览
 
 - 人工节点触发时，向企业微信**群机器人**推送一条 Markdown 消息（发到机器人所在的群）。
-- 消息含 `👤 开启者`（创建者）与 `🔑 授权操作者` 标注。
+- 消息紧凑直指要点：第一行 `<@userid>` @ 授权操作者并直接给出动作；需求只显示标题行（首行去 `#`，超 160 字节截断），不倾倒全文 PRD。
 - 幂等去重：同一 run 同一 gate 同一阶段同一内容不重复推送。
 - 软失败：网络/API/配置失败返回错误但不影响工作流主流程。
 - Webhook 地址只从环境变量读取，不落盘；`wecom:` 块只存**变量名**。
@@ -208,20 +208,16 @@ ai-workflow wecom notify --repo "$PWD" --run-id RUN-xxx \
 
 ```markdown
 **🔔 工作流需要人工处理**
-
-👤 开启者：@sunxianshun
-🔑 授权操作者：<@1688852707310042> <@sunxianshun>
-📌 类型：Review Gate（plan 阶段）
-🆔 Run ID：`RUN-xxx`
-🏷 摘要：实现订单导出模块
-📁 仓库：your-repo
-
+👉 <@1688852707310042> <@sunxianshun>：接受或修改 rerun proposal
+📌 Review Gate（plan 阶段）｜📁 your-repo
+🆔 `RUN-xxx`
+🏷 功能名称：实现订单导出模块
 plan.solution 已完成，需审核
-请授权操作者处理：接受或修改 rerun proposal
-其他成员仅收到通知，请勿直接操作本工作流。
 ```
 
-> **@ 强提醒**：通知中的「授权操作者」以企业微信 `<@userid>` 提及语法渲染（真实 userid 或 `@all`），会真正 @ 到成员并触发强提醒。若 run 未记录操作者（`--operators` 与 `WECOM_CREATOR_USERID` 均缺失），自动回退为 `<@all>` @ 全群，保证一定有人被提醒。
+> **@ 强提醒**：动作行以企业微信 `<@userid>` 提及语法渲染授权操作者（真实 userid 或 `@all`），会真正 @ 到成员并触发强提醒。若 run 未记录操作者（`--operators` 与 `WECOM_CREATOR_USERID` 均缺失），自动回退为 `<@all>` @ 全群，保证一定有人被提醒。
+>
+> **紧凑格式**：需求只取首个非空行作为标题（去 `#` 标记，跳过 `---` 分隔线，按 UTF-8 字符边界截断至 160 字节）；`--summary` 超长导致整条消息超过 4096 字节上限时同样按字符边界截断，固定骨架与 `<@userid>` 永远保留。全文 PRD 不进群，完整内容在 run 状态里看。
 
 ## 七、行为细节
 

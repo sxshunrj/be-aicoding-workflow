@@ -8,6 +8,8 @@ from ai_workflow.wecom.client import WeComApiClient
 from ai_workflow.wecom.notify import (
     _env_from_shell_files,
     _fit_bytes,
+    _REQUIREMENT_GIST_MAX_BYTES,
+    _requirement_gist,
     _resolve_operators,
     _webhook_url,
     _WECOM_MARKDOWN_MAX_BYTES,
@@ -51,7 +53,7 @@ def _client() -> tuple[WeComApiClient, FakeWeComTransport]:
     return WeComApiClient(transport=transport), transport
 
 
-def test_render_message_includes_owner_and_operators() -> None:
+def test_render_message_leads_with_mention_and_action() -> None:
     content = render_message(
         gate="review",
         phase="plan",
@@ -63,13 +65,15 @@ def test_render_message_includes_owner_and_operators() -> None:
         summary="plan.solution 已完成",
     )
     assert "🔔 工作流需要人工处理" in content
-    assert "👤 开启者：@sunxianshun" in content
-    # operators now render as WeCom <@userid> mentions for force-notify
-    assert "🔑 授权操作者：<@sunxianshun> <@wangxiaofei>" in content
+    # operators render as WeCom <@userid> mentions for force-notify, and the
+    # mention shares the first line with the action so the pinged operator
+    # immediately sees what to do
+    assert "👉 <@sunxianshun> <@wangxiaofei>：接受或修改 rerun" in content
     assert "Review Gate（plan 阶段）" in content
+    assert "📁 demo" in content
     assert "RUN-1" in content
-    assert "接受或修改 rerun" in content
-    assert "请勿直接操作本工作流" in content
+    assert "🏷 实现订单导出" in content
+    assert "plan.solution 已完成" in content
 
 
 def test_render_message_terminal_gate_label() -> None:
@@ -620,7 +624,6 @@ def test_render_message_force_notifies_with_wecom_mention_syntax() -> None:
         summary="",
     )
     assert "<@1688852707310042> <@sunxianshun>" in content
-    assert "@1688852707310042" in content  # creator display keeps a plain @
 
 
 def test_render_message_at_all_is_single_mention() -> None:
@@ -694,9 +697,10 @@ def test_fit_bytes_tiny_budget_returns_marker() -> None:
 
 
 def test_render_message_truncates_oversized_requirement() -> None:
-    """A requirement far past WeCom's 4096-byte markdown cap must be truncated
-    (at a character boundary) so the whole message fits and the API accepts it —
-    otherwise the team never gets the notification."""
+    """A requirement far past WeCom's 4096-byte markdown cap must not flood the
+    message: only its title gist is shown (byte-capped), so the whole message
+    fits and the API accepts it — otherwise the team never gets the
+    notification."""
     requirement = "问小通" * 2000  # 6000 CJK chars = 12000 bytes
     content = render_message(
         gate="review",
@@ -714,7 +718,6 @@ def test_render_message_truncates_oversized_requirement() -> None:
     assert "🔔 工作流需要人工处理" in content
     assert "<@all>" in content
     assert "无重跑节点，请验收产物" in content
-    assert "请勿直接操作本工作流" in content
     assert "�" not in content
 
 
@@ -750,8 +753,63 @@ def test_render_message_short_content_untouched() -> None:
         summary="plan.solution 已完成",
     )
     assert "（内容过长已截断）" not in content
-    assert "🏷 摘要：实现订单导出" in content
+    assert "🏷 实现订单导出" in content
     assert "plan.solution 已完成" in content
+
+
+def test_requirement_gist_takes_title_line_only() -> None:
+    """A pasted PRD is reduced to its title line — the group chat never
+    receives the full spec body."""
+    prd = (
+        "## 功能名称：问小通 · 会话首条「内容由AI生成」标识\n"
+        "\n"
+        "---\n"
+        "\n"
+        "一、功能需求\n"
+        "1.1 页面概览\n"
+        "问小通回答由生成式 AI 产出，本功能在每次会话的首条 AI 回复上展示标识。\n"
+    )
+    assert (
+        _requirement_gist(prd)
+        == "功能名称：问小通 · 会话首条「内容由AI生成」标识"
+    )
+
+
+def test_requirement_gist_skips_blank_and_separator_lines() -> None:
+    assert _requirement_gist("\n\n---\n\n实现订单导出\n详细描述…") == "实现订单导出"
+    assert _requirement_gist("# 实现订单导出\n正文") == "实现订单导出"
+    assert _requirement_gist("") == ""
+    assert _requirement_gist("---\n") == ""
+
+
+def test_requirement_gist_caps_line_bytes() -> None:
+    gist = _requirement_gist("问小通" * 200)
+    assert len(gist.encode("utf-8")) <= _REQUIREMENT_GIST_MAX_BYTES
+    assert gist.endswith("（内容过长已截断）")
+
+
+def test_render_message_dumps_no_prd_body_into_group_chat() -> None:
+    """End-to-end shape: a full-PRD requirement yields a compact message whose
+    gist line is the title only — the body never reaches the group chat."""
+    prd = (
+        "## 功能名称：问小通 · 会话首条「内容由AI生成」标识\n"
+        "---\n"
+        "一、功能需求\n"
+        "1.1 页面概览：" + "详细规则与表格内容" * 200
+    )
+    content = render_message(
+        gate="review",
+        phase="verify",
+        run_id="RUN-20260820-105644-224e92",
+        requirement=prd,
+        repo="jxedt_stars_api",
+        operators=["@all"],
+        action="run 已 resume，需重新生成 Review 决策",
+        summary="旧 Review Gate 已失效（stale），harness 将创建新的 workflow decision",
+    )
+    assert "🏷 功能名称：问小通 · 会话首条「内容由AI生成」标识" in content
+    assert "页面概览" not in content
+    assert "详细规则与表格内容" not in content
 
 
 def test_notify_sends_oversized_requirement_within_wecom_limit(
