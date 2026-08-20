@@ -448,3 +448,61 @@ def test_cli_wiki_propose_auto_notifies_governance(
     # run-less governance notify fires (repo-level, @all fallback)
     assert data["data"]["notify"]["sent"] is True
     assert transport.sent == 1
+
+
+def test_cli_workflow_init_default_operator_uses_configured_env(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """``workflow init`` without ``--operators`` resolves the default operator
+    from the env name configured in ``wecom.creator_userid_env`` — not a
+    hardcoded ``WECOM_CREATOR_USERID`` — so init and notify agree on the
+    creator variable."""
+    (tmp_path / ".ai-workflow.yaml").write_text(
+        "repository: demo\n"
+        "wecom:\n"
+        "  enabled: true\n"
+        "  webhook_url_env: WECOM_WEBHOOK_URL\n"
+        "  creator_userid_env: CUSTOM_CREATOR_ID\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("WECOM_CREATOR_USERID", raising=False)
+    monkeypatch.setenv("CUSTOM_CREATOR_ID", "1688852707310042")
+    status, data = _call(
+        capsys,
+        [
+            "workflow", "init",
+            "--repo", str(tmp_path),
+            "--source-revision", "abc123",
+            "--requirement", "x",
+        ],
+    )
+    assert status == 0
+    assert data["data"]["artifacts"]["operators"] == ["1688852707310042"]
+
+
+def test_cli_workflow_init_default_operator_falls_back_to_shell_files(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """A GUI-launched agent without the creator env in its process environment
+    still resolves the default operator from the user's shell config files,
+    mirroring the webhook-URL fallback."""
+    _write_config(tmp_path)
+    monkeypatch.delenv("WECOM_CREATOR_USERID", raising=False)
+    shell_file = tmp_path / ".zshenv"
+    shell_file.write_text(
+        'export WECOM_CREATOR_USERID="1688852707310042"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "ai_workflow.cli._shell_env_files", lambda: (shell_file,)
+    )
+    status, data = _call(
+        capsys,
+        [
+            "workflow", "init",
+            "--repo", str(tmp_path),
+            "--source-revision", "abc123",
+            "--requirement", "x",
+        ],
+    )
+    assert status == 0
+    assert data["data"]["artifacts"]["operators"] == ["1688852707310042"]

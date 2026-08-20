@@ -6,7 +6,7 @@
 
 | Requirement | Evidence |
 | --- | --- |
-| Wave 1 Skills 可安装 | `ai-workflow install --source-root "$PWD/skills" --client all --scope user` 在 isolated HOME 中安装 6 个 Skill 到 `.agents/skills` 与 `.claude/skills`。 |
+| Wave 1 Skills 可安装 | `ai-workflow install --source-root "$PWD/skills" --client all --scope user` 在 isolated HOME 中安装 6 个 Skill（Wave 1 时点；当前仓库 `skills/` 已扩展到 11 个 Skill，安装命令会全部安装） 到 `.agents/skills` 与 `.claude/skills`。 |
 | doctor 能诊断安装、CLI、repo config、Wiki | `ai-workflow doctor --source-root "$PWD/skills" --repo "$PWD/examples/language-neutral" --client all` 在 isolated HOME 中无 failed checks。 |
 | language-neutral profile 使用 schema v2 | `examples/language-neutral/.ai-workflow.yaml` 声明 `schema_version: 2`、`unit_test` 命令与 `disabled_nodes: [verify.integration_test]`。 |
 | 四阶段本地流程可完成 | `tests/e2e/test_skill_first_wave1.py` 覆盖 init、spec、plan barrier、implement、verify、terminal completion。 |
