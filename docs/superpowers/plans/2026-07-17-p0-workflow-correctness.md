@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- 以 `docs/superpowers/specs/2026-07-17-p0-workflow-correctness-design.md` 为唯一批准设计；CI provider、whitebox、Java、Maven、飞书遥测和真实客户端 parity 不在本计划范围。
+- 以 `docs/superpowers/specs/2026-07-17-p0-workflow-correctness-design.md` 为唯一批准设计；CI provider、whitebox、Java、Maven、内部协作平台遥测和真实客户端 parity 不在本计划范围。
 - 只支持 repository config `schema_version: 2`；缺失/v1 只能通过显式 migration 升级，未来版本必须 fail closed。
 - Workflow state、DispatchPacket、ChildResult 和 ArtifactRef 继续使用现有 schema v2 字段集合；不得为 checkpoint 或 workflow-owned PRD 扩充这些 packet/result schema。
 - 只支持 `full` 和 `grill` profile；full 从 `spec` 开始，grill 从 `plan.prd` 开始。

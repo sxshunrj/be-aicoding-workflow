@@ -1,2 +1,0 @@
-[console_scripts]
-ai-workflow = ai_workflow.cli:entrypoint

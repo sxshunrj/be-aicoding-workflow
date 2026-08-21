@@ -2,14 +2,14 @@
 
 **Date:** 2026-07-15  
 **Status:** Approved design  
-**Reference implementation:** `cg/ad-billing-ai-coding`, default branch `master`, inspected at commit `cf6a69e5af6ab70dfac6f1b3a814aa9df5397f3a`  
+**Reference implementation:** an internal reference project (name redacted), inspected at a pinned commit  
 **Supersedes:** The Skill product-surface portions of `2026-07-14-ai-coding-workflow-llm-wiki-design.md`; the deterministic Workflow and Wiki Core remain valid unless this document changes them explicitly.
 
 ## 1. Purpose
 
 The current repository proves a deterministic four-phase workflow and Git-backed Wiki core, but exposes them through one thin Skill. That result is a CLI-first engine with a Skill adapter, not the Skill-first product requested by the user.
 
-This enhancement restructures the product around a suite of reusable Skills, following the implementation method of `ad-billing-ai-coding`:
+This enhancement restructures the product around a suite of reusable Skills, following the implementation method of the internal reference project:
 
 - a single outer workflow harness owns orchestration semantics;
 - reusable activities live in focused top-level Skills;
@@ -18,7 +18,7 @@ This enhancement restructures the product around a suite of reusable Skills, fol
 - the LLM proposes semantic decisions, while humans approve irreversible or quality-sensitive actions;
 - the first delivery is deliberately light enough for real Codex use before further optimization.
 
-The reference repository's domain-specific billing behavior is not copied. Its Skill organization, ownership boundaries, staged child-result protocol, recovery model, and human gates are generalized into a language-neutral framework.
+The reference repository's domain-specific behavior is not copied. Its Skill organization, ownership boundaries, staged child-result protocol, recovery model, and human gates are generalized into a language-neutral framework.
 
 ## 2. Goals
 
@@ -32,7 +32,7 @@ The reference repository's domain-specific billing behavior is not copied. Its S
 
 ## 3. Non-Goals
 
-- Do not embed billing, Java, Maven, white-box framework, ByteDance CI, or Lark assumptions in the generic core.
+- Do not embed domain-specific, Java, Maven, white-box framework, internal-CI, or internal-collaboration-platform assumptions in the generic core.
 - Do not duplicate the canonical Skill content for Codex and Claude Code.
 - Do not move semantic technical decisions into Python validators.
 - Do not auto-promote knowledge, auto-approve blocked recovery, or auto-authorize destructive Git actions.
@@ -102,15 +102,15 @@ skills/
 
 | Reference Skill | Generic Skill | Responsibility |
 | --- | --- | --- |
-| `billing-init` | `ai-workflow-init` | Install the CLI and Skill suite, validate discovery, and report an idempotent summary. |
-| `billing-workflow-harness` | `ai-workflow-harness` | Persistent four-phase orchestration with child-backed execution and human gates. |
-| `billing-workflow-harness-grill` | `ai-workflow-harness-grill` | Interactive PRD-driven `plan -> implement -> verify` workflow. |
-| `billing-small-tdd-change` | `ai-small-tdd-change` | Explicit-only lightweight TDD loop with independent verification and review. |
-| `billing-integration-test-class-generator` | `ai-integration-test-generator` | Generate or update integration-test assets through a repository adapter. |
+| `reference-init` | `ai-workflow-init` | Install the CLI and Skill suite, validate discovery, and report an idempotent summary. |
+| `reference-workflow-harness` | `ai-workflow-harness` | Persistent four-phase orchestration with child-backed execution and human gates. |
+| `reference-workflow-harness-grill` | `ai-workflow-harness-grill` | Interactive PRD-driven `plan -> implement -> verify` workflow. |
+| `reference-small-tdd-change` | `ai-small-tdd-change` | Explicit-only lightweight TDD loop with independent verification and review. |
+| `reference-integration-test-class-generator` | `ai-integration-test-generator` | Generate or update integration-test assets through a repository adapter. |
 | `generating-integration-test-checklists` | `ai-integration-test-checklists` | Turn requirements, designs, or diffs into an evidence-mapped test checklist. |
 | `white-box-test-v2` | `ai-integration-test-v2` | Execute, diagnose, and converge integration tests without adapting expectations to broken code. |
-| `billing-ci-failure-triage` | `ai-ci-failure-triage` | Collect failed-job facts, classify failures, and route to the correct Skill. |
-| `billing-git-handoff` | `ai-git-handoff` | Human-controlled skip, commit, branch, push, and merge-request handoff. |
+| `reference-ci-failure-triage` | `ai-ci-failure-triage` | Collect failed-job facts, classify failures, and route to the correct Skill. |
+| `reference-git-handoff` | `ai-git-handoff` | Human-controlled skip, commit, branch, push, and merge-request handoff. |
 | New LLM-Wiki capability | `ai-knowledge-reflection` | Derive evidence-backed reusable candidate knowledge from a terminal run. |
 | New LLM-Wiki capability | `ai-knowledge-governance` | Review, compare, promote, reject, archive, and supersede knowledge. |
 
@@ -437,14 +437,14 @@ Wave 2 is accepted when:
 
 **日期：** 2026-07-15  
 **状态：** 已批准设计  
-**参考实现：** `cg/ad-billing-ai-coding`，默认分支 `master`，核对提交 `cf6a69e5af6ab70dfac6f1b3a814aa9df5397f3a`  
+**参考实现：** 内部参考项目（名称已隐去），核对到固定提交  
 **替代范围：** 替代 `2026-07-14-ai-coding-workflow-llm-wiki-design.md` 中 Skill 产品层相关设计；除非本文明确修改，确定性的 Workflow Core 与 Wiki Core 继续有效。
 
 ## 1. 目的
 
 当前仓库已经证明四阶段状态机和 Git Wiki Core 可以工作，但只暴露了一个很薄的 Skill。它本质上是“CLI-first 引擎 + Skill 适配器”，不是用户要求的 Skill-first 产品。
 
-本次增强参考 `ad-billing-ai-coding` 的实现方法，把产品重构为可复用 Skill 套件：
+本次增强参考内部参考项目的实现方法，把产品重构为可复用 Skill 套件：
 
 - 唯一外层 Workflow Harness 持有编排语义；
 - 可复用活动拆成聚焦的顶层 Skill；
@@ -453,7 +453,7 @@ Wave 2 is accepted when:
 - LLM提出语义决策，人类批准不可逆或影响质量的动作；
 - 第一轮足够轻量，可以先在真实 Codex 中试用，再继续优化。
 
-不会复制参考仓库的计费业务内容，而是通用化其 Skill组织、职责边界、staged result协议、恢复模型和人工闸门。
+不会复制参考仓库的业务内容，而是通用化其 Skill组织、职责边界、staged result协议、恢复模型和人工闸门。
 
 ## 2. 目标
 
@@ -467,7 +467,7 @@ Wave 2 is accepted when:
 
 ## 3. 非目标
 
-- 不在通用核心中写死 billing、Java、Maven、white-box框架、字节CI或Lark假设。
+- 不在通用核心中写死业务领域、Java、Maven、white-box框架、内部CI或内部协作平台假设。
 - 不为 Codex和Claude Code复制两份canonical Skill内容。
 - 不把技术语义判断移入Python校验器。
 - 不自动晋升知识，不自动恢复blocked状态，不自动批准破坏性Git动作。
@@ -537,15 +537,15 @@ skills/
 
 | 参考 Skill | 通用 Skill | 职责 |
 | --- | --- | --- |
-| `billing-init` | `ai-workflow-init` | 安装CLI和Skill套件，校验发现能力，输出幂等汇总。 |
-| `billing-workflow-harness` | `ai-workflow-harness` | 带持久化、Child执行和人工闸门的四阶段编排。 |
-| `billing-workflow-harness-grill` | `ai-workflow-harness-grill` | 交互式PRD驱动的 `plan -> implement -> verify` 流程。 |
-| `billing-small-tdd-change` | `ai-small-tdd-change` | 仅显式触发的轻量TDD、独立验证和审查。 |
-| `billing-integration-test-class-generator` | `ai-integration-test-generator` | 通过仓库适配器生成或更新集成测试资产。 |
+| `reference-init` | `ai-workflow-init` | 安装CLI和Skill套件，校验发现能力，输出幂等汇总。 |
+| `reference-workflow-harness` | `ai-workflow-harness` | 带持久化、Child执行和人工闸门的四阶段编排。 |
+| `reference-workflow-harness-grill` | `ai-workflow-harness-grill` | 交互式PRD驱动的 `plan -> implement -> verify` 流程。 |
+| `reference-small-tdd-change` | `ai-small-tdd-change` | 仅显式触发的轻量TDD、独立验证和审查。 |
+| `reference-integration-test-class-generator` | `ai-integration-test-generator` | 通过仓库适配器生成或更新集成测试资产。 |
 | `generating-integration-test-checklists` | `ai-integration-test-checklists` | 把需求、设计或diff转换为证据映射的测试清单。 |
 | `white-box-test-v2` | `ai-integration-test-v2` | 执行、诊断和收敛集成测试，不让case迎合错误代码。 |
-| `billing-ci-failure-triage` | `ai-ci-failure-triage` | 收集失败job事实，分类失败并路由到正确Skill。 |
-| `billing-git-handoff` | `ai-git-handoff` | 人工控制skip、commit、branch、push和MR交接。 |
+| `reference-ci-failure-triage` | `ai-ci-failure-triage` | 收集失败job事实，分类失败并路由到正确Skill。 |
+| `reference-git-handoff` | `ai-git-handoff` | 人工控制skip、commit、branch、push和MR交接。 |
 | 新LLM-Wiki能力 | `ai-knowledge-reflection` | 从终态run中提炼有证据的可复用候选知识。 |
 | 新LLM-Wiki能力 | `ai-knowledge-governance` | 审核、比较、晋升、拒绝、归档和替代知识。 |
 
