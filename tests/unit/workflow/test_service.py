@@ -718,9 +718,9 @@ def test_init_records_operators_in_artifacts(tmp_path: Path) -> None:
         tmp_path,
         source_revision="abc123",
         requirement="Specify the change",
-        operators=("sunxianshun", "wangxiaofei"),
+        operators=("alice", "bob"),
     )
-    assert state.artifacts["operators"] == ["sunxianshun", "wangxiaofei"]
+    assert state.artifacts["operators"] == ["alice", "bob"]
 
 
 def test_init_operators_default_empty(tmp_path: Path) -> None:

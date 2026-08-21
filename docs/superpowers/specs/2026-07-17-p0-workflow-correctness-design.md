@@ -16,7 +16,7 @@
 - protected path 只按顶层名称匹配，导致 `.git/**` 无法排除 `.git`；
 - Wave 2 conformance 目前只证明 Skill 可安装和文档存在，没有证明真实三阶段生命周期。
 
-本设计在不向通用 Core 写入 billing、Java、ByteDance CI 或飞书特定逻辑的前提下，关闭上述缺口。
+本设计在不向通用 Core 写入业务领域、Java、内部 CI 或内部协作平台特定逻辑的前提下，关闭上述缺口。
 
 ## 2. 目标
 
@@ -30,7 +30,7 @@
 
 ## 3. 非目标
 
-- 本批次不增加 CI provider、whitebox、Java、Maven 或飞书遥测实现。
+- 本批次不增加 CI provider、whitebox、Java、Maven 或内部协作平台遥测实现。
 - 不修改用户可见的业务分支，也不 push checkpoint ref。
 - checkpoint tree 不包含 `.ai-workflow`、workflow artifact、报告、日志、Git 元数据或无关的预存改动。
 - state、schema 或 checkpoint 损坏后，不静默创建新 run 或从头重跑。

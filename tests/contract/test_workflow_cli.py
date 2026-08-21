@@ -536,8 +536,8 @@ def test_cli_init_records_operators(tmp_path: Path, capsys) -> None:
             "--requirement",
             "Specify the change",
             "--operators",
-            "sunxianshun,wangxiaofei",
+            "alice,bob",
         ],
     )
     assert status == 0
-    assert init["data"]["artifacts"]["operators"] == ["sunxianshun", "wangxiaofei"]
+    assert init["data"]["artifacts"]["operators"] == ["alice", "bob"]
