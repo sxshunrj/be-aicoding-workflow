@@ -14,7 +14,7 @@ Bootstrap 只决定“恢复还是新建”，并返回一个 `run_id`；不得�
 ## 2. choose resume/new
 
 - 恰有一个非 terminal run 与本次 requirement/profile 相符：选择 resume，并先进入 recovery。
-- 有多个可能 run、source revision 不同或用户意图不明确：列出 `run_id` 与状态，请人类选择。
+- 有多个可能 run、source revision 不同或用户意图不明确：列出 `run_id` 与状态，请人类选择。**等待人类选择前**，若已配置通知通道，调用 `ai-workflow wecom notify --repo REPO --gate blocked --action "请选择要恢复的 run" --summary "存在多个候选 run，等待人类选择"` 通知团队；失败仅写 warning，不影响主流程（若已选中 run 可带 `--run-id`）。
 - 没有匹配 run：新建。
 - `completed`/`aborted` 不得作为可变 run 恢复；只允许 terminal cleanup。
 

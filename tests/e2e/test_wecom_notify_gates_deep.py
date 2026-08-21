@@ -1,0 +1,748 @@
+"""Deep gate-notify tests.
+
+These tests drive the *entire* workflow lifecycle end-to-end and assert the
+mechanical notify hooks fire at every gate — review (each phase), terminal
+(transition → completed), and blocked — with the per-phase dedup key never
+colliding. A silent miss here means a human never learns a run needs them.
+"""
+from pathlib import Path
+
+from ai_workflow.wecom.client import WeComApiClient
+from tests.e2e.fake_agent import CliDriver, FakeAgent
+
+
+class _FakeWeComTransport:
+    def __init__(self) -> None:
+        self.sent: list[dict[str, object]] = []
+
+    def request_json(self, method, url, *, params=None, payload=None):
+        if "/webhook/send" in url:
+            self.sent.append(payload or {})
+            return {"errcode": 0, "errmsg": "ok"}
+        raise AssertionError(url)
+
+
+def _enable_wecom(project: Path, monkeypatch) -> _FakeWeComTransport:
+    (project / ".ai-workflow.yaml").write_text(
+        "repository: demo\n"
+        "review_mode: human\n"
+        "wecom:\n"
+        "  enabled: true\n"
+        "  webhook_url_env: WECOM_WEBHOOK_URL\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "WECOM_WEBHOOK_URL",
+        "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
+    )
+    transport = _FakeWeComTransport()
+    monkeypatch.setattr(
+        "ai_workflow.wecom.notify._client_for_webhook",
+        lambda: WeComApiClient(transport=transport),
+    )
+    return transport
+
+
+def _run_phase(
+    app: CliDriver, agent: FakeAgent, run_id: str, phase: str
+) -> dict[str, object]:
+    attempt = app.workflow_begin(run_id, phase)
+    for item in attempt["dispatch_plan"]:
+        app.workflow_stage(run_id, agent.run(Path(item["packet_file"])))
+    app.workflow_finalize(run_id, attempt["attempt_id"])
+    return app.workflow_review_transition(run_id)
+
+
+def test_auto_accept_still_notifies_verify_review_gate(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """Even with ``review_mode: auto_accept``, the verify gate is always a
+    human_review — the final acceptance must never be silently auto-passed and
+    therefore never silently un-notified. spec/plan/implement are auto-accepted
+    (no notify), verify must notify."""
+    project = project_template.copy_to(tmp_path / "auto-accept-repo")
+    (project / ".ai-workflow.yaml").write_text(
+        "repository: demo\n"
+        "review_mode: auto_accept\n"
+        "wecom:\n"
+        "  enabled: true\n"
+        "  webhook_url_env: WECOM_WEBHOOK_URL\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "WECOM_WEBHOOK_URL",
+        "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
+    )
+    transport = _FakeWeComTransport()
+    monkeypatch.setattr(
+        "ai_workflow.wecom.notify._client_for_webhook",
+        lambda: WeComApiClient(transport=transport),
+    )
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    for phase in ("spec", "plan", "implement", "verify"):
+        _run_phase(app, agent, run["run_id"], phase)
+
+    assert app.workflow_status(run["run_id"])["status"] == "completed"
+    contents = [p["markdown"]["content"] for p in transport.sent]
+    # spec/plan/implement auto-accepted silently; only verify + terminal notify
+    assert sum("Review Gate（verify 阶段）" in c for c in contents) == 1
+    assert sum("Review Gate（spec 阶段）" in c for c in contents) == 0
+    assert sum("Review Gate（plan 阶段）" in c for c in contents) == 0
+    assert sum("Review Gate（implement 阶段）" in c for c in contents) == 0
+    assert sum("Terminal Completion" in c for c in contents) == 1
+
+
+def test_block_then_abort_notifies_both_blocked_and_terminal(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """A blocked run that is aborted instead of resumed must notify twice: once
+    for the block decision and once for the terminal abort — the final state is
+    aborted, which is its own gate a human must accept."""
+    project = project_template.copy_to(tmp_path / "blockabort-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+
+    run = app.workflow_init(profile="full")
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    def _call(argv):
+        with redirect_stdout(StringIO()) as out:
+            status = main(argv)
+        return status, json.loads(out.getvalue())
+
+    status, payload = _call(["workflow", "block", "--repo", str(project),
+                             "--run-id", run["run_id"], "--reason", "decided to stop"])
+    assert status == 0
+    assert payload["data"]["notify"]["sent"] is True
+
+    status, payload = _call(["workflow", "abort", "--repo", str(project),
+                             "--run-id", run["run_id"]])
+    assert status == 0
+    assert payload["data"]["status"] == "aborted"
+    assert payload["data"]["notify"]["sent"] is True
+
+    contents = [p["markdown"]["content"] for p in transport.sent]
+    assert sum("Blocked" in c for c in contents) == 1
+    assert sum("Terminal Completion" in c for c in contents) == 1
+    assert len(transport.sent) == 2
+
+
+def test_governance_and_git_handoff_gates_reach_webhook(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """The two skill-driven gates — knowledge governance and git handoff — are
+    not Helper-mechanical; their SKILL.md templates call ``wecom notify`` and
+    depend on that CLI path working. Verify both gate commands actually deliver
+    a message to the webhook with the right label."""
+    project = project_template.copy_to(tmp_path / "skillgates-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    run = app.workflow_init(profile="full")
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    def _call(argv):
+        with redirect_stdout(StringIO()) as out:
+            status = main(argv)
+        return status, json.loads(out.getvalue())
+
+    status, payload = _call([
+        "wecom", "notify", "--repo", str(project), "--run-id", run["run_id"],
+        "--gate", "governance", "--action", "请选择 promote / reject / 保持",
+    ])
+    assert status == 0
+    assert payload["data"]["sent"] is True
+
+    status, payload = _call([
+        "wecom", "notify", "--repo", str(project), "--run-id", run["run_id"],
+        "--gate", "git_handoff", "--action", "请选择 skip / commit / MR",
+    ])
+    assert status == 0
+    assert payload["data"]["sent"] is True
+
+    contents = [p["markdown"]["content"] for p in transport.sent]
+    assert sum("Knowledge Governance" in c for c in contents) == 1
+    assert sum("Git Handoff" in c for c in contents) == 1
+
+
+def test_governance_gate_notifies_then_dedups(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """The governance gate (a real human decision point) notifies once; a repeat
+    of the same decision point with identical content dedups instead of spamming
+    the team — but the first notification is never skipped."""
+    project = project_template.copy_to(tmp_path / "govdedup-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    run = app.workflow_init(profile="full")
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    def _call(argv):
+        with redirect_stdout(StringIO()) as out:
+            status = main(argv)
+        return status, json.loads(out.getvalue())
+
+    argv = [
+        "wecom", "notify", "--repo", str(project), "--run-id", run["run_id"],
+        "--gate", "governance", "--action", "请选择 promote / reject / 保持",
+    ]
+    status, payload = _call(argv)
+    assert status == 0
+    assert payload["data"]["sent"] is True
+
+    status, payload = _call(argv)
+    assert status == 0
+    assert payload["data"]["sent"] is False
+    assert payload["data"]["dedup"] == "repeat"
+    assert len(transport.sent) == 1
+
+
+def test_review_after_resume_notifies_again_despite_stale_gate(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """A run that is blocked and resumed creates a NEW human decision cycle.
+    Resume must reset the notify dedup so the fresh review gate re-notifies the
+    team instead of being swallowed as a duplicate of the pre-block gate."""
+    project = project_template.copy_to(tmp_path / "stale-resume-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    for phase in ("spec", "plan"):
+        attempt = app.workflow_begin(run["run_id"], phase)
+        for item in attempt["dispatch_plan"]:
+            app.workflow_stage(run["run_id"], agent.run(Path(item["packet_file"])))
+        app.workflow_finalize(run["run_id"], attempt["attempt_id"])
+        app.workflow_review_transition(run["run_id"])
+
+    # implement phase, finalize, then a human review gate -> notify (cycle 1)
+    implement = app.workflow_begin(run["run_id"], "implement")
+    app.workflow_stage(
+        run["run_id"], agent.run(Path(implement["dispatch_plan"][0]["packet_file"]))
+    )
+    app.workflow_finalize(run["run_id"], implement["attempt_id"])
+    decision = app.workflow_review(run["run_id"])
+    assert decision["decision"] == "human_review"
+    review_implement = [p for p in transport.sent
+                        if "Review Gate（implement 阶段）" in p["markdown"]["content"]]
+    assert len(review_implement) == 1
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    def _call(argv):
+        with redirect_stdout(StringIO()) as out:
+            status = main(argv)
+        return status, json.loads(out.getvalue())
+
+    # block + resume -> state version advances, old gate is now stale
+    status, _ = _call(["workflow", "block", "--repo", str(project),
+                       "--run-id", run["run_id"], "--reason", "stakeholder wait"])
+    assert status == 0
+    status, _ = _call(["workflow", "resume", "--repo", str(project),
+                       "--run-id", run["run_id"]])
+    assert status == 0
+
+    # a fresh review creates a new gate — resume reset the dedup, so the team
+    # is notified again instead of being swallowed as "already notified"
+    status, payload = _call(["workflow", "review", "--repo", str(project),
+                             "--run-id", run["run_id"]])
+    assert status == 0
+    assert payload["data"]["decision"] == "human_review"
+    assert payload["data"]["notify"]["sent"] is True
+    review_implement = [p for p in transport.sent
+                        if "Review Gate（implement 阶段）" in p["markdown"]["content"]]
+    assert len(review_implement) == 2
+
+
+def test_stale_gate_after_checkpoint_autoblock_resume_notifies(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """A checkpoint-failure auto-block (which keeps the review gate in state,
+    unlike ``workflow block``) followed by resume leaves a stale gate. A fresh
+    ``workflow review`` then errors stale_review_gate — and must still notify
+    the team that the run is waiting, since the harness will re-generate the
+    decision. This mirrors the exact failure the user hit on jxedt_stars_api."""
+    project = project_template.copy_to(tmp_path / "stale-gate-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    for phase in ("spec", "plan"):
+        attempt = app.workflow_begin(run["run_id"], phase)
+        for item in attempt["dispatch_plan"]:
+            app.workflow_stage(run["run_id"], agent.run(Path(item["packet_file"])))
+        app.workflow_finalize(run["run_id"], attempt["attempt_id"])
+        app.workflow_review_transition(run["run_id"])
+
+    # implement with a pre-existing dirty path -> checkpoint failure auto-block
+    (project / "src" / "app.py").write_text("preexisting dirty\n", encoding="utf-8")
+    implement = app.workflow_begin(run["run_id"], "implement")
+    app.workflow_stage(
+        run["run_id"], agent.run(Path(implement["dispatch_plan"][0]["packet_file"]))
+    )
+    app.workflow_finalize(run["run_id"], implement["attempt_id"])
+    decision = app.workflow_review(run["run_id"])
+    assert decision["decision"] == "human_review"
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    def _call(argv):
+        with redirect_stdout(StringIO()) as out:
+            status = main(argv)
+        return status, json.loads(out.getvalue())
+
+    # review-accept triggers checkpoint_scope_ambiguous -> auto-block
+    status, payload = _call([
+        "workflow", "review-accept", "--repo", str(project),
+        "--run-id", run["run_id"], "--expected-digest", decision["digest"],
+    ])
+    assert status != 0
+    assert payload["error"]["code"] == "checkpoint_scope_ambiguous"
+    assert app.workflow_status(run["run_id"])["status"] == "blocked"
+
+    # resume -> state version advances; the old gate is now stale
+    status, _ = _call(["workflow", "resume", "--repo", str(project),
+                       "--run-id", run["run_id"]])
+    assert status == 0
+
+    # a fresh review errors stale_review_gate AND pushes a stale-review notice
+    status, payload = _call(["workflow", "review", "--repo", str(project),
+                             "--run-id", run["run_id"]])
+    assert status == 4
+    assert payload["error"]["code"] == "stale_review_gate"
+    stale_notes = [p for p in transport.sent
+                   if "需重新生成 Review 决策" in p["markdown"]["content"]]
+    assert len(stale_notes) == 1
+
+
+def test_reflect_submit_candidate_mechanically_notifies_governance(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """A candidate reflection outcome requires a human governance decision
+    (promote/reject/keep). The reflect-submit command must push the governance
+    notification mechanically — the team learns about the candidate even if the
+    harness LLM never invokes the $ai-knowledge-governance skill's notify call."""
+    project = project_template.copy_to(tmp_path / "gov-notify-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    for phase in ("spec", "plan", "implement", "verify"):
+        _run_phase(app, agent, run["run_id"], phase)
+    assert app.workflow_status(run["run_id"])["status"] == "completed"
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    # build the reflection decision + proposal (candidate outcome)
+    from ai_workflow.workflow.service import WorkflowService
+    packet = WorkflowService(project).reflection_packet(run["run_id"])
+    decision = project / "knowledge-reflection-decision.json"
+    proposal = project / "knowledge-proposal.json"
+    decision.write_text(json.dumps({
+        "schema_version": 1,
+        "run_id": run["run_id"],
+        "evidence_digest": packet.evidence_digest,
+        "outcome": "candidate",
+        "reason": "reusable pattern",
+    }), encoding="utf-8")
+    proposal.write_text(json.dumps({
+        "schema_version": 1,
+        "title": "Reusable pattern",
+        "type": "rule",
+        "summary": "Keep the retry branch.",
+        "body": "# Reusable pattern\n\nKeep the retry branch.",
+        "scope": {"repos": ["demo"], "services": ["example"], "paths": [],
+                  "languages": [], "phases": ["implement"]},
+        "tags": ["retry"],
+        "sources": [{"kind": "run", "ref": run["run_id"]}],
+        "reuse_reason": "reusable",
+        "confidence": "high",
+        "possible_conflicts": [],
+        "suggested_owners": ["example-team"],
+        "review_after": "2099-01-01",
+        "raw_logs": "bounded log",
+    }), encoding="utf-8")
+
+    with redirect_stdout(StringIO()) as out:
+        status = main(["workflow", "reflect-submit", "--repo", str(project),
+                       "--run-id", run["run_id"], "--decision", str(decision),
+                       "--proposal", str(proposal)])
+    payload = json.loads(out.getvalue())
+    assert status == 0
+    assert payload["data"]["outcome"] == "candidate"
+    assert payload["data"]["notify"]["sent"] is True
+    gov_sends = [p for p in transport.sent
+                 if "Knowledge Governance" in p["markdown"]["content"]]
+    assert len(gov_sends) == 1
+
+
+def test_terminal_transition_mechanically_notifies_git_handoff(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """A completed run always needs the git-handoff decision (skip/commit/MR).
+    The transition command must push it mechanically, so the team is told even
+    if the harness LLM never invokes $ai-git-handoff's notify call."""
+    project = project_template.copy_to(tmp_path / "git-notify-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    for phase in ("spec", "plan", "implement", "verify"):
+        _run_phase(app, agent, run["run_id"], phase)
+    assert app.workflow_status(run["run_id"])["status"] == "completed"
+
+    # the terminal message covers both acceptance and git-handoff in one send
+    terminal = [p for p in transport.sent
+                if "Terminal Completion" in p["markdown"]["content"]]
+    assert len(terminal) == 1
+    assert "Git 收尾方式" in terminal[0]["markdown"]["content"]
+    assert "skip / commit / MR" in terminal[0]["markdown"]["content"]
+
+
+def test_abort_mechanically_notifies_git_handoff(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """An aborted run also needs the git-handoff decision; the terminal
+    notification covers it in a single send (avoids the WeCom rate limit)."""
+    project = project_template.copy_to(tmp_path / "git-abort-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    run = app.workflow_init(profile="full")
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    with redirect_stdout(StringIO()) as out:
+        status = main(["workflow", "abort", "--repo", str(project),
+                       "--run-id", run["run_id"]])
+    payload = json.loads(out.getvalue())
+    assert status == 0
+    assert payload["data"]["status"] == "aborted"
+    assert payload["data"]["notify"]["sent"] is True
+    terminal = [p for p in transport.sent
+                if "Terminal Completion" in p["markdown"]["content"]]
+    assert len(terminal) == 1
+    assert "Git 收尾方式" in terminal[0]["markdown"]["content"]
+
+
+def test_status_reannounces_pending_review_gate(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """The recovery flow re-displays a persisted human_review gate without
+    re-running ``workflow review``, so its mechanical notify would never fire
+    again. ``workflow status`` (the recovery entry point) must re-announce a
+    pending gate whose notification was cleared — mirroring a resumed session."""
+    project = project_template.copy_to(tmp_path / "status-resume-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    _run_phase(app, agent, run["run_id"], "spec")
+    _run_phase(app, agent, run["run_id"], "plan")
+
+    # implement: review -> human_review (notified), then checkpoint auto-block
+    (project / "src" / "app.py").write_text("preexisting dirty\n", encoding="utf-8")
+    implement = app.workflow_begin(run["run_id"], "implement")
+    app.workflow_stage(
+        run["run_id"], agent.run(Path(implement["dispatch_plan"][0]["packet_file"]))
+    )
+    app.workflow_finalize(run["run_id"], implement["attempt_id"])
+    decision = app.workflow_review(run["run_id"])
+    assert decision["decision"] == "human_review"
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    def _call(argv):
+        with redirect_stdout(StringIO()) as out:
+            status = main(argv)
+        return status, json.loads(out.getvalue())
+
+    # review-accept triggers checkpoint failure -> auto-block
+    status, payload = _call([
+        "workflow", "review-accept", "--repo", str(project),
+        "--run-id", run["run_id"], "--expected-digest", decision["digest"],
+    ])
+    assert status != 0
+    assert payload["error"]["code"] == "checkpoint_scope_ambiguous"
+
+    # resume -> the persisted gate is human_review but its notification was
+    # cleared by resume's reset_notify_dedup; status must re-announce it
+    status, _ = _call(["workflow", "resume", "--repo", str(project),
+                       "--run-id", run["run_id"]])
+    assert status == 0
+
+    review_before = [p for p in transport.sent
+                     if "Review Gate（implement 阶段）" in p["markdown"]["content"]]
+    assert len(review_before) == 1
+
+    status, payload = _call(["workflow", "status", "--repo", str(project),
+                             "--run-id", run["run_id"]])
+    assert status == 0
+    assert payload["data"]["notify_pending_review"]["sent"] is True
+    review_after = [p for p in transport.sent
+                    if "Review Gate（implement 阶段）" in p["markdown"]["content"]]
+    assert len(review_after) == 2
+
+
+def test_status_does_not_resend_already_notified_review(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """status re-announcement is idempotent: a gate already notified stays
+    quiet (dedup suppresses the repeat) — status must not spam the team."""
+    project = project_template.copy_to(tmp_path / "status-quiet-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    _run_phase(app, agent, run["run_id"], "spec")
+    _run_phase(app, agent, run["run_id"], "plan")
+
+    implement = app.workflow_begin(run["run_id"], "implement")
+    app.workflow_stage(
+        run["run_id"], agent.run(Path(implement["dispatch_plan"][0]["packet_file"]))
+    )
+    app.workflow_finalize(run["run_id"], implement["attempt_id"])
+    decision = app.workflow_review(run["run_id"])
+    assert decision["decision"] == "human_review"
+    review_after_first = [p for p in transport.sent
+                          if "Review Gate（implement 阶段）" in p["markdown"]["content"]]
+    assert len(review_after_first) == 1
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    with redirect_stdout(StringIO()) as out:
+        status = main(["workflow", "status", "--repo", str(project),
+                       "--run-id", run["run_id"]])
+    payload = json.loads(out.getvalue())
+    assert status == 0
+    assert "notify_pending_review" not in payload["data"] or payload["data"]["notify_pending_review"]["sent"] is False
+    review_after = [p for p in transport.sent
+                    if "Review Gate（implement 阶段）" in p["markdown"]["content"]]
+    assert len(review_after) == 1
+
+
+def test_notify_log_write_failure_does_not_break_block(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """The message is delivered before the dedup-log write. If that log write
+    fails (disk full / read-only dir), the workflow command must still succeed:
+    sent stays true (delivery happened) with an observable warning, and the next
+    identical notify re-sends — over-notify beats a silent miss."""
+    from unittest import mock
+    from pathlib import Path as _Path
+
+    project = project_template.copy_to(tmp_path / "logfail-repo")
+    _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    run = app.workflow_init(profile="full")
+
+    original_write = _Path.write_text
+
+    def _failing_write(self, *a, **k):
+        if "notifications" in str(self):
+            raise OSError(28, "No space left on device")
+        return original_write(self, *a, **k)
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    with mock.patch.object(_Path, "write_text", _failing_write):
+        with redirect_stdout(StringIO()) as out:
+            status = main(["workflow", "block", "--repo", str(project),
+                           "--run-id", run["run_id"], "--reason", "x"])
+    payload = json.loads(out.getvalue())
+    assert status == 0
+    assert payload["ok"] is True
+    assert payload["data"]["status"] == "blocked"
+    notify = payload["data"]["notify"]
+    assert notify["sent"] is True
+    assert notify.get("warning") == "notify_log_write_failed"
+
+
+def test_full_lifecycle_notifies_review_each_phase_and_terminal(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """Every gate on the happy path must notify: review at spec/plan/implement/
+    verify (human mode) and terminal on transition to completed. The per-phase
+    dedup key must never collapse two different gates into one message."""
+    project = project_template.copy_to(tmp_path / "full-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    for phase in ("spec", "plan", "implement", "verify"):
+        _run_phase(app, agent, run["run_id"], phase)
+
+    # verify transition produced the terminal state
+    final = app.workflow_status(run["run_id"])
+    assert final["status"] == "completed"
+
+    # review gate once per phase (4) + terminal covering git-handoff (1) = 5
+    assert len(transport.sent) == 5
+    contents = [payload["markdown"]["content"] for payload in transport.sent]
+    assert sum("Review Gate（spec 阶段）" in c for c in contents) == 1
+    assert sum("Review Gate（plan 阶段）" in c for c in contents) == 1
+    assert sum("Review Gate（implement 阶段）" in c for c in contents) == 1
+    assert sum("Review Gate（verify 阶段）" in c for c in contents) == 1
+    assert sum("Terminal Completion" in c for c in contents) == 1
+    assert sum("Git 收尾方式" in c for c in contents) == 1
+
+
+def test_transition_to_completed_notifies_terminal_once(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """``workflow transition`` to completed pushes the terminal notification.
+    A terminal run cannot be re-transitioned, so a second terminal message is
+    structurally impossible — the first transition already notified."""
+    project = project_template.copy_to(tmp_path / "terminal-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+    agent = FakeAgent(project)
+
+    run = app.workflow_init(profile="full")
+    for phase in ("spec", "plan", "implement", "verify"):
+        _run_phase(app, agent, run["run_id"], phase)
+    terminal_sends = [p for p in transport.sent
+                      if "Terminal Completion" in p["markdown"]["content"]]
+    assert len(terminal_sends) == 1
+
+    # re-transitioning a completed run is rejected (terminal run cannot be
+    # changed) — and it never sends a second terminal message
+    from ai_workflow.cli import main
+    import json
+    from io import StringIO
+    from contextlib import redirect_stdout
+    with redirect_stdout(StringIO()) as out:
+        status = main(["workflow", "transition", "--repo", str(project),
+                       "--run-id", run["run_id"]])
+    payload = json.loads(out.getvalue())
+    assert status == 2
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "invalid_transition"
+    terminal_sends = [p for p in transport.sent
+                      if "Terminal Completion" in p["markdown"]["content"]]
+    assert len(terminal_sends) == 1
+
+
+def test_block_then_resume_then_block_distinct_reasons_both_notify(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """A block, resume, then a fresh block with a *different* reason must notify
+    again — the dedup key carries the content digest so a new decision point is
+    never swallowed. This guards against the historical silent-miss class."""
+    project = project_template.copy_to(tmp_path / "reblock-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+
+    run = app.workflow_init(profile="full")
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    def _call(argv):
+        with redirect_stdout(StringIO()) as out:
+            status = main(argv)
+        return status, json.loads(out.getvalue())
+
+    status, payload = _call(["workflow", "block", "--repo", str(project),
+                             "--run-id", run["run_id"],
+                             "--reason", "waiting on stakeholder"])
+    assert status == 0
+    assert payload["data"]["notify"]["sent"] is True
+    blocked = [p for p in transport.sent
+               if "Blocked" in p["markdown"]["content"]]
+    assert len(blocked) == 1
+
+    status, payload = _call(["workflow", "resume", "--repo", str(project),
+                             "--run-id", run["run_id"]])
+    assert status == 0
+    assert payload["data"]["status"] == "pending"
+
+    # fresh block with a different reason — must be a NEW notification
+    status, payload = _call(["workflow", "block", "--repo", str(project),
+                             "--run-id", run["run_id"],
+                             "--reason", "blocked again: env down"])
+    assert status == 0
+    assert payload["data"]["notify"]["sent"] is True
+    blocked = [p for p in transport.sent
+               if "Blocked" in p["markdown"]["content"]]
+    assert len(blocked) == 2
+
+
+def test_blocked_dedup_same_phase_same_reason_repeats_once(
+    tmp_path, project_template, monkeypatch
+) -> None:
+    """Blocking with the exact same reason at the same phase dedups (no spam),
+    but the first block still notified — a human was never left blind."""
+    project = project_template.copy_to(tmp_path / "blockdedup-repo")
+    transport = _enable_wecom(project, monkeypatch)
+    app = CliDriver(project)
+
+    run = app.workflow_init(profile="full")
+
+    from ai_workflow.cli import main
+    from io import StringIO
+    from contextlib import redirect_stdout
+    import json
+
+    def _call(argv):
+        with redirect_stdout(StringIO()) as out:
+            status = main(argv)
+        return status, json.loads(out.getvalue())
+
+    args = ["workflow", "block", "--repo", str(project),
+            "--run-id", run["run_id"], "--reason", "same reason"]
+    status, payload = _call(args)
+    assert status == 0
+    assert payload["data"]["notify"]["sent"] is True
+
+    status, payload = _call(args)
+    assert status == 0
+    assert payload["data"]["status"] == "blocked"
+    assert payload["data"]["notify"]["sent"] is False
+    assert payload["data"]["notify"]["dedup"] == "repeat"
+    blocked = [p for p in transport.sent
+               if "Blocked" in p["markdown"]["content"]]
+    assert len(blocked) == 1

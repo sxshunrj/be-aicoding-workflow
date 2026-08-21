@@ -4,6 +4,8 @@ Status: P0 workflow correctness locally verified; real-client parity evidence pe
 
 本仓库提供一套 Skill-first 的本地 AI coding workflow：`spec -> plan -> implement -> verify` 持久化流程、schema-v2 ChildResult、LLM Wiki 检索/反思/治理、以及 Codex/Claude Code 可发现的 Wave 1 Skill 套件。Python Helper Core 只做确定性校验和状态持久化；语义判断仍由 Agent 与人类 gate 负责。
 
+可选的企业微信人工干预通知（`wecom:` 配置块 + `ai-workflow wecom notify`，含已安装 skill 的升级步骤）见 [docs/wecom-notify-guide.md](docs/wecom-notify-guide.md)。
+
 ## 本地准备
 
 1. 安装 Python 3.11+。
@@ -14,6 +16,17 @@ Status: P0 workflow correctness locally verified; real-client parity evidence pe
    - 默认安装模式是 auto：Windows 使用 copy，其他平台使用 link；需要覆盖时传 `--copy` 或 `--link`。
 4. 诊断环境：`ai-workflow doctor --source-root "$PWD/skills" --repo "$PWD/examples/language-neutral" --client all`。
 5. 运行离线验证：`python -m pytest -q`。
+
+## Helper CLI 概览
+
+除 Skill 文档中的 workflow 生命周期命令（`workflow init/status/resume/begin/stage/finalize/review/transition/...`）外，Helper 还提供：
+
+- `ai-workflow install / doctor`：安装与诊断 Skill 套件。
+- `ai-workflow config show --repo <path>`：查看某仓库解析后的 `.ai-workflow.yaml` 配置。
+- `ai-workflow config authorize-path --repo <path> --kind input|generated-test|report --path <p>`：向 adapter 追加一条授权路径。
+- `ai-workflow workflow review-accept --run-id ... --expected-digest ...`：digest 保护的 review gate 接受。
+- `ai-workflow wiki lint/search/packet/propose/review/promote/reject/archive`：Wiki 检索与治理生命周期。
+- `ai-workflow wecom notify`：企业微信人工干预通知（见 guide）。
 
 ## Skill Overview
 

@@ -13,7 +13,8 @@ description: Use when 用户显式要求持久化四阶段 AI 编码工作流、
 - `Never edit state.yaml directly`：禁止直接创建、修改或修复 `.ai-workflow/runs/**`；只调用 Helper CLI。
 - `dispatch all sibling children before waiting`；`silence is not failure`，无显式 `ChildResult` 就继续等待。
 - `ChildResult-only completion`：消息、沉默、tool error、部分报告都不算 child 完成。
-- `mandatory human gates`：blocked 的 `resume`/`abort`、要求人工的 review、terminal completion、knowledge governance 与 Git handoff 都必须等待人类明确决定。
+- `mandatory human gates`：blocked 的 `resume`/`abort`、要求人工的 review、terminal completion、knowledge governance 与 Git handoff 都必须等待人类明确决定；到点即通过 `ai-workflow wecom notify` 通知团队，失败仅写 warning，不影响主流程。
+- `notify before every human wait`：任何需要人类回答才能继续的环节——澄清循环（反馈无法唯一映射）、bootstrap run 选择/切换、config 错误等待修复、result_conflict / invalid_state 报告人工处置、Grill plan blocking questions——都必须在进入等待前调用 `ai-workflow wecom notify`（run 内带 `--run-id`，run 外省略自动降级 repo 级通知）。机械 gate（review/blocked/terminal/governance）由 Helper 自动推送；此规则覆盖机械 gate 之外的所有人工等待，保证 run 不会在人类离开会话后无限静默。
 - `run_graph 是唯一调度真值`：pending/valid/rerun 与 reason 只能由 Helper state 表达；聊天、记忆或单个 child 反馈不能替代 graph。
 - 先推导 rerun proposal，再进入 Review Gate；Review Gate accept 后才允许 transition。
 - blocked 不受 auto_accept 影响；terminal completion、knowledge governance 和 Git handoff 也不受 auto_accept 影响。
@@ -133,6 +134,7 @@ reason 必须可执行：包含要修正/重查的事实、证据来源和目标
 Review Gate 是 `finalize` 与 `transition` 之间的唯一关口。Harness 不直接读取配置决定是否等待人类，只消费 `workflow review` 的 JSON decision。
 
 - `human_review`：展示当前 phase、gate digest、产物摘要、需要重跑的节点和 reason，等待用户明确选择。
+- 进入 `human_review` 时，`workflow review` 命令会自动推送 `gate=review` 的 WeCom 通知（Helper 机械保证，不依赖 skill 调用；phase 由 Helper 自动填写）。失败仅写 warning，不影响主流程。详见 [wecom notify](references/wecom-notify.md)。
 - `accept`：说明 Helper 已按当前 policy 接受，然后继续 transition。
 - 人类选择修改时，重新推导 rerun proposal，再次 `workflow review`。
 - 人类明确接受时，调用 `workflow review-accept --expected-digest <digest>`；digest 不匹配按 [review gate](references/review-gate.md) 恢复。
@@ -163,15 +165,18 @@ Review Gate 是 `finalize` 与 `transition` 之间的唯一关口。Harness 不�
 - 选 1：无反馈则 `workflow resume`；有反馈则映射到 `NODE=REASON` 后 `workflow resume --rerun NODE=REASON`。
 - 选 2：`workflow abort`，然后 terminal cleanup。
 - blocked 不自动恢复，不被 auto_accept 绕过。
+- 进入 blocked 时，`workflow block` 命令会自动推送 `gate=blocked` 的 WeCom 通知（Helper 机械保证，不依赖 skill 调用；phase 由 Helper 自动填写）。失败仅写 warning，不影响主流程。详见 [wecom notify](references/wecom-notify.md)。
 
 ### Terminal
 
 completed/aborted 后不再 begin/stage/finalize/review/transition。执行 terminal cleanup：
 
+0. run 进入 completed/aborted 时，`workflow transition` / `workflow abort` 命令会自动推送 `gate=terminal` 的 WeCom 通知（Helper 机械保证，不依赖 skill 调用）。失败仅写 warning，不影响主流程。详见 [wecom notify](references/wecom-notify.md)。
 1. `workflow summary` 是纯读。
 2. 执行 terminal reflection。
 3. knowledge governance 必须有人类决定。
 4. Git handoff 必须有人类决定；不自动 commit、branch、push 或 MR。
+5. knowledge governance / Git handoff 的人工通知由 `$ai-knowledge-governance` / `$ai-git-handoff` 各自触发，无需在此重复调用。
 
 ### New conversation / stale
 
@@ -179,7 +184,7 @@ completed/aborted 后不再 begin/stage/finalize/review/transition。执行 term
 
 ## Reference index
 
-- 编排：[bootstrap](references/bootstrap.md)、[Helper CLI](references/helper-cli.md)、[dispatch](references/subagent-dispatch.md)、[review](references/review-gate.md)、[recovery](references/recovery.md)、[terminal reflection / Git handoff](references/terminal-cleanup.md)、[knowledge](references/knowledge-loop.md)。
+- 编排：[bootstrap](references/bootstrap.md)、[Helper CLI](references/helper-cli.md)、[dispatch](references/subagent-dispatch.md)、[review](references/review-gate.md)、[recovery](references/recovery.md)、[terminal reflection / Git handoff](references/terminal-cleanup.md)、[knowledge](references/knowledge-loop.md)、[wecom notify](references/wecom-notify.md)。
 - Child：[common](references/agents/common-phase-contract.md)、[spec](references/agents/spec-writer.md)、[planner](references/agents/planner.md)、[coder](references/agents/coder.md)、[test runner](references/agents/test-runner.md)、[code reviewer](references/agents/code-reviewer.md)、[knowledge reflector](references/agents/knowledge-reflector.md)。
 
 ## Error posture

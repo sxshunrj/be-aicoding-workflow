@@ -218,6 +218,7 @@ class WorkflowService:
         source_revision: str,
         requirement: str,
         profile: str = "full",
+        operators: tuple[str, ...] = (),
     ) -> RunState:
         config = RepositoryConfig.load(repo_root)
         if not isinstance(source_revision, str) or not source_revision.strip():
@@ -230,6 +231,16 @@ class WorkflowService:
             workflow_profile = WorkflowProfile(profile)
         except ValueError as error:
             raise AppError("invalid_profile", "profile must be full or grill") from error
+        if not isinstance(operators, (list, tuple)):
+            raise AppError(
+                "invalid_operators", "operators must be a sequence of strings"
+            )
+        for operator in operators:
+            if not isinstance(operator, str) or not operator.strip():
+                raise AppError(
+                    "invalid_operators", "operators must be non-empty strings"
+                )
+        resolved_operators = tuple(operators)
         self.repo_root = repo_root
         suffix = self._new_id_suffix()
         run_id = f"RUN-{self.clock():%Y%m%d-%H%M%S}-{suffix}"
@@ -251,6 +262,7 @@ class WorkflowService:
             definition.nodes,
             definition.initial_phase,
         )
+        state.artifacts["operators"] = list(resolved_operators)
         state.artifacts[RUN_POLICY_KEY] = {
             "review_mode": config.review_mode,
             "evidence_path": str(policy_path),

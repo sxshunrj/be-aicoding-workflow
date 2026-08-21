@@ -16,6 +16,7 @@ REQUIRED_FILES = {
     "references/recovery.md",
     "references/terminal-cleanup.md",
     "references/knowledge-loop.md",
+    "references/wecom-notify.md",
     "references/agents/common-phase-contract.md",
     "references/agents/spec-writer.md",
     "references/agents/planner.md",

@@ -2,7 +2,9 @@ import argparse
 from dataclasses import asdict
 import hashlib
 import json
+import os
 from pathlib import Path
+import sys
 from typing import Sequence
 
 from ai_workflow.config import RepositoryConfig
@@ -10,7 +12,15 @@ from ai_workflow.doctor import run_doctor
 from ai_workflow.errors import AppError
 from ai_workflow.install import install_skills
 from ai_workflow.path_authorization import PathKind, RepositoryPathAuthorizer
-from ai_workflow.workflow.models import Phase
+from ai_workflow.wecom.notify import (
+    _env_from_shell_files,
+    _hostname_operator,
+    _shell_env_files,
+    notify_command,
+    reset_notify_dedup,
+)
+from ai_workflow.workflow.models import Phase, RunState
+from ai_workflow.workflow.review import ReviewDecision
 from ai_workflow.workflow.service import WorkflowService
 from ai_workflow.wiki.repository import WikiRepository
 from ai_workflow.wiki.service import WikiService
@@ -54,6 +64,7 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--source-revision", required=True)
     init.add_argument("--requirement", required=True)
     init.add_argument("--profile", default="full")
+    init.add_argument("--operators", default="")
     for name in ("status", "abort", "summary", "reflect"):
         command = workflow_commands.add_parser(name)
         command.add_argument("--repo", type=Path, required=True)
@@ -127,6 +138,7 @@ def _parser() -> argparse.ArgumentParser:
     propose = wiki_commands.add_parser("propose")
     propose.add_argument("--wiki", type=Path, required=True)
     propose.add_argument("--proposal", type=Path, required=True)
+    propose.add_argument("--repo", type=Path, default=None)
     wiki_review = wiki_commands.add_parser("review")
     wiki_review.add_argument("--wiki", type=Path, required=True)
     wiki_review.add_argument("--id", required=True)
@@ -138,6 +150,19 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--reviewer", required=True)
         command.add_argument("--reason")
         command.add_argument("--expected-digest", required=True)
+    wecom = commands.add_parser("wecom")
+    wecom_commands = wecom.add_subparsers(dest="wecom_command", required=True)
+    wecom_notify = wecom_commands.add_parser("notify")
+    wecom_notify.add_argument("--repo", type=Path, required=True)
+    wecom_notify.add_argument("--run-id", default=None)
+    wecom_notify.add_argument(
+        "--gate", required=True, choices=("review", "blocked", "governance", "git_handoff", "terminal")
+    )
+    wecom_notify.add_argument("--action", required=True)
+    wecom_notify.add_argument("--summary", default="")
+    wecom_notify.add_argument("--phase")
+    wecom_notify.add_argument("--force", action="store_true")
+    wecom_notify.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -169,6 +194,219 @@ def _reruns(values: list[str]) -> dict[str, str]:
             raise AppError("invalid_arguments", f"duplicate rerun node: {name}")
         reruns[name] = reason
     return reruns
+
+
+def _auto_notify_blocked(
+    repo_root: Path, state: RunState, reason: str
+) -> dict[str, object]:
+    """Mechanically push the blocked-gate notification.
+
+    A blocked run needs a human resume/abort decision, so ``workflow block``
+    always notifies the team regardless of whether the harness LLM follows the
+    skill template. Notification is enhancement-only: any failure writes a
+    warning and never breaks the block. Phase comes from the run's current
+    phase so the per-phase dedup key stays distinct.
+
+    Returns the notify outcome so the command's response exposes whether the
+    message was actually sent — a soft-failed notify is never silent.
+    """
+    try:
+        return notify_command(
+            repo_root,
+            run_id=state.run_id,
+            gate="blocked",
+            phase=state.current_phase,
+            action="请选择 resume / abort",
+            summary=reason,
+        )
+    except AppError as error:
+        print(
+            f"wecom notify soft-failed ({error.code}): {error.message}",
+            file=sys.stderr,
+        )
+        return {
+            "sent": False,
+            "error": error.code,
+            "message": error.message,
+        }
+
+
+def _auto_notify_review(
+    repo_root: Path, decision: ReviewDecision
+) -> dict[str, object]:
+    """Mechanically push the review-gate notification when the Helper returns
+    ``human_review``, so a review the team must act on is always announced even
+    if the harness LLM skips the skill template call. Returns the notify
+    outcome for the command's response."""
+    if decision.decision != "human_review":
+        return {"sent": False, "reason": "auto_accepted"}
+    if decision.proposed_reruns:
+        summary = "重跑：" + "；".join(
+            f"{node}={reason}" for node, reason in decision.proposed_reruns
+        )
+    else:
+        summary = "无重跑节点，请验收产物"
+    try:
+        return notify_command(
+            repo_root,
+            run_id=decision.run_id,
+            gate="review",
+            phase=decision.phase,
+            action="等待人工 Review 决定",
+            summary=summary,
+        )
+    except AppError as error:
+        print(
+            f"wecom notify soft-failed ({error.code}): {error.message}",
+            file=sys.stderr,
+        )
+        return {
+            "sent": False,
+            "error": error.code,
+            "message": error.message,
+        }
+
+
+def _auto_notify_stale_review(repo_root: Path, run_id: str) -> dict[str, object]:
+    """Push a review-gate notification when the review command hits a stale gate.
+
+    A blocked run that is resumed keeps its state version advanced, so the old
+    review gate is stale and ``workflow review`` must create a new decision. The
+    team is already waiting on this run though — the pending human review must
+    not be silent while the harness re-generates the gate. Enhancement-only: a
+    failure writes a warning and never breaks the review error path."""
+    try:
+        return notify_command(
+            repo_root,
+            run_id=run_id,
+            gate="review",
+            phase=None,
+            action="run 已 resume，需重新生成 Review 决策",
+            summary="旧 Review Gate 已失效（stale），harness 将创建新的 workflow decision",
+        )
+    except AppError as error:
+        print(
+            f"wecom notify soft-failed ({error.code}): {error.message}",
+            file=sys.stderr,
+        )
+        return {
+            "sent": False,
+            "error": error.code,
+            "message": error.message,
+        }
+
+
+def _auto_notify_terminal(repo_root: Path, run_id: str) -> dict[str, object]:
+    """Mechanically push the terminal-completion notification when a run
+    becomes completed/aborted, so the team is asked to accept the terminal
+    state AND decide the git handoff in one message. Merging both decision
+    points into a single webhook send avoids the WeCom group-robot rate limit
+    (~1 msg / 20s) that would silently drop a second immediate message.
+    Enhancement-only: a failure writes a warning and never breaks the
+    transition."""
+    try:
+        return notify_command(
+            repo_root,
+            run_id=run_id,
+            gate="terminal",
+            phase=None,
+            action="请验收 run 终态（completed/aborted），并决定 Git 收尾方式（skip / commit / MR）",
+            summary="run 已到终态，请验收并选择 Git 收尾方式",
+        )
+    except AppError as error:
+        print(
+            f"wecom notify soft-failed ({error.code}): {error.message}",
+            file=sys.stderr,
+        )
+        return {
+            "sent": False,
+            "error": error.code,
+            "message": error.message,
+        }
+
+
+def _auto_notify_governance(
+    repo_root: Path, run_id: str | None, reason: str
+) -> dict[str, object]:
+    """Mechanically push the knowledge-governance notification when a run's
+    reflection produces a candidate that needs human promote/reject/keep, so the
+    team is asked to govern the knowledge even if the harness LLM never invokes
+    the ``$ai-knowledge-governance`` skill template (or invokes it without a
+    run-id). Also fires for candidates created via direct ``wiki propose``
+    (run-less, repo-level). Enhancement-only: a failure writes a warning and
+    never breaks the reflection submit / wiki propose."""
+    try:
+        return notify_command(
+            repo_root,
+            run_id=run_id,
+            gate="governance",
+            phase=None,
+            action="请选择 promote / reject / 保持",
+            summary=reason,
+        )
+    except AppError as error:
+        print(
+            f"wecom notify soft-failed ({error.code}): {error.message}",
+            file=sys.stderr,
+        )
+        return {
+            "sent": False,
+            "error": error.code,
+            "message": error.message,
+        }
+
+
+def _default_operator(repo_root: Path) -> str:
+    """Resolve the default WeCom operator for ``workflow init`` when
+    ``--operators`` is omitted. Mirrors the notify side: the env variable name
+    comes from ``wecom.creator_userid_env`` (falling back to
+    ``WECOM_CREATOR_USERID``), GUI-launched agents that miss the shell's
+    exports still resolve the value from the user's shell config files, and a
+    machine with neither configured falls back to its host name before the
+    notify-side ``@all``."""
+    try:
+        creator_env = (
+            RepositoryConfig.load(repo_root).wecom_creator_userid_env
+            or "WECOM_CREATOR_USERID"
+        )
+    except AppError:
+        creator_env = "WECOM_CREATOR_USERID"
+    creator = os.environ.get(creator_env, "").strip()
+    if not creator:
+        creator = (_env_from_shell_files(creator_env, _shell_env_files()) or "").strip()
+    if not creator:
+        creator = _hostname_operator() or ""
+    return creator
+
+
+def _notify_pending_review(
+    repo_root: Path, state: RunState
+) -> dict[str, object] | None:
+    """Re-announce a pending human review when recovering an existing run.
+
+    The recovery flow (recovery.md) re-displays a persisted human_review gate
+    without re-running ``workflow review``, so the mechanical notify would never
+    fire again on a resumed/short-lived session. Calling this from ``status``
+    re-pushes the review notification for a gate still waiting on a human. It is
+    idempotent: the dedup log suppresses a repeat of the same gate digest, so
+    already-notified gates stay quiet and only genuinely-unannounced ones ping.
+    Returns None when there is no pending human review to announce."""
+    gate = state.artifacts.get("review_gate")
+    if not isinstance(gate, dict):
+        return None
+    accepted_version = gate.get("accepted_version")
+    if gate.get("decision") != "human_review" or accepted_version is not None:
+        return None
+    try:
+        decision = ReviewDecision.from_dict(
+            {key: gate[key] for key in (
+                "decision", "run_id", "phase", "state_version",
+                "proposed_reruns", "effective_reruns", "digest",
+            )}
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    return _auto_notify_review(repo_root, decision)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -243,6 +481,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 path = service.repository.root / "candidates" / f"{entry.id}.md"
                 data = {"id": entry.id, "status": entry.status.value, "path": str(path),
                         "digest": _file_digest(path)}
+                # A candidate created outside the reflect-submit channel still
+                # needs a human governance decision. Push mechanically so a
+                # direct `wiki propose` never silently waits for a human who
+                # was never told. Repo-level (run-less) notify — the wiki has
+                # no run context. Requires --repo for the wecom config.
+                if args.repo is not None:
+                    data = {**data, "notify": _auto_notify_governance(
+                        args.repo,
+                        run_id=None,
+                        reason=f"知识候选 {entry.id} 已产生，需人工选择 promote / reject / 保持",
+                    )}
             elif args.wiki_command == "review":
                 data = service.review_candidate(args.id, args.max_related)
             elif args.wiki_command == "promote":
@@ -262,17 +511,65 @@ def main(argv: Sequence[str] | None = None) -> int:
                 path = service.archive(args.id, args.reviewer, args.reason, args.expected_digest)
                 data = {"id": args.id, "status": "archived", "path": str(path),
                         "digest": _file_digest(path)}
+        elif args.command == "wecom":
+            if args.wecom_command == "notify":
+                try:
+                    data = notify_command(
+                        args.repo,
+                        run_id=args.run_id,
+                        gate=args.gate,
+                        action=args.action,
+                        summary=args.summary,
+                        phase=args.phase,
+                        force=args.force,
+                        dry_run=args.dry_run,
+                    )
+                except AppError as error:
+                    if error.code not in {
+                        "wecom_not_configured",
+                        "wecom_invalid_webhook",
+                        "wecom_api_error",
+                        "wecom_http_error",
+                        "wecom_tag_not_found",
+                    }:
+                        raise
+                    # Notifications never block the workflow: soft-fail
+                    # environmental errors into a success envelope so the
+                    # enclosing shell step is never failed by a notification.
+                    # The failure is still surfaced on stderr so run logs stay
+                    # observable instead of silently swallowing the reason.
+                    print(
+                        f"wecom notify soft-failed ({error.code}): {error.message}",
+                        file=sys.stderr,
+                    )
+                    data = {"sent": False, "error": error.message}
         else:
             service = WorkflowService(args.repo)
             if args.workflow_command == "init":
+                operators = tuple(
+                    item.strip()
+                    for item in args.operators.split(",")
+                    if item.strip()
+                )
+                if not operators:
+                    creator = _default_operator(args.repo)
+                    if creator:
+                        operators = (creator,)
                 data = service.init(
                     args.repo,
                     args.source_revision,
                     args.requirement,
                     args.profile,
+                    operators=operators,
                 ).to_dict()
             elif args.workflow_command == "status":
-                data = service.status(args.run_id).to_dict()
+                state = service.status(args.run_id)
+                data = state.to_dict()
+                # A pending human_review gate that was never announced must be
+                # announced on recovery — status is the recovery entry point.
+                pending = _notify_pending_review(args.repo, state)
+                if pending is not None:
+                    data["notify_pending_review"] = pending
             elif args.workflow_command == "begin":
                 data = service.begin(
                     args.run_id, args.phase, args.skill_dir
@@ -303,27 +600,81 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "evidence_digest": packet.evidence_digest,
                 }
             elif args.workflow_command == "reflect-submit":
-                data = service.submit_reflection(
+                record = service.submit_reflection(
                     args.run_id, args.decision, args.proposal
                 )
+                data = record
+                # A candidate reflection needs a human governance decision
+                # (promote/reject/keep). Push it mechanically — the team must
+                # learn about the candidate even if the LLM skips the
+                # $ai-knowledge-governance skill's notify call.
+                if record.get("outcome") == "candidate":
+                    data = {**record, "notify": _auto_notify_governance(
+                        args.repo,
+                        args.run_id,
+                        "知识候选已产生，需人工选择 promote / reject / 保持",
+                    )}
             elif args.workflow_command == "review":
-                data = service.review(
-                    args.run_id, _reruns(args.rerun)
-                ).to_dict()
+                try:
+                    decision = service.review(args.run_id, _reruns(args.rerun))
+                except AppError as error:
+                    if error.code == "stale_review_gate":
+                        # A resumed run's old gate is stale: the review command
+                        # must create a new decision, but the team is already
+                        # waiting on this run — notify them so the pending human
+                        # decision is never silent.
+                        _auto_notify_stale_review(args.repo, args.run_id)
+                    raise
+                data = decision.to_dict()
+                data["notify"] = _auto_notify_review(args.repo, decision)
             elif args.workflow_command == "review-accept":
-                data = service.record_review_acceptance(
-                    args.run_id, args.expected_digest
-                ).to_dict()
+                try:
+                    data = service.record_review_acceptance(
+                        args.run_id, args.expected_digest
+                    ).to_dict()
+                except AppError as error:
+                    if error.code in {
+                        "checkpoint_scope_ambiguous",
+                        "checkpoint_creation_failed",
+                        "checkpoint_unavailable",
+                        "path_not_authorized",
+                    }:
+                        # The Helper auto-blocks the run inside
+                        # record_review_acceptance when checkpoint creation
+                        # fails, bypassing `workflow block`; push the blocked
+                        # notification here so a checkpoint-driven block is
+                        # never silent. The command still re-raises so the
+                        # checkpoint failure stays the reported outcome.
+                        _auto_notify_blocked(
+                            args.repo, service.status(args.run_id), error.message
+                        )
+                    raise
             elif args.workflow_command == "transition":
-                data = service.transition(args.run_id).to_dict()
+                state = service.transition(args.run_id)
+                data = state.to_dict()
+                data["notify"] = (
+                    _auto_notify_terminal(args.repo, args.run_id)
+                    if state.status == "completed"
+                    else {"sent": False, "reason": "not_terminal"}
+                )
             elif args.workflow_command == "block":
-                data = service.block(args.run_id, args.reason).to_dict()
+                state = service.block(args.run_id, args.reason)
+                data = state.to_dict()
+                data["notify"] = _auto_notify_blocked(args.repo, state, args.reason)
             elif args.workflow_command == "resume":
-                data = service.resume(
+                state = service.resume(
                     args.run_id, _reruns(args.rerun)
                 ).to_dict()
+                # A resumed run starts a NEW human decision cycle. Forget the
+                # old dedup digests so the fresh review/blocked/terminal gates
+                # always re-notify the team instead of being swallowed as
+                # "already notified".
+                reset_notify_dedup(args.repo, args.run_id)
+                data = state
             else:
-                data = service.abort(args.run_id).to_dict()
+                state = service.abort(args.run_id)
+                data = state.to_dict()
+                data["notify"] = _auto_notify_terminal(args.repo, args.run_id)
         envelope: dict[str, object] = {"ok": True, "data": data}
         status = 0
     except AppError as error:

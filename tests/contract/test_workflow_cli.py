@@ -520,3 +520,24 @@ def test_cli_rerun_requires_node_reason_syntax(tmp_path: Path, capsys) -> None:
     assert status != 0
     assert payload["error"]["code"] == "invalid_arguments"
     assert "NODE=REASON" in payload["error"]["message"]
+
+
+def test_cli_init_records_operators(tmp_path: Path, capsys) -> None:
+    _config(tmp_path)
+    status, init = _call(
+        capsys,
+        [
+            "workflow",
+            "init",
+            "--repo",
+            str(tmp_path),
+            "--source-revision",
+            "abc123",
+            "--requirement",
+            "Specify the change",
+            "--operators",
+            "sunxianshun,wangxiaofei",
+        ],
+    )
+    assert status == 0
+    assert init["data"]["artifacts"]["operators"] == ["sunxianshun", "wangxiaofei"]

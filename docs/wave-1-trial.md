@@ -46,7 +46,7 @@ Prompt:
 开启新 Codex 会话后输入：
 
 ```text
-使用 $ai-workflow-harness。请从 repo 的 ai-workflow status 恢复上一个 run，不要根据聊天记录重建状态。
+使用 $ai-workflow-harness。请从 repo 的 ai-workflow workflow status 恢复上一个 run，不要根据聊天记录重建状态。
 ```
 
 期望：Agent 先运行 `workflow status`，从持久化状态继续。
