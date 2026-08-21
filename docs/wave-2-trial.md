@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-cd /Users/bytedance/ai-coding-workflow
+cd /path/to/be-aicoding-workflow   # 本仓库检出路径
 source .venv/bin/activate
 ai-workflow install --source-root "$PWD/skills" --client all --scope user
 ai-workflow doctor --source-root "$PWD/skills" --repo "$PWD/examples/language-neutral" --client all

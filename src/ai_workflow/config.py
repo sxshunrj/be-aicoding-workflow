@@ -29,6 +29,17 @@ def _strings(value: object, name: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+_WECOM_GATES = ("review", "blocked", "governance", "git_handoff", "terminal")
+
+
+def _optional_env_name(value: object, name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise AppError("config_invalid", f"{name} must be a non-empty string")
+    return value.strip()
+
+
 @dataclass(frozen=True, slots=True)
 class RepositoryConfig:
     repository: str
@@ -45,6 +56,10 @@ class RepositoryConfig:
     adapter_test_paths: tuple[str, ...]
     adapter_generated_test_destinations: tuple[str, ...]
     adapter_report_paths: tuple[str, ...]
+    wecom_enabled: bool = False
+    wecom_webhook_url_env: str | None = None
+    wecom_creator_userid_env: str = "WECOM_CREATOR_USERID"
+    wecom_gates: tuple[str, ...] = ("review", "blocked", "governance", "git_handoff", "terminal")
 
     def command(self, name: str) -> tuple[str, ...] | None:
         return self.commands.get(name)
@@ -76,6 +91,16 @@ class RepositoryConfig:
         adapter = raw.get("adapter", {})
         if "adapter" in raw:
             adapter = _mapping(adapter, "adapter")
+        wecom = raw.get("wecom", {})
+        if "wecom" in raw:
+            wecom = _mapping(wecom, "wecom")
+        wecom_gates = _strings(wecom.get("gates"), "wecom.gates") or _WECOM_GATES
+        for gate in wecom_gates:
+            if gate not in _WECOM_GATES:
+                raise AppError(
+                    "config_invalid",
+                    f"wecom.gates contains an unknown gate: {gate}",
+                )
         max_attempts = _integer(raw.get("max_attempts", 3), "max_attempts")
         if max_attempts < 1:
             raise AppError("config_invalid", "max_attempts must be at least 1")
@@ -122,4 +147,14 @@ class RepositoryConfig:
             adapter_report_paths=_strings(
                 adapter.get("report_paths"), "adapter.report_paths"
             ),
+            wecom_enabled=bool(wecom.get("enabled", False)),
+            wecom_webhook_url_env=_optional_env_name(
+                wecom.get("webhook_url_env"), "wecom.webhook_url_env"
+            ),
+            wecom_creator_userid_env=_optional_env_name(
+                wecom.get("creator_userid_env", "WECOM_CREATOR_USERID"),
+                "wecom.creator_userid_env",
+            )
+            or "WECOM_CREATOR_USERID",
+            wecom_gates=wecom_gates,
         )

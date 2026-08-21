@@ -18,7 +18,7 @@ description: Use when 用户要求执行、诊断或收敛 integration tests，�
 - 归因类别：`implementation bug`、`test asset bug`、`environment issue`、`mock/fixture drift`。
 - 如果是 implementation bug，修实现或退回 `$ai-workflow-harness` 的 implement rerun。
 - 如果是 test asset bug，修 case、fixture、mock 或初始化数据。
-- 如果是 environment issue，进入 blocked 或要求用户提供环境，不伪造成代码失败。
+- 如果是 environment issue，进入 blocked 或要求用户提供环境，不伪造成代码失败。**要求用户提供环境/进入人工等待前**，若已配置通知通道，调用 `ai-workflow wecom notify --repo REPO --gate blocked --action "集成测试环境问题，需人工提供环境或决策" --summary "<环境失败摘要>"` 通知团队；失败仅写 warning，不影响主流程。
 - 如果是 mock/fixture drift，先证明真实契约，再更新测试资产。
 
 ## Hard rules

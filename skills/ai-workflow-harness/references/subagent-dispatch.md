@@ -65,7 +65,7 @@ stage 失败时按 code 路由：
 | `invalid_result` | 把错误返回 owner child 修复 ChildResult |
 | `artifact_digest_mismatch` | owner child 修复 artifact/digest |
 | `path_not_authorized` | fail closed，不扩大路径 |
-| `result_conflict` | 保留冲突证据，报告人类 |
+| `result_conflict` | 保留冲突证据，报告人类。**进入人工等待前**，若已配置通知通道，调用 `ai-workflow wecom notify --repo REPO [--run-id RUN] --gate blocked --action "staged result 冲突，需人工处置"` 通知团队；失败仅写 warning，不影响主流程。 |
 
 不要把 stage 失败转成 child failure；stage 是 Harness/Helper 校验失败，需要按持久状态恢复。
 

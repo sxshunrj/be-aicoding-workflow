@@ -36,7 +36,7 @@ CI triage 的目标是收集完整事实、分类失败、路由到正确 Skill�
 
 ## Routing
 
-按 [failure routing](references/failure-routing.md) 路由。环境问题进入 blocked 或交给人类；build/unit 小修可转 `$ai-small-tdd-change` 或 `$ai-workflow-harness`；integration-test failure 转 `$ai-integration-test-v2`。
+按 [failure routing](references/failure-routing.md) 路由。环境问题进入 blocked 或交给人类；build/unit 小修可转 `$ai-small-tdd-change` 或 `$ai-workflow-harness`；integration-test failure 转 `$ai-integration-test-v2`。**进入 blocked / 交给人类等待前**，若已配置通知通道，调用 `ai-workflow wecom notify --repo REPO --gate blocked --action "CI 环境失败，需人工补权限/环境/密钥或决策" --summary "<environment failure 摘要>"` 通知团队；失败仅写 warning，不影响主流程。
 
 ## Report
 

@@ -13,7 +13,7 @@ description: Use only when 用户显式点名 $ai-small-tdd-change 或明确要�
 
 ## Scope gate
 
-先做三问澄清：目标行为、可接受改动范围、验证命令。若调查发现需要改 `public API`、`shared data model`、`multi-module` 行为，或存在 `high-risk compatibility` 风险，必须 `stop before editing`，说明证据，并询问是否 switch to `$ai-workflow-harness`。
+先做三问澄清：目标行为、可接受改动范围、验证命令。若调查发现需要改 `public API`、`shared data model`、`multi-module` 行为，或存在 `high-risk compatibility` 风险，必须 `stop before editing`，说明证据，并询问是否 switch to `$ai-workflow-harness`。**进入澄清/等待回答前**，若已配置通知通道，调用 `ai-workflow wecom notify --repo REPO --gate blocked --action "需要澄清或确认改动范围" --summary "<待回答问题>"` 通知团队；失败仅写 warning，不影响主流程。
 
 ## TDD discipline
 
