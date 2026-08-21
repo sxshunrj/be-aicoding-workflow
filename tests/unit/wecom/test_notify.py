@@ -60,7 +60,7 @@ def test_render_message_leads_with_mention_and_action() -> None:
         run_id="RUN-1",
         requirement="实现订单导出",
         repo="demo",
-        operators=["sunxianshun", "wangxiaofei"],
+        operators=["alice", "bob"],
         action="接受或修改 rerun",
         summary="plan.solution 已完成",
     )
@@ -68,7 +68,7 @@ def test_render_message_leads_with_mention_and_action() -> None:
     # operators render as WeCom <@userid> mentions for force-notify, and the
     # mention shares the first line with the action so the pinged operator
     # immediately sees what to do
-    assert "👉 <@sunxianshun> <@wangxiaofei>：接受或修改 rerun" in content
+    assert "👉 <@alice> <@bob>：接受或修改 rerun" in content
     assert "Review Gate（plan 阶段）" in content
     assert "📁 demo" in content
     assert "RUN-1" in content
@@ -83,7 +83,7 @@ def test_render_message_terminal_gate_label() -> None:
         run_id="RUN-1",
         requirement="x",
         repo="demo",
-        operators=["sunxianshun"],
+        operators=["alice"],
         action="请验收 run 终态",
         summary="",
     )
@@ -102,7 +102,7 @@ def test_notify_sends_once_then_dedups(tmp_path: Path, monkeypatch) -> None:
         repo,
         source_revision="abc123",
         requirement="实现订单导出",
-        operators=("sunxianshun", "wangxiaofei"),
+        operators=("alice", "bob"),
     )
     run_id = state.run_id
     client, transport = _client()
@@ -621,11 +621,11 @@ def test_render_message_force_notifies_with_wecom_mention_syntax() -> None:
         run_id="RUN-1",
         requirement="x",
         repo="demo",
-        operators=["1688852707310042", "sunxianshun"],
+        operators=["1700000000000000", "alice"],
         action="a",
         summary="",
     )
-    assert "<@1688852707310042> <@sunxianshun>" in content
+    assert "<@1700000000000000> <@alice>" in content
 
 
 def test_render_message_at_all_is_single_mention() -> None:
@@ -644,7 +644,7 @@ def test_resolve_operators_uses_recorded_operators(tmp_path: Path) -> None:
         "repository: demo\nwecom:\n  enabled: true\n", encoding="utf-8"
     )
     config = RepositoryConfig.load(tmp_path)
-    assert _resolve_operators(config, ["sunxianshun"]) == ["sunxianshun"]
+    assert _resolve_operators(config, ["alice"]) == ["alice"]
 
 
 def test_resolve_operators_falls_back_to_creator_userid(
@@ -659,9 +659,9 @@ def test_resolve_operators_falls_back_to_creator_userid(
         "  creator_userid_env: WECOM_CREATOR_USERID\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("WECOM_CREATOR_USERID", "1688852707310042")
+    monkeypatch.setenv("WECOM_CREATOR_USERID", "1700000000000000")
     config = RepositoryConfig.load(tmp_path)
-    assert _resolve_operators(config, []) == ["1688852707310042"]
+    assert _resolve_operators(config, []) == ["1700000000000000"]
 
 
 def test_resolve_operators_falls_back_to_at_all(tmp_path: Path, monkeypatch) -> None:
@@ -686,10 +686,10 @@ def test_resolve_operators_falls_back_to_hostname(
     )
     monkeypatch.setattr(
         "ai_workflow.wecom.notify.platform.node",
-        lambda: "sunxianshundeMacBook-Pro.local",
+        lambda: "workstation.local",
     )
     config = RepositoryConfig.load(tmp_path)
-    assert _resolve_operators(config, []) == ["sunxianshundeMacBook-Pro"]
+    assert _resolve_operators(config, []) == ["workstation"]
 
 
 def test_hostname_operator_rejects_unusable_host_names(monkeypatch) -> None:
@@ -781,7 +781,7 @@ def test_render_message_short_content_untouched() -> None:
         run_id="RUN-1",
         requirement="实现订单导出",
         repo="demo",
-        operators=["sunxianshun"],
+        operators=["alice"],
         action="接受或修改 rerun",
         summary="plan.solution 已完成",
     )
@@ -859,7 +859,7 @@ def test_notify_sends_oversized_requirement_within_wecom_limit(
         repo,
         source_revision="abc123",
         requirement="问小通" * 2000,  # 12000 bytes, far over the 4096 cap
-        operators=("sunxianshun",),
+        operators=("alice",),
     )
     run_id = state.run_id
     client, transport = _client()

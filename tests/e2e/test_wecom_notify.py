@@ -37,7 +37,7 @@ def test_wecom_notify_e2e_dedup(monkeypatch, tmp_path: Path, capsys) -> None:
 
     state = WorkflowService().init(
         tmp_path, source_revision="abc123", requirement="实现订单导出",
-        operators=("sunxianshun", "wangxiaofei"),
+        operators=("alice", "bob"),
     )
     run_id = state.run_id
     base = [

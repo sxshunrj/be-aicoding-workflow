@@ -40,7 +40,7 @@ def test_cli_wecom_notify_dry_run(monkeypatch, tmp_path: Path, capsys) -> None:
     monkeypatch.setenv("WECOM_WEBHOOK_URL", _WEBHOOK)
     _write_config(tmp_path)
     state = WorkflowService().init(
-        tmp_path, source_revision="abc123", requirement="x", operators=("sunxianshun",)
+        tmp_path, source_revision="abc123", requirement="x", operators=("alice",)
     )
     status, out = main(
         [
@@ -93,7 +93,7 @@ def test_cli_wecom_notify_terminal_gate_dry_run(
     monkeypatch.setenv("WECOM_WEBHOOK_URL", _WEBHOOK)
     _write_config(tmp_path)
     state = WorkflowService().init(
-        tmp_path, source_revision="abc123", requirement="x", operators=("sunxianshun",)
+        tmp_path, source_revision="abc123", requirement="x", operators=("alice",)
     )
     status, out = main(
         [
@@ -124,7 +124,7 @@ def test_cli_wecom_notify_network_failure_soft_fails(
     monkeypatch.setenv("WECOM_WEBHOOK_URL", _WEBHOOK)
     _write_config(tmp_path)
     state = WorkflowService().init(
-        tmp_path, source_revision="abc123", requirement="x", operators=("sunxianshun",)
+        tmp_path, source_revision="abc123", requirement="x", operators=("alice",)
     )
 
     # Drive the failure through the real UrllibTransport so the transport's own
@@ -223,7 +223,7 @@ def test_cli_workflow_block_auto_notifies_blocked_gate(
         lambda: WeComApiClient(transport=transport),
     )
     state = WorkflowService().init(
-        tmp_path, source_revision="abc123", requirement="x", operators=("sunxianshun",)
+        tmp_path, source_revision="abc123", requirement="x", operators=("alice",)
     )
     status, data = _call(
         capsys,
@@ -251,7 +251,7 @@ def test_cli_workflow_block_auto_notify_soft_fails_without_breaking(
     _write_config(tmp_path)
     monkeypatch.delenv("WECOM_WEBHOOK_URL", raising=False)
     state = WorkflowService().init(
-        tmp_path, source_revision="abc123", requirement="x", operators=("sunxianshun",)
+        tmp_path, source_revision="abc123", requirement="x", operators=("alice",)
     )
     status = main(
         [
@@ -371,7 +371,7 @@ def test_cli_workflow_abort_auto_notifies_terminal(
         lambda: WeComApiClient(transport=transport),
     )
     state = WorkflowService().init(
-        tmp_path, source_revision="abc123", requirement="x", operators=("sunxianshun",)
+        tmp_path, source_revision="abc123", requirement="x", operators=("alice",)
     )
     status, data = _call(
         capsys,
@@ -466,7 +466,7 @@ def test_cli_workflow_init_default_operator_uses_configured_env(
         encoding="utf-8",
     )
     monkeypatch.delenv("WECOM_CREATOR_USERID", raising=False)
-    monkeypatch.setenv("CUSTOM_CREATOR_ID", "1688852707310042")
+    monkeypatch.setenv("CUSTOM_CREATOR_ID", "1700000000000000")
     status, data = _call(
         capsys,
         [
@@ -477,7 +477,7 @@ def test_cli_workflow_init_default_operator_uses_configured_env(
         ],
     )
     assert status == 0
-    assert data["data"]["artifacts"]["operators"] == ["1688852707310042"]
+    assert data["data"]["artifacts"]["operators"] == ["1700000000000000"]
 
 
 def test_cli_workflow_init_default_operator_falls_back_to_hostname(
@@ -490,7 +490,7 @@ def test_cli_workflow_init_default_operator_falls_back_to_hostname(
     monkeypatch.delenv("WECOM_CREATOR_USERID", raising=False)
     monkeypatch.setattr(
         "ai_workflow.wecom.notify.platform.node",
-        lambda: "sunxianshundeMacBook-Pro.local",
+        lambda: "workstation.local",
     )
     status, data = _call(
         capsys,
@@ -502,7 +502,7 @@ def test_cli_workflow_init_default_operator_falls_back_to_hostname(
         ],
     )
     assert status == 0
-    assert data["data"]["artifacts"]["operators"] == ["sunxianshundeMacBook-Pro"]
+    assert data["data"]["artifacts"]["operators"] == ["workstation"]
 
 
 def test_cli_workflow_init_default_operator_falls_back_to_shell_files(
@@ -515,7 +515,7 @@ def test_cli_workflow_init_default_operator_falls_back_to_shell_files(
     monkeypatch.delenv("WECOM_CREATOR_USERID", raising=False)
     shell_file = tmp_path / ".zshenv"
     shell_file.write_text(
-        'export WECOM_CREATOR_USERID="1688852707310042"\n', encoding="utf-8"
+        'export WECOM_CREATOR_USERID="1700000000000000"\n', encoding="utf-8"
     )
     monkeypatch.setattr(
         "ai_workflow.cli._shell_env_files", lambda: (shell_file,)
@@ -530,4 +530,4 @@ def test_cli_workflow_init_default_operator_falls_back_to_shell_files(
         ],
     )
     assert status == 0
-    assert data["data"]["artifacts"]["operators"] == ["1688852707310042"]
+    assert data["data"]["artifacts"]["operators"] == ["1700000000000000"]
