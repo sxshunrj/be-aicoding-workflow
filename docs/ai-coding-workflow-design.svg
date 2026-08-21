@@ -1,0 +1,395 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 2240" width="1120" height="2240" role="img" aria-labelledby="title desc">
+  <title id="title">AI Coding Workflow 仓库设计图</title>
+  <desc id="desc">展示 Skill-first AI coding workflow 从任务输入、持久化运行、规格规划、实现验证、Review Gate、知识治理到 Git 交接的完整流程。</desc>
+  <style>
+    text { font-family: "Helvetica Neue", Helvetica, Arial, "PingFang SC", "Microsoft YaHei", "Microsoft JhengHei", SimHei, sans-serif; letter-spacing: 0; }
+    .title { font-size: 34px; font-weight: 700; fill: #101828; }
+    .subtitle { font-size: 17px; font-weight: 500; fill: #64748b; }
+    .step-title { font-size: 19px; font-weight: 700; }
+    .body { font-size: 14px; fill: #27364f; }
+    .small { font-size: 12px; fill: #52637a; }
+    .chip { font-size: 11px; font-weight: 600; }
+    .gate-title { font-size: 17px; font-weight: 700; fill: #dc2626; }
+    .gate-body { font-size: 13px; fill: #47343a; }
+    .footer-title { font-size: 17px; font-weight: 700; fill: #0754c9; }
+    .footer-name { font-size: 12px; font-weight: 700; fill: #114fc3; }
+    .footer-body { font-size: 11px; fill: #52637a; }
+    .icon-stroke { fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.6; }
+  </style>
+
+  <defs>
+    <marker id="arrow-down" markerWidth="10" markerHeight="8" refX="8.5" refY="4" orient="auto">
+      <path d="M 0 0 L 9 4 L 0 8 Z" fill="#344563"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="8" refX="8.5" refY="4" orient="auto">
+      <path d="M 0 0 L 9 4 L 0 8 Z" fill="#ef4444"/>
+    </marker>
+    <filter id="card-shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#94a3b8" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <rect width="1120" height="2240" fill="#ffffff"/>
+  <text x="560" y="52" text-anchor="middle" class="title">AI Coding Workflow 仓库设计图</text>
+  <text x="560" y="84" text-anchor="middle" class="subtitle">Skill-first · 持久化状态机 · 证据驱动交付</text>
+
+  <!-- Timeline connectors -->
+  <g fill="none" stroke="#344563" stroke-width="1.6">
+    <path d="M 94 199 L 94 270" marker-end="url(#arrow-down)"/>
+    <path d="M 94 326 L 94 414" marker-end="url(#arrow-down)"/>
+    <path d="M 94 470 L 94 564" marker-end="url(#arrow-down)"/>
+    <path d="M 94 620 L 94 714" marker-end="url(#arrow-down)"/>
+    <path d="M 94 770 L 94 864" marker-end="url(#arrow-down)"/>
+    <path d="M 94 920 L 94 1024" marker-end="url(#arrow-down)"/>
+    <path d="M 94 1080 L 94 1184" marker-end="url(#arrow-down)"/>
+    <path d="M 94 1240 L 94 1327" marker-end="url(#arrow-down)"/>
+    <path d="M 94 1383 L 94 1469" marker-end="url(#arrow-down)"/>
+    <path d="M 94 1525 L 94 1619" marker-end="url(#arrow-down)"/>
+    <path d="M 94 1675 L 94 1769" marker-end="url(#arrow-down)"/>
+  </g>
+
+  <!-- Gate connectors -->
+  <g fill="none" stroke="#ef4444" stroke-width="1.7" stroke-dasharray="5 4">
+    <path d="M 830 592 L 870 592" marker-end="url(#arrow-red)"/>
+    <path d="M 830 1052 L 870 1052" marker-end="url(#arrow-red)"/>
+    <path d="M 830 1647 L 870 1647" marker-end="url(#arrow-red)"/>
+  </g>
+
+  <!-- Step 1 -->
+  <g filter="url(#card-shadow)">
+    <rect x="150" y="120" width="680" height="105" rx="8" fill="#ffffff" stroke="#b9d2ff" stroke-width="1.3"/>
+    <rect x="164" y="132" width="94" height="81" rx="8" fill="#eff6ff"/>
+  </g>
+  <g class="icon-stroke" stroke="#2f6fed">
+    <path d="M 192 151 H 222 L 237 166 V 195 H 192 Z"/>
+    <path d="M 222 151 V 166 H 237"/>
+    <path d="M 202 177 H 225 M 202 187 H 220"/>
+  </g>
+  <text x="282" y="150" class="step-title" fill="#1358ce">输入任务并选择工作流</text>
+  <text x="282" y="176" class="body">由 Agent Skill 作为统一产品入口，根据需求成熟度选择 profile</text>
+  <rect x="282" y="189" width="210" height="24" rx="5" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="387" y="205" text-anchor="middle" class="chip" fill="#1d4ed8">Full · spec → plan → implement → verify</text>
+  <rect x="502" y="189" width="191" height="24" rx="5" fill="#f5f3ff" stroke="#ddd6fe"/>
+  <text x="598" y="205" text-anchor="middle" class="chip" fill="#6d28d9">Grill · PRD → implement → verify</text>
+
+  <!-- Step 2 -->
+  <g filter="url(#card-shadow)">
+    <rect x="150" y="240" width="680" height="120" rx="8" fill="#ffffff" stroke="#b9d2ff" stroke-width="1.3"/>
+    <rect x="164" y="252" width="94" height="96" rx="8" fill="#eef4ff"/>
+  </g>
+  <g class="icon-stroke" stroke="#2563eb">
+    <path d="M 194 280 A 22 22 0 1 1 192 311"/>
+    <path d="M 194 280 L 193 294 L 207 289"/>
+    <circle cx="215" cy="300" r="4" fill="#2563eb" stroke="none"/>
+  </g>
+  <text x="282" y="271" class="step-title" fill="#1358ce">初始化 / 恢复持久化 Run</text>
+  <text x="282" y="297" class="body">新建或从 state.yaml 恢复；唯一事实来源是持久化状态，不是聊天记录</text>
+  <text x="282" y="323" class="small">status → init / recover　·　run_graph　·　events.jsonl　·　attempt history</text>
+  <text x="282" y="343" class="small">所有状态变化只经 Helper CLI；禁止直接编辑 .ai-workflow/runs/**</text>
+
+  <!-- Step 3 -->
+  <g filter="url(#card-shadow)">
+    <rect x="150" y="375" width="680" height="135" rx="8" fill="#ffffff" stroke="#b9d2ff" stroke-width="1.3"/>
+    <rect x="164" y="387" width="94" height="111" rx="8" fill="#eff6ff"/>
+  </g>
+  <g class="icon-stroke" stroke="#2f6fed">
+    <rect x="188" y="408" width="45" height="48" rx="5"/>
+    <path d="M 198 422 H 223 M 198 432 H 219 M 198 442 H 214"/>
+    <path d="M 229 398 L 232 404 L 239 407 L 232 410 L 229 417 L 226 410 L 219 407 L 226 404 Z" fill="#2f6fed" stroke="none"/>
+  </g>
+  <text x="282" y="407" class="step-title" fill="#1358ce">准备阶段上下文</text>
+  <text x="282" y="433" class="body">Python Helper 生成不可变 DispatchPacket 与有限、可引用的知识包</text>
+  <circle cx="287" cy="457" r="3" fill="#2563eb"/><text x="300" y="462" class="small">owner contract + common contract</text>
+  <circle cx="507" cy="457" r="3" fill="#2563eb"/><text x="520" y="462" class="small">allowed input / output paths</text>
+  <circle cx="287" cy="483" r="3" fill="#2563eb"/><text x="300" y="488" class="small">prior artifacts + rerun reason</text>
+  <circle cx="507" cy="483" r="3" fill="#2563eb"/><text x="520" y="488" class="small">schema-v2 ChildResult contract</text>
+
+  <!-- Step 4 -->
+  <g filter="url(#card-shadow)">
+    <rect x="150" y="525" width="680" height="135" rx="8" fill="#ffffff" stroke="#bce7dc" stroke-width="1.3"/>
+    <rect x="164" y="537" width="94" height="111" rx="8" fill="#eefbf7"/>
+  </g>
+  <g class="icon-stroke" stroke="#059669">
+    <path d="M 192 552 H 224 L 236 564 V 625 H 192 Z"/>
+    <path d="M 224 552 V 564 H 236"/>
+    <path d="M 201 581 H 227 M 201 592 H 227 M 201 603 H 219"/>
+    <path d="M 201 614 L 207 620 L 221 606"/>
+  </g>
+  <text x="282" y="557" class="step-title" fill="#07805e">规格阶段：Spec 或 PRD</text>
+  <text x="282" y="584" class="body">Full：spec.spec → Spec Writer child，明确范围、约束与验收标准</text>
+  <text x="282" y="610" class="body">Grill：plan.prd → 主 Agent 一次一个问题，使用 stage-owned 登记 PRD</text>
+  <text x="282" y="636" class="small">产物必须可执行，使后续阶段不再依赖聊天上下文</text>
+
+  <!-- Step 5 -->
+  <g filter="url(#card-shadow)">
+    <rect x="150" y="675" width="680" height="135" rx="8" fill="#ffffff" stroke="#d5c8ff" stroke-width="1.3"/>
+    <rect x="164" y="687" width="94" height="111" rx="8" fill="#f5f3ff"/>
+  </g>
+  <g class="icon-stroke" stroke="#6d4bd1">
+    <rect x="188" y="708" width="46" height="58" rx="5"/>
+    <path d="M 201 708 V 700 H 221 V 708"/>
+    <path d="M 199 724 L 204 729 L 212 720 M 216 726 H 226"/>
+    <path d="M 199 742 L 204 747 L 212 738 M 216 744 H 226"/>
+    <path d="M 199 760 H 226"/>
+  </g>
+  <text x="282" y="707" class="step-title" fill="#6541c8">方案阶段：并行规划</text>
+  <text x="282" y="734" class="body">plan.solution 与 plan.test_strategy 作为 sibling 并行派发</text>
+  <rect x="282" y="748" width="151" height="24" rx="5" fill="#f5f3ff" stroke="#ddd6fe"/>
+  <text x="358" y="764" text-anchor="middle" class="chip" fill="#6d28d9">改动边界 · 风险 · 回滚</text>
+  <rect x="443" y="748" width="172" height="24" rx="5" fill="#f5f3ff" stroke="#ddd6fe"/>
+  <text x="529" y="764" text-anchor="middle" class="chip" fill="#6d28d9">验证命令 · 测试范围</text>
+  <text x="282" y="792" class="small">先派发全部 sibling，再等待；已 valid 且输入未变的结果可复用</text>
+
+  <!-- Step 6 -->
+  <g filter="url(#card-shadow)">
+    <rect x="150" y="825" width="680" height="135" rx="8" fill="#ffffff" stroke="#bfd4ff" stroke-width="1.3"/>
+    <rect x="164" y="837" width="94" height="111" rx="8" fill="#eef4ff"/>
+  </g>
+  <g class="icon-stroke" stroke="#2f6fed">
+    <rect x="185" y="858" width="51" height="54" rx="5"/>
+    <path d="M 185 870 H 236"/>
+    <circle cx="193" cy="864" r="2" fill="#2f6fed" stroke="none"/>
+    <circle cx="201" cy="864" r="2" fill="#2f6fed" stroke="none"/>
+    <path d="M 204 884 L 196 892 L 204 900 M 217 884 L 225 892 L 217 900 M 214 881 L 208 903"/>
+  </g>
+  <text x="282" y="857" class="step-title" fill="#1358ce">实现阶段：implement.code</text>
+  <text x="282" y="884" class="body">Coder child 在授权路径内修改代码，并输出 implementation report</text>
+  <text x="282" y="910" class="small">开始：捕获 dirty baseline　·　完成：校验改动范围与 ChildResult</text>
+  <text x="282" y="936" class="small">阶段接受后创建不可变本地 Git checkpoint，不切分支、不 push</text>
+
+  <!-- Step 7 -->
+  <g filter="url(#card-shadow)">
+    <rect x="150" y="975" width="680" height="155" rx="8" fill="#ffffff" stroke="#f3cf94" stroke-width="1.3"/>
+    <rect x="164" y="987" width="94" height="131" rx="8" fill="#fff8e8"/>
+  </g>
+  <g class="icon-stroke" stroke="#e58a00">
+    <path d="M 208 1004 V 1015 M 194 1015 H 222"/>
+    <rect x="186" y="1015" width="44" height="62" rx="5"/>
+    <path d="M 196 1031 H 220 M 196 1044 H 220"/>
+    <path d="M 197 1060 L 204 1067 L 219 1051"/>
+  </g>
+  <text x="282" y="1007" class="step-title" fill="#d97706">验证阶段：独立并行验证</text>
+  <text x="282" y="1034" class="body">每个 verification child 只验证自己的范围，Harness 不代跑、不代修</text>
+  <rect x="282" y="1048" width="92" height="24" rx="5" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="328" y="1064" text-anchor="middle" class="chip" fill="#c2410c">verify.build</text>
+  <rect x="382" y="1048" width="111" height="24" rx="5" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="438" y="1064" text-anchor="middle" class="chip" fill="#c2410c">verify.unit_test</text>
+  <rect x="501" y="1048" width="139" height="24" rx="5" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="571" y="1064" text-anchor="middle" class="chip" fill="#c2410c">verify.integration_test</text>
+  <rect x="648" y="1048" width="132" height="24" rx="5" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="714" y="1064" text-anchor="middle" class="chip" fill="#c2410c">verify.code_review</text>
+  <text x="282" y="1100" class="small">所有验证证据绑定 active checkpoint SHA，拒绝 stale 或错锚证据</text>
+
+  <!-- Step 8 -->
+  <g filter="url(#card-shadow)">
+    <rect x="150" y="1145" width="680" height="135" rx="8" fill="#ffffff" stroke="#dccbff" stroke-width="1.3"/>
+    <rect x="164" y="1157" width="94" height="111" rx="8" fill="#f5f3ff"/>
+  </g>
+  <g class="icon-stroke" stroke="#6d4bd1">
+    <path d="M 232 1183 A 24 24 0 1 0 232 1225"/>
+    <path d="M 232 1183 V 1197 H 218"/>
+    <path d="M 193 1204 L 203 1214 L 220 1195"/>
+  </g>
+  <text x="282" y="1177" class="step-title" fill="#6541c8">Review Gate：接受或精准重跑</text>
+  <text x="282" y="1204" class="body">finalize 后根据 findings 与用户反馈形成可执行的 NODE=REASON</text>
+  <text x="282" y="1230" class="small">有重跑：回到最早受影响节点，下游置 pending；未受影响 sibling 继续复用</text>
+  <text x="282" y="1256" class="small">无重跑：记录 digest，accept 后 transition，并立即重新读取 status</text>
+
+  <!-- Step 9 -->
+  <g filter="url(#card-shadow)">
+    <rect x="150" y="1295" width="680" height="120" rx="8" fill="#ffffff" stroke="#f5b9b9" stroke-width="1.3"/>
+    <rect x="164" y="1307" width="94" height="96" rx="8" fill="#fef2f2"/>
+  </g>
+  <g class="icon-stroke" stroke="#dc2626">
+    <path d="M 211 1320 L 238 1368 H 184 Z"/>
+    <path d="M 211 1337 V 1352"/>
+    <circle cx="211" cy="1360" r="2.5" fill="#dc2626" stroke="none"/>
+  </g>
+  <text x="282" y="1327" class="step-title" fill="#dc2626">阻塞与恢复</text>
+  <text x="282" y="1354" class="body">环境、权限、工具或 stale gate 问题进入 blocked，停止 dispatch 与迁移</text>
+  <text x="282" y="1380" class="small">仅用户可选择 resume（可附节点级 rerun）或 abort；沉默不等于同意</text>
+  <text x="282" y="1400" class="small">最大尝试次数用于阻止无限循环，异常一律 fail closed</text>
+
+  <!-- Step 10 -->
+  <g filter="url(#card-shadow)">
+    <rect x="150" y="1430" width="680" height="135" rx="8" fill="#ffffff" stroke="#bce7dc" stroke-width="1.3"/>
+    <rect x="164" y="1442" width="94" height="111" rx="8" fill="#eefbf7"/>
+  </g>
+  <g class="icon-stroke" stroke="#059669">
+    <path d="M 193 1460 H 222 L 235 1473 V 1532 H 193 Z"/>
+    <path d="M 222 1460 V 1473 H 235"/>
+    <path d="M 202 1490 H 225 M 202 1501 H 225 M 202 1512 H 217"/>
+    <circle cx="230" cy="1526" r="11" fill="#eefbf7"/>
+    <path d="M 224 1526 L 229 1531 L 237 1521"/>
+  </g>
+  <text x="282" y="1462" class="step-title" fill="#07805e">终态确认与运行摘要</text>
+  <text x="282" y="1489" class="body">最终 verify Review Gate 始终由人类确认，之后进入 completed / aborted</text>
+  <text x="282" y="1515" class="small">summary 只读汇总：phase duration · attempt / rerun · review gates</text>
+  <text x="282" y="1541" class="small">同时记录未解决 findings、aborted reason 与 cited knowledge IDs</text>
+
+  <!-- Step 11 -->
+  <g filter="url(#card-shadow)">
+    <rect x="150" y="1580" width="680" height="135" rx="8" fill="#ffffff" stroke="#b9e5ed" stroke-width="1.3"/>
+    <rect x="164" y="1592" width="94" height="111" rx="8" fill="#eefbfe"/>
+  </g>
+  <g class="icon-stroke" stroke="#0891b2">
+    <ellipse cx="211" cy="1617" rx="24" ry="9"/>
+    <path d="M 187 1617 V 1667 M 235 1617 V 1667"/>
+    <path d="M 187 1642 C 187 1654 235 1654 235 1642 M 187 1667 C 187 1679 235 1679 235 1667"/>
+    <path d="M 201 1634 L 208 1641 L 221 1627"/>
+  </g>
+  <text x="282" y="1612" class="step-title" fill="#087e9c">知识反思与人工治理</text>
+  <text x="282" y="1639" class="body">终态 evidence packet → no_candidate，或生成 candidate proposal</text>
+  <text x="282" y="1665" class="small">人类决定 promote / reject / 保持不变；approved 写入 Git-native LLM Wiki</text>
+  <text x="282" y="1691" class="small">未来 Run 只读取 Helper 生成的 bounded knowledge packet，不读原始 Wiki</text>
+
+  <!-- Step 12 -->
+  <g filter="url(#card-shadow)">
+    <rect x="150" y="1730" width="680" height="135" rx="8" fill="#ffffff" stroke="#bce7dc" stroke-width="1.3"/>
+    <rect x="164" y="1742" width="94" height="111" rx="8" fill="#eefbf7"/>
+  </g>
+  <g class="icon-stroke" stroke="#059669">
+    <rect x="187" y="1773" width="48" height="50" rx="5"/>
+    <path d="M 211 1773 V 1823 M 187 1790 H 235"/>
+    <path d="M 211 1773 C 211 1760 194 1758 194 1769 C 194 1775 201 1777 211 1773 Z"/>
+    <path d="M 211 1773 C 211 1760 228 1758 228 1769 C 228 1775 221 1777 211 1773 Z"/>
+    <path d="M 216 1810 L 222 1816 L 232 1804"/>
+  </g>
+  <text x="282" y="1762" class="step-title" fill="#07805e">Git 交接与最终交付物</text>
+  <text x="282" y="1789" class="body">重新检查 status / diff，由用户选择 skip、commit 或创建 branch / MR</text>
+  <circle cx="287" cy="1814" r="3" fill="#059669"/><text x="300" y="1819" class="small">阶段 Artifacts</text>
+  <circle cx="417" cy="1814" r="3" fill="#059669"/><text x="430" y="1819" class="small">验证证据</text>
+  <circle cx="527" cy="1814" r="3" fill="#059669"/><text x="540" y="1819" class="small">Run Summary</text>
+  <circle cx="654" cy="1814" r="3" fill="#059669"/><text x="667" y="1819" class="small">知识决策</text>
+  <text x="282" y="1845" class="small">不自动 add .、commit、push、force-push、reset 或 clean</text>
+
+  <!-- Numbered timeline nodes -->
+  <g text-anchor="middle" fill="#ffffff" font-size="15" font-weight="700">
+    <circle cx="94" cy="172" r="20" fill="#2563eb"/><text x="94" y="178">1</text>
+    <circle cx="94" cy="300" r="20" fill="#2563eb"/><text x="94" y="306">2</text>
+    <circle cx="94" cy="442" r="20" fill="#2563eb"/><text x="94" y="448">3</text>
+    <circle cx="94" cy="592" r="20" fill="#059669"/><text x="94" y="598">4</text>
+    <circle cx="94" cy="742" r="20" fill="#6d4bd1"/><text x="94" y="748">5</text>
+    <circle cx="94" cy="892" r="20" fill="#2563eb"/><text x="94" y="898">6</text>
+    <circle cx="94" cy="1052" r="20" fill="#e58a00"/><text x="94" y="1058">7</text>
+    <circle cx="94" cy="1212" r="20" fill="#6d4bd1"/><text x="94" y="1218">8</text>
+    <circle cx="94" cy="1355" r="20" fill="#dc2626"/><text x="94" y="1361">9</text>
+    <circle cx="94" cy="1497" r="20" fill="#059669"/><text x="94" y="1503">10</text>
+    <circle cx="94" cy="1647" r="20" fill="#0891b2"/><text x="94" y="1653">11</text>
+    <circle cx="94" cy="1797" r="20" fill="#059669"/><text x="94" y="1803">12</text>
+  </g>
+
+  <!-- Gate 1 -->
+  <g filter="url(#card-shadow)">
+    <rect x="870" y="530" width="215" height="124" rx="8" fill="#fffafa" stroke="#f87171" stroke-width="1.2"/>
+  </g>
+  <g transform="translate(890 548)">
+    <rect x="0" y="9" width="18" height="16" rx="3" fill="#ef4444"/>
+    <path d="M 4 9 V 5 A 5 5 0 0 1 14 5 V 9" fill="none" stroke="#ef4444" stroke-width="2.4"/>
+    <circle cx="9" cy="17" r="2" fill="#ffffff"/>
+  </g>
+  <text x="920" y="571" class="gate-title">门控 ①</text>
+  <text x="892" y="598" class="gate-body">每个 phase finalize 后</text>
+  <text x="892" y="621" class="gate-body">未通过：精准 rerun</text>
+  <text x="892" y="644" class="gate-body">通过：transition + status</text>
+
+  <!-- Gate 2 -->
+  <g filter="url(#card-shadow)">
+    <rect x="870" y="986" width="215" height="132" rx="8" fill="#fffafa" stroke="#f87171" stroke-width="1.2"/>
+  </g>
+  <g transform="translate(890 1004)">
+    <rect x="0" y="9" width="18" height="16" rx="3" fill="#ef4444"/>
+    <path d="M 4 9 V 5 A 5 5 0 0 1 14 5 V 9" fill="none" stroke="#ef4444" stroke-width="2.4"/>
+    <circle cx="9" cy="17" r="2" fill="#ffffff"/>
+  </g>
+  <text x="920" y="1027" class="gate-title">门控 ②</text>
+  <text x="892" y="1054" class="gate-body">终态 verify 始终人工</text>
+  <text x="892" y="1077" class="gate-body">blocked 不自动恢复</text>
+  <text x="892" y="1100" class="gate-body">仅用户 resume / abort</text>
+
+  <!-- Gate 3 -->
+  <g filter="url(#card-shadow)">
+    <rect x="870" y="1578" width="215" height="138" rx="8" fill="#fffafa" stroke="#f87171" stroke-width="1.2"/>
+  </g>
+  <g transform="translate(890 1596)">
+    <rect x="0" y="9" width="18" height="16" rx="3" fill="#ef4444"/>
+    <path d="M 4 9 V 5 A 5 5 0 0 1 14 5 V 9" fill="none" stroke="#ef4444" stroke-width="2.4"/>
+    <circle cx="9" cy="17" r="2" fill="#ffffff"/>
+  </g>
+  <text x="920" y="1619" class="gate-title">门控 ③</text>
+  <text x="892" y="1646" class="gate-body">知识晋升需人工决定</text>
+  <text x="892" y="1669" class="gate-body">Git 外部动作独立确认</text>
+  <text x="892" y="1692" class="gate-body">未选择时保持现状</text>
+
+  <!-- Roles footer -->
+  <rect x="38" y="1900" width="1044" height="176" rx="8" fill="#fbfdff" stroke="#b9d2ff" stroke-width="1.2"/>
+  <text x="72" y="1934" class="footer-title">角色与职责</text>
+  <line x1="132" y1="1916" x2="132" y2="2060" stroke="#dbeafe"/>
+  <g text-anchor="middle">
+    <g transform="translate(208 1937)">
+      <circle cx="0" cy="0" r="17" fill="#ede9fe"/>
+      <path d="M -9 4 L 0 -8 L 9 4 L 0 12 Z" fill="none" stroke="#7c3aed" stroke-width="2"/>
+      <circle cx="0" cy="2" r="3" fill="#7c3aed"/>
+      <text x="0" y="36" class="footer-name">Harness 主 Agent</text>
+      <text x="0" y="57" class="footer-body">编排 · 语义路由</text>
+      <text x="0" y="74" class="footer-body">呈现人工决策</text>
+    </g>
+    <g transform="translate(372 1937)">
+      <circle cx="0" cy="0" r="17" fill="#dbeafe"/>
+      <path d="M -9 -5 H 9 V 9 H -9 Z M -6 -10 H 6" fill="none" stroke="#2563eb" stroke-width="2"/>
+      <text x="0" y="36" class="footer-name">Python Helper Core</text>
+      <text x="0" y="57" class="footer-body">状态机 · Schema 校验</text>
+      <text x="0" y="74" class="footer-body">持久化 · 幂等</text>
+    </g>
+    <g transform="translate(536 1937)">
+      <circle cx="0" cy="0" r="17" fill="#f3e8ff"/>
+      <circle cx="-6" cy="-2" r="4" fill="#9333ea"/>
+      <circle cx="6" cy="-2" r="4" fill="#9333ea"/>
+      <path d="M -12 10 Q -12 3 -6 3 Q 0 3 0 10 M 0 10 Q 0 3 6 3 Q 12 3 12 10" fill="none" stroke="#9333ea" stroke-width="2"/>
+      <text x="0" y="36" class="footer-name">Phase Children</text>
+      <text x="0" y="57" class="footer-body">Spec · Plan · Code</text>
+      <text x="0" y="74" class="footer-body">Verify · Review</text>
+    </g>
+    <g transform="translate(700 1937)">
+      <circle cx="0" cy="0" r="17" fill="#cffafe"/>
+      <ellipse cx="0" cy="-5" rx="10" ry="4" fill="none" stroke="#0891b2" stroke-width="2"/>
+      <path d="M -10 -5 V 8 M 10 -5 V 8 M -10 8 C -10 13 10 13 10 8" fill="none" stroke="#0891b2" stroke-width="2"/>
+      <text x="0" y="36" class="footer-name">Wiki Core</text>
+      <text x="0" y="57" class="footer-body">检索 · Knowledge Packet</text>
+      <text x="0" y="74" class="footer-body">候选知识生命周期</text>
+    </g>
+    <g transform="translate(864 1937)">
+      <circle cx="0" cy="0" r="17" fill="#dcfce7"/>
+      <circle cx="0" cy="-5" r="6" fill="#16a34a"/>
+      <path d="M -11 11 Q -11 1 0 1 Q 11 1 11 11" fill="#16a34a"/>
+      <text x="0" y="36" class="footer-name">用户</text>
+      <text x="0" y="57" class="footer-body">关键决策 · 终态验收</text>
+      <text x="0" y="74" class="footer-body">治理与 Git 授权</text>
+    </g>
+    <g transform="translate(1010 1937)">
+      <circle cx="0" cy="0" r="17" fill="#ffedd5"/>
+      <circle cx="-7" cy="-6" r="3" fill="#ea580c"/>
+      <circle cx="7" cy="6" r="3" fill="#ea580c"/>
+      <circle cx="-7" cy="7" r="3" fill="#ea580c"/>
+      <path d="M -7 -3 V 4 M -4 -6 H 1 Q 7 -6 7 3" fill="none" stroke="#ea580c" stroke-width="2"/>
+      <text x="0" y="36" class="footer-name">Git</text>
+      <text x="0" y="57" class="footer-body">Checkpoint · 版本历史</text>
+      <text x="0" y="74" class="footer-body">最终交接</text>
+    </g>
+  </g>
+
+  <!-- Principles footer -->
+  <rect x="38" y="2092" width="1044" height="112" rx="8" fill="#fbfdff" stroke="#b9d2ff" stroke-width="1.2"/>
+  <text x="72" y="2127" class="footer-title">核心原则</text>
+  <line x1="132" y1="2108" x2="132" y2="2188" stroke="#dbeafe"/>
+  <g text-anchor="middle">
+    <g transform="translate(208 2126)"><circle r="11" fill="#dbeafe"/><path d="M -5 0 L -1 5 L 6 -5" fill="none" stroke="#2563eb" stroke-width="2"/><text x="0" y="30" class="footer-name">Skill-first</text><text x="0" y="48" class="footer-body">多客户端统一入口</text></g>
+    <g transform="translate(372 2126)"><circle r="11" fill="#dcfce7"/><path d="M -5 0 L -1 5 L 6 -5" fill="none" stroke="#16a34a" stroke-width="2"/><text x="0" y="30" class="footer-name">State as Truth</text><text x="0" y="48" class="footer-body">可恢复、可审计</text></g>
+    <g transform="translate(536 2126)"><circle r="11" fill="#ede9fe"/><path d="M -5 0 L -1 5 L 6 -5" fill="none" stroke="#7c3aed" stroke-width="2"/><text x="0" y="30" class="footer-name">Evidence First</text><text x="0" y="48" class="footer-body">Schema v2 + digest</text></g>
+    <g transform="translate(700 2126)"><circle r="11" fill="#ffedd5"/><path d="M -5 0 L -1 5 L 6 -5" fill="none" stroke="#ea580c" stroke-width="2"/><text x="0" y="30" class="footer-name">Node-level Rerun</text><text x="0" y="48" class="footer-body">最小影响面恢复</text></g>
+    <g transform="translate(864 2126)"><circle r="11" fill="#cffafe"/><path d="M -5 0 L -1 5 L 6 -5" fill="none" stroke="#0891b2" stroke-width="2"/><text x="0" y="30" class="footer-name">Least Authority</text><text x="0" y="48" class="footer-body">路径与职责隔离</text></g>
+    <g transform="translate(1010 2126)"><circle r="11" fill="#fee2e2"/><path d="M -5 0 L -1 5 L 6 -5" fill="none" stroke="#dc2626" stroke-width="2"/><text x="0" y="30" class="footer-name">Human Control</text><text x="0" y="48" class="footer-body">关键动作显式确认</text></g>
+  </g>
+
+  <text x="1080" y="2224" text-anchor="end" font-size="10" fill="#94a3b8">依据仓库 README、Workflow Core、Skill contracts 与 E2E tests 整理</text>
+</svg>
