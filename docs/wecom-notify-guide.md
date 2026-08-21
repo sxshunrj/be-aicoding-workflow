@@ -65,7 +65,7 @@ wecom:
 
 ```bash
 export WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=你的机器人key
-export WECOM_CREATOR_USERID=sunxianshun
+export WECOM_CREATOR_USERID=alice
 ```
 
 （推荐写入 `~/.zshenv`，它由 zsh **所有**会话加载——登录、交互、非交互、脚本；或由 `.env` 加载。**不要只写 `~/.zshrc`**：它只在交互式 zsh 加载，GUI 应用、服务或脚本启动的 Agent 会因变量缺失而静默收不到通知。）
@@ -78,7 +78,7 @@ export WECOM_CREATOR_USERID=sunxianshun
 ai-workflow workflow init --repo "$PWD" \
   --source-revision "$(git rev-parse HEAD)" \
   --requirement "实现订单导出模块" \
-  --operators "sunxianshun,wangxiaofei"
+  --operators "alice,bob"
 ```
 
 ### 已安装用户常见问题
@@ -129,7 +129,7 @@ Webhook 地址只从环境变量读取，`wecom:` 块中存放的是变量名：
 
 ```bash
 export WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx
-export WECOM_CREATOR_USERID=sunxianshun   # 你的企微 userid，init 默认操作者
+export WECOM_CREATOR_USERID=alice   # 你的企微 userid，init 默认操作者
 ```
 
 > **环境变量加载位置（重要）**：`~/.zshrc` 只在**交互式** zsh 加载。Codex/Claude Code 若由 GUI 应用、服务或脚本启动，将拿不到只写在 `~/.zshrc` 的变量，通知会静默失败。推荐把上述 export 写入 `~/.zshenv`（zsh 所有会话都加载）。GUI 应用当前会话可执行 `launchctl setenv <变量名> <值>` 立即注入（重启后失效，需重新设置或配合登录项）；修改后需重启 Codex/Claude 应用才生效。
@@ -140,7 +140,7 @@ export WECOM_CREATOR_USERID=sunxianshun   # 你的企微 userid，init 默认操
 ai-workflow workflow init --repo "$PWD" \
   --source-revision "$(git rev-parse HEAD)" \
   --requirement "实现订单导出模块" \
-  --operators "sunxianshun,wangxiaofei"    # 可多个；省略则只有创建者
+  --operators "alice,bob"    # 可多个；省略则只有创建者
 ```
 
 - 操作者写入 `state.artifacts["operators"]`。
@@ -208,14 +208,14 @@ ai-workflow wecom notify --repo "$PWD" --run-id RUN-xxx \
 
 ```markdown
 **🔔 工作流需要人工处理**
-👉 <@1688852707310042> <@sunxianshun>：接受或修改 rerun proposal
+👉 <@1700000000000000> <@alice>：接受或修改 rerun proposal
 📌 Review Gate（plan 阶段）｜📁 your-repo
 🆔 `RUN-xxx`
 🏷 功能名称：实现订单导出模块
 plan.solution 已完成，需审核
 ```
 
-> **@ 强提醒**：动作行以企业微信 `<@userid>` 提及语法渲染授权操作者（真实 userid 或 `@all`），会真正 @ 到成员并触发强提醒。若 run 未记录操作者（`--operators` 与 `WECOM_CREATOR_USERID` 均缺失），依次回退：机器主机名（`platform.node()` 首段，如 `sunxianshundeMacBook-Pro`；含非 ASCII 字符等无法作为 userid 时跳过）→ `<@all>` @ 全群，保证一定有人被提醒。注意：主机名若与企微 userid 不一致，`<@主机名>` 不会触发任何人的强提醒（消息仍送达群里），此时设置 `WECOM_CREATOR_USERID` 或 init 传 `--operators` 即可精确 @。
+> **@ 强提醒**：动作行以企业微信 `<@userid>` 提及语法渲染授权操作者（真实 userid 或 `@all`），会真正 @ 到成员并触发强提醒。若 run 未记录操作者（`--operators` 与 `WECOM_CREATOR_USERID` 均缺失），依次回退：机器主机名（`platform.node()` 首段，如 `workstation`；含非 ASCII 字符等无法作为 userid 时跳过）→ `<@all>` @ 全群，保证一定有人被提醒。注意：主机名若与企微 userid 不一致，`<@主机名>` 不会触发任何人的强提醒（消息仍送达群里），此时设置 `WECOM_CREATOR_USERID` 或 init 传 `--operators` 即可精确 @。
 >
 > **紧凑格式**：需求只取首个非空行作为标题（去 `#` 标记，跳过 `---` 分隔线，按 UTF-8 字符边界截断至 160 字节）；`--summary` 超长导致整条消息超过 4096 字节上限时同样按字符边界截断，固定骨架与 `<@userid>` 永远保留。全文 PRD 不进群，完整内容在 run 状态里看。
 

@@ -186,9 +186,9 @@ def test_init_records_operators_in_artifacts(tmp_path: Path) -> None:
         tmp_path,
         source_revision="abc123",
         requirement="Specify the change",
-        operators=("sunxianshun", "wangxiaofei"),
+        operators=("alice", "bob"),
     )
-    assert state.artifacts["operators"] == ["sunxianshun", "wangxiaofei"]
+    assert state.artifacts["operators"] == ["alice", "bob"]
 
 
 def test_init_operators_default_empty(tmp_path: Path) -> None:
@@ -312,11 +312,11 @@ def test_cli_init_records_operators(tmp_path: Path, capsys) -> None:
             "--requirement",
             "Specify the change",
             "--operators",
-            "sunxianshun,wangxiaofei",
+            "alice,bob",
         ],
     )
     assert status == 0
-    assert init["data"]["artifacts"]["operators"] == ["sunxianshun", "wangxiaofei"]
+    assert init["data"]["artifacts"]["operators"] == ["alice", "bob"]
 ```
 
 Note: `init["data"]` is the `RunState.to_dict()` output, so `artifacts` is present. Verify the envelope shape from the existing `test_cli_init_begin_stage_finalize_lifecycle` test (it asserts `init["data"]["profile"]`, so `data` is the state dict — confirm `data["artifacts"]` exists; if the envelope omits artifacts, assert on `init["data"]["artifacts"]["operators"]` accordingly).
@@ -620,13 +620,13 @@ def test_render_message_includes_owner_and_operators() -> None:
         run_id="RUN-1",
         requirement="实现订单导出",
         repo="demo",
-        operators=["sunxianshun", "wangxiaofei"],
+        operators=["alice", "bob"],
         action="接受或修改 rerun",
         summary="plan.solution 已完成",
     )
     assert "🔔 工作流需要人工处理" in content
-    assert "👤 开启者：@sunxianshun" in content
-    assert "🔑 授权操作者：@sunxianshun @wangxiaofei" in content
+    assert "👤 开启者：@alice" in content
+    assert "🔑 授权操作者：@alice @bob" in content
     assert "Review Gate（plan 阶段）" in content
     assert "RUN-1" in content
     assert "接受或修改 rerun" in content
@@ -643,7 +643,7 @@ def test_notify_sends_once_then_dedups(tmp_path: Path, monkeypatch) -> None:
         repo,
         source_revision="abc123",
         requirement="实现订单导出",
-        operators=("sunxianshun", "wangxiaofei"),
+        operators=("alice", "bob"),
     )
     run_id = state.run_id
     client, transport = _client()
@@ -955,7 +955,7 @@ def test_cli_wecom_notify_dry_run(monkeypatch, tmp_path: Path, capsys) -> None:
     monkeypatch.setenv("WECOM_WEBHOOK_URL", _WEBHOOK)
     _write_config(tmp_path)
     state = WorkflowService().init(
-        tmp_path, source_revision="abc123", requirement="x", operators=("sunxianshun",)
+        tmp_path, source_revision="abc123", requirement="x", operators=("alice",)
     )
     status, out = main(
         [
@@ -1240,7 +1240,7 @@ def test_wecom_notify_e2e_dedup(monkeypatch, tmp_path: Path, capsys) -> None:
 
     state = WorkflowService().init(
         tmp_path, source_revision="abc123", requirement="实现订单导出",
-        operators=("sunxianshun", "wangxiaofei"),
+        operators=("alice", "bob"),
     )
     run_id = state.run_id
     base = [

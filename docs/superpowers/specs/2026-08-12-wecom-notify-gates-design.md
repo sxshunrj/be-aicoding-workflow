@@ -116,7 +116,7 @@ Markdown 格式（企微群机器人 markdown 支持；操作者以 `<@userid>` 
 
 ```markdown
 **🔔 工作流需要人工处理**
-<@sunxianshun> <@wangxiaofei>
+<@alice> <@bob>
 👉 请审核 plan.solution（接受或提出 rerun proposal）
 📌 类型：Review Gate（plan 阶段）
 🆔 Run ID：`a1b2c3d4`
