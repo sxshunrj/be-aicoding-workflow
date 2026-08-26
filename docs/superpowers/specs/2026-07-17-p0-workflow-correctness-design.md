@@ -152,6 +152,7 @@ Implementation Review Gate 被接受后，Helper 执行：
 
 - `.git/**`；
 - `.ai-workflow/**`；
+- `.mimosa/**`（编辑器插件运行时状态，如 mimosa 安全扫描插件的 hook-state 在每次工具调用时被改写；属插件所有，非交付物变更。此前其 pre-existing dirty 快照在 attempt 期间变化会误触发 `checkpoint_scope_ambiguous` 并 blocked）；
 - workflow artifact、result、generated prompt、临时日志和报告；
 - 配置的 protected paths；
 - repository 外部路径；
