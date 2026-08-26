@@ -96,6 +96,35 @@ def test_checkpoint_rejects_dirty_overlap(git_repo) -> None:
     assert error.value.code == "checkpoint_scope_ambiguous"
 
 
+def test_checkpoint_ignores_plugin_runtime_state_changes(git_repo) -> None:
+    """Editor plugins (e.g. the mimosa security-scan plugin) rewrite
+    .mimosa/hook-state on every tool call. That is runtime state, not a
+    deliverable: a changed snapshot there must neither fail-close the
+    checkpoint (previously a spurious blocked gate) nor leak into
+    included_paths."""
+    service = CheckpointService(git_repo.root)
+    plugin_state = ".mimosa/hook-state/session.json"
+    git_repo.write(plugin_state, '{"v": 1}\n')
+    baseline = service.capture_baseline(
+        attempt_id="implement-1-abcdef",
+        source_revision=git_repo.head,
+        active_checkpoint=None,
+    )
+    git_repo.write(plugin_state, '{"v": 2}\n')
+    git_repo.write("src/app.py", "changed\n")
+
+    record = service.create(
+        run_id="RUN-20260719-100000-abcdef",
+        baseline=baseline,
+        source_revision=git_repo.head,
+        scope=_scope(git_repo.root),
+        previous_checkpoint=None,
+        no_code_delivery=False,
+    )
+
+    assert record.included_paths == ("src/app.py",)
+
+
 def test_checkpoint_rejects_unauthorized_paths(git_repo) -> None:
     service = CheckpointService(git_repo.root)
     baseline = service.capture_baseline(

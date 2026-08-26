@@ -66,6 +66,8 @@ blocked 菜单：
 
 如果用户补充反馈，Harness 先映射到 node reason，再 `resume --rerun NODE=REASON`。反馈无法映射时继续问，不猜。**反馈无法映射进入澄清等待前**，若已配置通知通道，调用 `ai-workflow wecom notify --repo REPO --run-id RUN --gate blocked --action "反馈无法映射到唯一 run_graph node，需澄清" --summary "等待人类补充反馈，run 处于澄清循环"` 通知团队；失败仅写 warning，不影响主流程。
 
+blocked 原因甄别：`checkpoint_scope_ambiguous` 若由 `.mimosa/` 等编辑器插件运行时状态触发，属旧版 Helper 误报（checkpoint 现已忽略这些前缀）——裸 `resume` 解锁后基线自动重建即可，无需业务处理；由真实业务路径 dirty overlap 触发的仍需人工判断所有权后再 resume/abort。
+
 ### terminal
 
 `completed` 或 `aborted` 不可 begin/stage/finalize/review/transition。进入 terminal cleanup；每次新会话都从其步骤 1 安全幂等重放，不根据 chat 猜测 cleanup 进度。

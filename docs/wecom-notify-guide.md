@@ -89,6 +89,7 @@ ai-workflow workflow init --repo "$PWD" \
 | skill 自动调用但没收到微信 | `wecom:` 未配 / `WECOM_WEBHOOK_URL` 未设（如变量只在 `~/.zshrc`，GUI/非交互启动时缺失） | 按第 3、4 步配置，变量写入 `~/.zshenv`；软失败原因会打到 stderr |
 | Windows 更新 skill 后仍是旧版 | copy 安装不跟随仓库 | 重跑 `init.sh` |
 | `--operators` 没生效 | `WECOM_CREATOR_USERID` 未设置 | 设置后重新 `workflow init` |
+| 收到「Blocked：请选择 resume / abort」但看不出要处理什么 | 旧版 Helper 把编辑器插件运行时状态（`.mimosa/hook-state/`，每次工具调用都会被改写）当成 attempt 期间的业务变更，误判 `checkpoint_scope_ambiguous` 而 blocked | 升级 Helper（checkpoint 忽略 `.mimosa/` 后不再误 block）；已 blocked 的 run 人工 `resume`，恢复后基线自动重建 |
 
 ## 一、企业微信侧准备
 

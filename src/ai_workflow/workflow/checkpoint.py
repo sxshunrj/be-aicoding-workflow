@@ -409,6 +409,12 @@ class CheckpointService:
             # checkpoint-visible change (previously surfaced as
             # checkpoint_scope_ambiguous after a notify).
             or path.startswith(".ai-workflow/notifications/")
+            # Editor plugins (e.g. the mimosa security-scan plugin) persist
+            # per-session hook state under .mimosa/hook-state/ that mutates on
+            # every tool call; it is plugin-owned runtime state, never a
+            # deliverable change (previously surfaced as
+            # checkpoint_scope_ambiguous at implementation checkpoint).
+            or path.startswith(".mimosa/")
             or path.startswith("artifacts/")
         )
 
