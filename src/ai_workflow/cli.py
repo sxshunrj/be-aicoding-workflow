@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 from typing import Sequence
 
+from ai_workflow.contracts.artifacts import ArtifactRef, ChildResult
 from ai_workflow.config import RepositoryConfig
 from ai_workflow.doctor import run_doctor
 from ai_workflow.errors import AppError
@@ -14,6 +15,7 @@ from ai_workflow.install import install_skills
 from ai_workflow.path_authorization import PathKind, RepositoryPathAuthorizer
 from ai_workflow.wecom.notify import (
     _env_from_shell_files,
+    _fit_bytes,
     _hostname_operator,
     _shell_env_files,
     notify_command,
@@ -238,6 +240,58 @@ def _auto_notify_blocked(
         }
 
 
+def _review_phase_facts(repo_root: Path, run_id: str, phase: str) -> list[str]:
+    """One scannable line per staged child of the phase under review:
+    what ran, whether it completed, its one-line summary, its artifact path,
+    and open findings — the facts a human needs to accept or rerun without
+    opening the session. Best-effort: any state/evidence problem degrades to
+    an empty list and never breaks the notify."""
+    try:
+        state = WorkflowService(repo_root).status(run_id)
+        current = state.artifacts.get("current_attempts", {})
+        staged = state.artifacts.get("staged_results", {})
+        attempt_id = current.get(phase) if isinstance(current, dict) else None
+        attempt_results = (
+            staged.get(attempt_id, {}) if isinstance(staged, dict) else {}
+        )
+        if not isinstance(attempt_id, str) or not isinstance(attempt_results, dict):
+            return []
+        lines: list[str] = []
+        for child, record in attempt_results.items():
+            if not isinstance(record, dict) or not isinstance(child, str):
+                continue
+            summary = ""
+            findings_count = 0
+            result_path = record.get("result_path")
+            if isinstance(result_path, str):
+                try:
+                    result = ChildResult.from_bytes(Path(result_path).read_bytes())
+                    summary = result.summary
+                    findings_count = len(result.findings)
+                except (AppError, OSError, ValueError):
+                    summary = str(record.get("status", ""))
+            else:
+                summary = str(record.get("status", ""))
+            mark = "✅" if record.get("status") == "completed" else "⚠️"
+            summary_line = _fit_bytes(
+                summary.splitlines()[0].strip() if summary.strip() else "（无摘要）",
+                90,
+            )
+            line = f"・{child} {mark} {summary_line}"
+            artifact = record.get("artifact")
+            artifact_path = (
+                artifact.get("path") if isinstance(artifact, dict) else None
+            )
+            if isinstance(artifact_path, str) and artifact_path:
+                line += f"（{artifact_path}）"
+            if findings_count:
+                line += f"｜findings×{findings_count}"
+            lines.append(line)
+        return lines
+    except (AppError, OSError):
+        return []
+
+
 def _auto_notify_review(
     repo_root: Path, decision: ReviewDecision
 ) -> dict[str, object]:
@@ -248,18 +302,33 @@ def _auto_notify_review(
     if decision.decision != "human_review":
         return {"sent": False, "reason": "auto_accepted"}
     if decision.proposed_reruns:
-        summary = "重跑：" + "；".join(
-            f"{node}={reason}" for node, reason in decision.proposed_reruns
+        # Front-load WHAT is being rerun, then the per-node reasons — the
+        # rerun reasons are full work orders written for the agent; the group
+        # message only needs the scannable head (render caps the display).
+        nodes = "、".join(node for node, _ in decision.proposed_reruns)
+        reasons = "\n".join(
+            f"・{node}：{reason}" for node, reason in decision.proposed_reruns
         )
+        summary = f"重跑节点 {nodes}\n{reasons}"
+        action = "接受或修改重跑方案"
     else:
-        summary = "无重跑节点，请验收产物"
+        # Acceptance needs substance: list what the phase produced (children,
+        # status, one-line summaries, artifacts, findings) so the human can
+        # judge from the ping itself instead of digging through the session.
+        facts = _review_phase_facts(repo_root, decision.run_id, decision.phase)
+        summary = (
+            "本阶段产物：\n" + "\n".join(facts)
+            if facts
+            else "review 未提出重跑建议"
+        )
+        action = "请验收产物或提出重跑"
     try:
         return notify_command(
             repo_root,
             run_id=decision.run_id,
             gate="review",
             phase=decision.phase,
-            action="等待人工 Review 决定",
+            action=action,
             summary=summary,
         )
     except AppError as error:

@@ -954,10 +954,11 @@ def test_render_message_truncates_oversized_requirement() -> None:
 
 
 def test_render_message_truncates_oversized_summary() -> None:
-    """When the summary (rerun reasons) itself is huge, it gets truncated too —
-    the requirement keeps priority and the whole message still fits."""
+    """When the summary (rerun reasons) itself is huge, only a scannable
+    excerpt enters the group message — WeCom is a ping, not a report; the
+    full text stays in the run state and the agent session."""
     requirement = "短需求"
-    summary = "重跑：" + "问" * 3000  # huge rerun reason
+    summary = "重跑节点 spec.spec\n・spec.spec：" + "问" * 3000
     content = render_message(
         gate="review",
         phase="plan",
@@ -965,12 +966,121 @@ def test_render_message_truncates_oversized_summary() -> None:
         requirement=requirement,
         repo="demo",
         operators=["@all"],
-        action="接受或修改 rerun",
+        action="接受或修改重跑方案",
         summary=summary,
     )
     assert len(content.encode("utf-8")) <= _WECOM_MARKDOWN_MAX_BYTES
-    assert "重跑：" in content
+    # the display excerpt stays well under the API cap
+    assert len(content.encode("utf-8")) < 1200
+    assert "重跑节点 spec.spec" in content
+    assert "（内容过长已截断）" in content
     assert "�" not in content
+
+
+def test_render_message_summary_is_blank_line_separated_block() -> None:
+    """The summary must not blend into the context lines: it renders as its
+    own block after a blank line so the human sees what/why at a glance."""
+    content = render_message(
+        gate="review",
+        phase="implement",
+        run_id="RUN-1",
+        requirement="实现小通语气输出设定",
+        repo="jxedt_stars_api",
+        operators=["alice"],
+        action="接受或修改重跑方案",
+        summary="重跑节点 spec.spec\n・spec.spec：重新分析全部固定文案",
+    )
+    assert "\n\n重跑节点 spec.spec" in content
+    # run-less messages keep the separation too
+    run_less = render_message(
+        gate="governance",
+        phase=None,
+        run_id=None,
+        requirement="",
+        repo="demo",
+        operators=["@all"],
+        action="请选择 promote / reject / 保持",
+        summary="知识候选 KW-1 已产生",
+    )
+    assert "\n\n知识候选 KW-1 已产生" in run_less
+
+
+def test_review_rounds_sharing_excerpt_still_reping(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Dedup must digest the FULL summary, not the 360-byte display excerpt:
+    two review rounds whose reasons share a long head but differ in the tail
+    are different decisions — the second must re-ping instead of being
+    swallowed as a repeat of the first."""
+    _set_webhook_env(monkeypatch)
+    _config(tmp_path)
+    repo = tmp_path
+    client, transport = _client()
+    head = "重新分析全部用户可见固定文案与PRD的符合度并修订P1清单：" + "问" * 150
+    first = notify_command(
+        repo,
+        run_id=None,
+        gate="review",
+        phase="implement",
+        action="接受或修改重跑方案",
+        summary=f"重跑节点 spec.spec\n・spec.spec：{head}第一轮尾部",
+        client=client,
+    )
+    assert first["sent"] is True
+
+    second = notify_command(
+        repo,
+        run_id=None,
+        gate="review",
+        phase="implement",
+        action="接受或修改重跑方案",
+        summary=f"重跑节点 spec.spec\n・spec.spec：{head}第二轮尾部",
+        client=client,
+    )
+    assert second["sent"] is True
+    assert second["dedup"] == "content_changed"
+    # both displays are the same capped excerpt — the ping still went out
+    assert len(transport.sent) == 2
+
+
+def test_auto_notify_review_structures_rerun_summary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The review auto-notify front-loads the rerun nodes and states the
+    human's actual choice as the action — the group sees what to decide and
+    which nodes rerun before any reason text."""
+    _set_webhook_env(monkeypatch)
+    _config(tmp_path)
+    client, transport = _client()
+    monkeypatch.setattr(
+        "ai_workflow.wecom.notify._client_for_webhook", lambda: client
+    )
+    from ai_workflow.cli import _auto_notify_review
+    from ai_workflow.workflow.review import ReviewDecision
+
+    decision = ReviewDecision.create(
+        decision="human_review",
+        run_id="RUN-20260827-105621-dfa96e",
+        phase="implement",
+        state_version=7,
+        proposed_reruns=(
+            (
+                "spec.spec",
+                "重新分析全部用户可见固定文案与PRD(docs/features/x.md §4–§7)"
+                "的符合度并修订 P1 清单：" + "疑点描述" * 120,
+            ),
+        ),
+        effective_reruns=(),
+    )
+    result = _auto_notify_review(tmp_path, decision)
+    assert result["sent"] is True
+    content = transport.sent[0]["markdown"]["content"]
+    assert "接受或修改重跑方案" in content
+    assert "\n\n重跑节点 spec.spec" in content
+    assert "・spec.spec：重新分析" in content
+    # the reason work-order is display-capped, never dumped whole
+    assert "（内容过长已截断）" in content
+    assert len(content.encode("utf-8")) < 1200
 
 
 def test_render_message_short_content_untouched() -> None:
@@ -995,7 +1105,7 @@ def test_requirement_gist_takes_title_line_only() -> None:
     prd = (
         "## 功能名称：问小通 · 会话首条「内容由AI生成」标识\n"
         "\n"
-        "---\n"
+        "---"
         "\n"
         "一、功能需求\n"
         "1.1 页面概览\n"
@@ -1004,6 +1114,27 @@ def test_requirement_gist_takes_title_line_only() -> None:
     assert (
         _requirement_gist(prd)
         == "功能名称：问小通 · 会话首条「内容由AI生成」标识"
+    )
+
+
+def test_requirement_gist_prefers_sentence_boundary_cut() -> None:
+    """A gist line over the byte budget cuts at its last sentence boundary
+    (。！？；) within the budget — a clean sentence ending beats a mid-word
+    byte cut like「科一/科四 AI …」."""
+    long_line = (
+        "实现「小通语气输出设定」需求：PRD 见 docs/features/小通语气输出设定.md。"
+        "定义小通（科一 / 科四 AI 助手）的语气人设、口词典与全部固定文案基调。"
+        "另含降级兜底文案与红线词表。"
+    )
+    gist = _requirement_gist(long_line)
+    assert gist.endswith("。…（内容过长已截断）")
+    assert gist.startswith("实现「小通语气输出设定」需求：PRD 见")
+    # no sentence boundary fits the budget → falls back to byte-level cut
+    no_boundary = "需" * 200 + "。"
+    fallback = _requirement_gist(no_boundary)
+    assert "（内容过长已截断）" in fallback
+    assert len(fallback.encode("utf-8")) <= _REQUIREMENT_GIST_MAX_BYTES + len(
+        "…（内容过长已截断）".encode("utf-8")
     )
 
 
