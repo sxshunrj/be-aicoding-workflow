@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from ai_workflow.config import RepositoryConfig
+from ai_workflow.errors import AppError
 from ai_workflow.wecom.client import WeComApiClient
 from ai_workflow.wecom.notify import (
     _env_from_shell_files,
@@ -15,6 +18,7 @@ from ai_workflow.wecom.notify import (
     _WECOM_MARKDOWN_MAX_BYTES,
     notify_command,
     render_message,
+    reset_notify_dedup,
 )
 
 
@@ -319,7 +323,9 @@ def test_notify_requires_a_target(tmp_path: Path) -> None:
 def test_notify_run_less_sends_with_repo_context(tmp_path: Path, monkeypatch) -> None:
     """Standalone (run-less) flows — direct `wiki propose`, manual git handoff —
     must still reach the team. Without a run, the message degrades to a
-    repo-level context instead of hard-failing on state_not_found."""
+    repo-level context (the 🆔 and gist lines are omitted — no placeholder
+    run id, no repo-name gist duplicating the 📁 line) instead of
+    hard-failing on state_not_found."""
     _set_webhook_env(monkeypatch)
     _config(tmp_path)
     monkeypatch.setattr("ai_workflow.wecom.notify.platform.node", lambda: "")
@@ -338,10 +344,12 @@ def test_notify_run_less_sends_with_repo_context(tmp_path: Path, monkeypatch) ->
     assert result["dedup"] == "new"
     payload = transport.sent[0]
     content = payload["markdown"]["content"]
-    # run-less message uses repo name as context and falls back to @all ping
+    # run-less message keeps the repo line, falls back to @all ping, and
+    # omits the run-id and gist lines entirely
     assert "demo" in content
     assert "<@all>" in content
-    assert "（run 外）" in content
+    assert "🆔" not in content
+    assert "🏷" not in content
     assert "知识候选 KB-1 已产生" in content
 
 
@@ -398,6 +406,197 @@ def test_notify_run_less_dedup_uses_standalone_log(tmp_path: Path, monkeypatch) 
     )
     assert second["sent"] is False
     assert second["dedup"] == "repeat"
+    assert len(transport.sent) == 1
+
+
+def test_notify_subject_dedups_across_senders_regardless_of_content(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The governance gate has three senders (reflect-submit, wiki propose,
+    the governance skill) announcing the SAME candidate with different
+    wording and different run contexts. A subject key present in the shared
+    log means announced — wording differences must not re-ping the group."""
+    _set_webhook_env(monkeypatch)
+    _config(tmp_path)
+    repo = tmp_path
+    client, transport = _client()
+
+    first = notify_command(
+        repo,
+        run_id=None,
+        gate="governance",
+        action="请选择 promote / reject / 保持",
+        summary="知识候选 KW-1 已产生，需人工选择 promote / reject / 保持",
+        subject="KW-1",
+        client=client,
+    )
+    assert first["sent"] is True
+    assert first["dedup"] == "new"
+
+    # same subject, different wording and run context: suppressed
+    second = notify_command(
+        repo,
+        run_id="RUN-1",
+        gate="governance",
+        action="请选择 promote / reject / 保持",
+        summary="候选知识 KW-1（pattern）等待治理决策",
+        subject="KW-1",
+        client=client,
+    )
+    assert second["sent"] is False
+    assert second["dedup"] == "repeat"
+    assert len(transport.sent) == 1
+
+    # a different candidate still notifies: subject dedup is per-decision
+    other = notify_command(
+        repo,
+        run_id=None,
+        gate="governance",
+        action="请选择 promote / reject / 保持",
+        summary="知识候选 KW-2 已产生，需人工选择 promote / reject / 保持",
+        subject="KW-2",
+        client=client,
+    )
+    assert other["sent"] is True
+    assert len(transport.sent) == 2
+
+
+def test_notify_alias_subject_suppresses_and_records_primary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """reflect-submit announces before the entry id exists, keyed
+    run-proposal:<run>; wiki propose later arrives with the entry id as its
+    primary subject and the run-proposal key as an alias. The alias must
+    suppress the send AND record the entry id, so the governance skill's
+    --subject lookup dedups too. All keys live in one shared cross-run log."""
+    _set_webhook_env(monkeypatch)
+    _config(tmp_path)
+    repo = tmp_path
+    client, transport = _client()
+
+    reflect_submit = notify_command(
+        repo,
+        run_id="RUN-9",
+        gate="governance",
+        action="请选择 promote / reject / 保持",
+        summary="知识候选「demo pattern」已产生，需人工选择 promote / reject / 保持",
+        subject="run-proposal:RUN-9",
+        client=client,
+    )
+    assert reflect_submit["sent"] is True
+
+    wiki_propose = notify_command(
+        repo,
+        run_id="RUN-9",
+        gate="governance",
+        action="请选择 promote / reject / 保持",
+        summary="知识候选 KW-42 已产生，需人工选择 promote / reject / 保持",
+        subject="KW-42",
+        alias_subjects=("run-proposal:RUN-9",),
+        client=client,
+    )
+    assert wiki_propose["sent"] is False
+    assert wiki_propose["dedup"] == "repeat"
+
+    # the governance skill's call: primary subject only, no alias needed
+    skill = notify_command(
+        repo,
+        run_id="RUN-9",
+        gate="governance",
+        action="请选择 promote / reject / 保持",
+        summary="候选知识 KW-42（demo pattern）等待治理决策",
+        subject="KW-42",
+        client=client,
+    )
+    assert skill["sent"] is False
+    assert len(transport.sent) == 1
+
+    shared_log = json.loads(
+        (repo / ".ai-workflow" / "notifications" / "__subjects__.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "governance::run-proposal:RUN-9" in shared_log
+    assert "governance::KW-42" in shared_log
+    # subject announcements never land in a per-run log
+    assert not (repo / ".ai-workflow" / "notifications" / "RUN-9.json").exists()
+
+
+def test_notify_subject_failed_send_stays_announceable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The must-notify guarantee: a send that fails (business rejection —
+    no retry) must NOT record the subject, so the next sender still pushes
+    the announcement instead of being swallowed by a phantom dedup entry."""
+    _set_webhook_env(monkeypatch)
+    _config(tmp_path)
+    repo = tmp_path
+
+    class _RejectingTransport(FakeWeComTransport):
+        def request_json(self, method, url, *, params=None, payload=None):
+            raise AppError("wecom_api_error", "webhook/send failed: boom")
+
+    failing = WeComApiClient(transport=_RejectingTransport())
+    with pytest.raises(AppError):
+        notify_command(
+            repo,
+            gate="governance",
+            action="请选择 promote / reject / 保持",
+            summary="知识候选 KW-7 已产生",
+            subject="KW-7",
+            client=failing,
+        )
+    subjects_log = repo / ".ai-workflow" / "notifications" / "__subjects__.json"
+    assert not subjects_log.exists()
+
+    client, transport = _client()
+    retried = notify_command(
+        repo,
+        gate="governance",
+        action="请选择 promote / reject / 保持",
+        summary="候选知识 KW-7 等待治理决策",
+        subject="KW-7",
+        client=client,
+    )
+    assert retried["sent"] is True
+    assert len(transport.sent) == 1
+
+
+def test_reset_notify_dedup_keeps_subject_announcements(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Resume resets the per-run dedup log (fresh review/blocked/terminal
+    cycle) but must NOT re-announce an already-pending candidate decision:
+    subject announcements live in the shared log and survive the reset."""
+    _set_webhook_env(monkeypatch)
+    _config(tmp_path)
+    repo = tmp_path
+    client, transport = _client()
+
+    first = notify_command(
+        repo,
+        run_id="RUN-4",
+        gate="governance",
+        action="请选择 promote / reject / 保持",
+        summary="知识候选 KW-5 已产生",
+        subject="KW-5",
+        client=client,
+    )
+    assert first["sent"] is True
+
+    reset_notify_dedup(repo, "RUN-4")
+
+    after = notify_command(
+        repo,
+        run_id="RUN-4",
+        gate="governance",
+        action="请选择 promote / reject / 保持",
+        summary="候选知识 KW-5 等待治理决策",
+        subject="KW-5",
+        client=client,
+    )
+    assert after["sent"] is False
+    assert after["dedup"] == "repeat"
     assert len(transport.sent) == 1
 
 

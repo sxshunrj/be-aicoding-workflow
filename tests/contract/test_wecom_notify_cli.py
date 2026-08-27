@@ -5,9 +5,11 @@ from pathlib import Path
 
 from ai_workflow.cli import main
 from ai_workflow.contracts.artifacts import ArtifactRef, ChildResult
+from ai_workflow.errors import AppError
 from ai_workflow.wecom.client import WeComApiClient
 from ai_workflow.workflow.models import Phase
 from ai_workflow.workflow.service import WorkflowService
+from tests.unit.workflow.test_reflection import _terminal_run
 
 
 _WEBHOOK = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc123"
@@ -448,6 +450,236 @@ def test_cli_wiki_propose_auto_notifies_governance(
     # run-less governance notify fires (repo-level, @all fallback)
     assert data["data"]["notify"]["sent"] is True
     assert transport.sent == 1
+
+
+class _RecordingTransport:
+    def __init__(self) -> None:
+        self.sent: list[dict[str, object]] = []
+
+    def request_json(self, method, url, *, params=None, payload=None):
+        if "/webhook/send" in url:
+            self.sent.append(payload or {})
+            return {"errcode": 0, "errmsg": "ok"}
+        raise AssertionError(url)
+
+
+def _wiki_root(repo: Path) -> Path:
+    """Ensure a wiki layout exists without clobbering one the reflection
+    helpers already created — their approved entries carry broader phases
+    than the minimal taxonomy, and overwriting it fails propose validation."""
+    wiki_root = repo / "wiki"
+    wiki_root.mkdir(parents=True, exist_ok=True)
+    for name in ("approved", "candidates", "archive"):
+        (wiki_root / name).mkdir(exist_ok=True)
+    taxonomy = wiki_root / "taxonomy.yaml"
+    if not taxonomy.is_file():
+        taxonomy.write_text(
+            "schema_version: 1\n"
+            "types: [rule, decision, pattern, pitfall, procedure, diagnostic, workflow]\n"
+            "phases: [spec, plan, implement, verify]\n",
+            encoding="utf-8",
+        )
+    return wiki_root
+
+
+def _candidate_proposal(repo: Path, run_id: str) -> Path:
+    proposal = repo / "knowledge-proposal.json"
+    proposal.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "title": "Reusable upgrade pattern",
+                "type": "rule",
+                "summary": "Keep the upgrade whitelist pattern.",
+                "body": "# Reusable upgrade pattern\n\nKeep the whitelist pattern.",
+                "scope": {
+                    "repos": ["demo"],
+                    "services": ["example"],
+                    "paths": [],
+                    "languages": [],
+                    "phases": ["implement"],
+                },
+                "tags": ["upgrade"],
+                "sources": [{"kind": "run", "ref": run_id}],
+                "reuse_reason": "reusable",
+                "confidence": "high",
+                "possible_conflicts": [],
+                "suggested_owners": ["example-team"],
+                "review_after": "2099-01-01",
+                "raw_logs": "bounded log",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return proposal
+
+
+def _enable_wecom_after_run(repo: Path) -> None:
+    """Append the wecom section AFTER the run is driven to terminal — the
+    reflection helpers rewrite ``.ai-workflow.yaml`` themselves (review_mode,
+    knowledge limits), and reflect-submit recomputes the reflection packet
+    from the live config, so the knowledge fields must survive for the
+    decision's evidence digest to keep matching."""
+    with (repo / ".ai-workflow.yaml").open("a", encoding="utf-8") as handle:
+        handle.write(
+            "wecom:\n"
+            "  enabled: true\n"
+            "  webhook_url_env: WECOM_WEBHOOK_URL\n"
+        )
+
+
+def test_cli_governance_chain_pings_once_across_senders(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """reflect-submit → wiki propose → the governance skill's notify all
+    announce the SAME candidate. Subject-keyed cross-sender dedup must
+    collapse them into ONE group ping, and each sender still reports its
+    notify outcome honestly (sent=false + dedup=repeat, never a lie)."""
+    monkeypatch.setenv("WECOM_WEBHOOK_URL", _WEBHOOK)
+    transport = _RecordingTransport()
+    monkeypatch.setattr(
+        "ai_workflow.wecom.notify._client_for_webhook",
+        lambda: WeComApiClient(transport=transport),
+    )
+    repo = tmp_path
+    service, run_id = _terminal_run(repo)
+    _enable_wecom_after_run(repo)
+    packet = service.reflection_packet(run_id)
+    decision = repo / "knowledge-reflection-decision.json"
+    decision.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": run_id,
+                "evidence_digest": packet.evidence_digest,
+                "outcome": "candidate",
+                "reason": "reusable pattern",
+            }
+        ),
+        encoding="utf-8",
+    )
+    proposal = _candidate_proposal(repo, run_id)
+
+    # 1. reflect-submit mechanically announces, keyed run-proposal:<run>
+    status, submitted = _call(
+        capsys,
+        [
+            "workflow", "reflect-submit", "--repo", str(repo),
+            "--run-id", run_id, "--decision", str(decision),
+            "--proposal", str(proposal),
+        ],
+    )
+    assert status == 0
+    assert submitted["data"]["notify"]["sent"] is True
+    assert len(transport.sent) == 1
+    # the single landed ping carries the candidate title for the group
+    assert "Reusable upgrade pattern" in transport.sent[0]["markdown"]["content"]
+
+    # 2. wiki propose joins via the proposal's run source: deduped
+    status, proposed = _call(
+        capsys,
+        [
+            "wiki", "propose", "--wiki", str(_wiki_root(repo)),
+            "--proposal", str(proposal), "--repo", str(repo),
+        ],
+    )
+    assert status == 0
+    assert proposed["data"]["notify"]["sent"] is False
+    assert proposed["data"]["notify"]["dedup"] == "repeat"
+
+    # 3. the governance skill template call with --subject <entry id>: deduped
+    entry_id = proposed["data"]["id"]
+    status, notified = _call(
+        capsys,
+        [
+            "wecom", "notify", "--repo", str(repo), "--run-id", run_id,
+            "--gate", "governance", "--subject", entry_id,
+            "--action", "请选择 promote / reject / 保持",
+            "--summary", f"候选知识 {entry_id} 等待治理决策",
+        ],
+    )
+    assert status == 0
+    assert notified["data"]["sent"] is False
+    assert notified["data"]["dedup"] == "repeat"
+    assert len(transport.sent) == 1
+
+
+def test_cli_wiki_propose_backstops_soft_failed_reflect_submit_notify(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """The must-notify guarantee: when reflect-submit's announcement
+    soft-fails (the webhook send never happened), the subject is never
+    recorded as announced — wiki propose must still push the governance
+    ping, now carrying the run context derived from the proposal's run
+    source instead of a bare repo-level message."""
+
+    class _RejectOnceTransport(_RecordingTransport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def request_json(self, method, url, *, params=None, payload=None):
+            if "/webhook/send" in url:
+                self.calls += 1
+                if self.calls == 1:
+                    raise AppError("wecom_api_error", "webhook/send failed: once")
+                return super().request_json(
+                    method, url, params=params, payload=payload
+                )
+            raise AssertionError(url)
+
+    monkeypatch.setenv("WECOM_WEBHOOK_URL", _WEBHOOK)
+    transport = _RejectOnceTransport()
+    monkeypatch.setattr(
+        "ai_workflow.wecom.notify._client_for_webhook",
+        lambda: WeComApiClient(transport=transport),
+    )
+    repo = tmp_path
+    service, run_id = _terminal_run(repo)
+    _enable_wecom_after_run(repo)
+    packet = service.reflection_packet(run_id)
+    decision = repo / "knowledge-reflection-decision.json"
+    decision.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": run_id,
+                "evidence_digest": packet.evidence_digest,
+                "outcome": "candidate",
+                "reason": "reusable pattern",
+            }
+        ),
+        encoding="utf-8",
+    )
+    proposal = _candidate_proposal(repo, run_id)
+
+    # 1. reflect-submit soft-fails the announce; the command itself succeeds
+    status, submitted = _call(
+        capsys,
+        [
+            "workflow", "reflect-submit", "--repo", str(repo),
+            "--run-id", run_id, "--decision", str(decision),
+            "--proposal", str(proposal),
+        ],
+    )
+    assert status == 0
+    assert submitted["data"]["notify"]["sent"] is False
+    assert "error" in submitted["data"]["notify"]
+
+    # 2. wiki propose still pushes, with run context from the proposal source
+    status, proposed = _call(
+        capsys,
+        [
+            "wiki", "propose", "--wiki", str(_wiki_root(repo)),
+            "--proposal", str(proposal), "--repo", str(repo),
+        ],
+    )
+    assert status == 0
+    assert proposed["data"]["notify"]["sent"] is True
+    assert len(transport.sent) == 1
+    content = transport.sent[0]["markdown"]["content"]
+    assert "Knowledge Governance" in content
+    assert run_id in content
 
 
 def test_cli_workflow_init_default_operator_uses_configured_env(
