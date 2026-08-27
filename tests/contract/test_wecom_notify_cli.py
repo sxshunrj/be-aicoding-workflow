@@ -284,7 +284,7 @@ def test_cli_workflow_review_human_review_auto_notifies(
     review-gate notification, independent of the harness LLM."""
     _write_config(tmp_path)
     monkeypatch.setenv("WECOM_WEBHOOK_URL", _WEBHOOK)
-    transport = _FakeWeComTransport()
+    transport = _RecordingTransport()
     monkeypatch.setattr(
         "ai_workflow.wecom.notify._client_for_webhook",
         lambda: WeComApiClient(transport=transport),
@@ -357,7 +357,13 @@ def test_cli_workflow_review_human_review_auto_notifies(
     assert status == 0
     assert review["data"]["decision"] == "human_review"
     assert review["data"]["notify"]["sent"] is True
-    assert transport.sent == 1
+    assert len(transport.sent) == 1
+    # the acceptance ping carries the decision substance: what the phase
+    # produced, per-child status/summary/artifact — not just "please review"
+    content = transport.sent[0]["markdown"]["content"]
+    assert "请验收产物或提出重跑" in content
+    assert "本阶段产物：" in content
+    assert "・spec ✅ specified（artifacts/spec-spec.md）" in content
 
 
 def test_cli_workflow_abort_auto_notifies_terminal(

@@ -33,6 +33,13 @@ _TRUNCATION_SUFFIX = "…（内容过长已截断）"
 # about at a glance — the full text stays in the run state.
 _REQUIREMENT_GIST_MAX_BYTES = 160
 
+# The summary (rerun reasons, block reasons) gets the same treatment: WeCom is
+# a ping, not a report. The group sees a scannable excerpt (~120 CJK chars);
+# the full text stays in the run state and the agent session. The dedup
+# digest is computed over the UNTRUNCATED summary, so two review rounds whose
+# excerpts coincide are still recognized as different decisions and re-ping.
+_SUMMARY_DISPLAY_MAX_BYTES = 360
+
 _NOTIFY_DIRNAME = "notifications"
 
 # Subject-keyed announcements (the governance gate keys by candidate entry id)
@@ -76,12 +83,25 @@ def _requirement_gist(requirement: str) -> str:
     Runs paste full PRDs into the requirement field; the notification shows
     only the first meaningful line (typically the ``## 功能名称：...`` title
     heading) with markdown heading markers stripped, byte-capped so the line
-    stays scannable in the group chat.
+    stays scannable in the group chat. When the line exceeds the budget the
+    cut prefers the last sentence boundary (。！？；) within the budget — a
+    clean sentence beats a mid-word byte cut.
     """
     for line in requirement.splitlines():
         stripped = line.strip().lstrip("#").strip()
         if not stripped or stripped == "---":
             continue
+        if len(stripped.encode("utf-8")) <= _REQUIREMENT_GIST_MAX_BYTES:
+            return stripped
+        cut = 0
+        for index, char in enumerate(stripped):
+            if char in "。！？；":
+                candidate = stripped[: index + 1]
+                if len(candidate.encode("utf-8")) > _REQUIREMENT_GIST_MAX_BYTES:
+                    break
+                cut = index + 1
+        if cut > 0:
+            return stripped[:cut] + _TRUNCATION_SUFFIX
         return _fit_bytes(stripped, _REQUIREMENT_GIST_MAX_BYTES)
     return ""
 
@@ -119,7 +139,11 @@ def render_message(
     operators: list[str],
     action: str,
     summary: str,
+    summary_display_budget: int | None = _SUMMARY_DISPLAY_MAX_BYTES,
 ) -> str:
+    """Render the group message; ``summary_display_budget`` caps the summary
+    excerpt (pass ``None`` to render the full summary — used for the dedup
+    digest, which must see the whole content)."""
     label = _GATE_LABELS.get(gate, gate)
     type_line = f"{label}（{phase} 阶段）" if phase else label
     # WeCom group-robot markdown force-notifies members with <@userid> syntax;
@@ -138,12 +162,14 @@ def render_message(
 
     # Compact layout: the mention and the action share the first line so the
     # pinged operator immediately sees what to do; context (gate/repo/run/what
-    # the run is about) follows. No field-by-field metadata walls. Run-less
-    # (standalone) notifications omit the 🆔 line entirely instead of showing
-    # a placeholder run id.
+    # the run is about) follows; the summary gets its own blank-line-separated
+    # block so the decision detail stands out instead of blending into the
+    # context lines. No field-by-field metadata walls. Run-less (standalone)
+    # notifications omit the 🆔 line entirely instead of showing a placeholder
+    # run id.
     def _compose(summary_shown: str) -> str:
         gist_line = f"🏷 {gist}\n" if gist else ""
-        summary_line = f"{summary_shown}\n" if summary_shown else ""
+        summary_line = f"\n{summary_shown}\n" if summary_shown else ""
         id_line = f"🆔 `{run_id}`\n" if run_id else ""
         return (
             "**🔔 工作流需要人工处理**\n"
@@ -154,19 +180,24 @@ def render_message(
             f"{summary_line}"
         )
 
-    message = _compose(summary)
+    summary_shown = summary
+    if summary_display_budget is not None:
+        summary_shown = _fit_bytes(summary, summary_display_budget)
+    message = _compose(summary_shown)
     if len(message.encode("utf-8")) <= _WECOM_MARKDOWN_MAX_BYTES:
         return message
     # WeCom caps group-robot markdown at 4096 bytes; a longer message is
-    # rejected by the API and the team never gets pinged. The gist is
-    # byte-capped above, so only a long summary (rerun/block reasons) can push
-    # the message over — truncate it at UTF-8 character boundaries; the fixed
-    # skeleton and the <@userid> force-notify mentions always survive.
+    # rejected by the API and the team never gets pinged. The gist and the
+    # summary excerpt are byte-capped above, so reaching here needs
+    # pathological action/operators fields — trim the summary excerpt further
+    # at UTF-8 character boundaries; the fixed skeleton and the <@userid>
+    # force-notify mentions always survive.
     fixed = _compose("")
-    summary_shown = _fit_bytes(
-        summary, _WECOM_MARKDOWN_MAX_BYTES - len(fixed.encode("utf-8"))
+    return _compose(
+        _fit_bytes(
+            summary_shown, _WECOM_MARKDOWN_MAX_BYTES - len(fixed.encode("utf-8"))
+        )
     )
-    return _compose(summary_shown)
 
 
 def _content_digest(*, gate: str, phase: str | None, content: str) -> str:
@@ -389,16 +420,16 @@ def notify_command(
             operators = []
     operators = _resolve_operators(config, operators)
 
-    content = render_message(
-        gate=gate,
-        phase=phase,
-        run_id=run_id,
-        requirement=requirement,
-        repo=config.repository,
-        operators=operators,
-        action=action,
-        summary=summary,
-    )
+    render_kwargs = {
+        "gate": gate,
+        "phase": phase,
+        "run_id": run_id,
+        "requirement": requirement,
+        "repo": config.repository,
+        "operators": operators,
+        "action": action,
+    }
+    content = render_message(**render_kwargs, summary=summary)
     subjects = tuple(
         s for s in (subject, *alias_subjects) if isinstance(s, str) and s
     )
@@ -409,7 +440,16 @@ def notify_command(
     else:
         log_path = notification_log_path(repo_root, run_id or "__standalone__")
     log = _load_log(log_path)
-    digest = _content_digest(gate=gate, phase=phase, content=content)
+    # Dedup sees the FULL summary, not the display excerpt: two review rounds
+    # whose 360-byte excerpts coincide are still different decisions and must
+    # re-ping (over-notify beats a silent miss).
+    digest = _content_digest(
+        gate=gate,
+        phase=phase,
+        content=render_message(
+            **render_kwargs, summary=summary, summary_display_budget=None
+        ),
+    )
 
     def _subject_key(s: str) -> str:
         return f"{gate}:{phase or ''}:{s}"
