@@ -11,14 +11,16 @@ ai-workflow wecom notify \
   --gate <review|blocked|governance|git_handoff|terminal> \
   --action "<人类需要做什么>" \
   [--summary "<摘要>"] \
+  [--subject <去重主体>] \
   [--dry-run]
 ```
 
-- `--run-id` 可选：run 内传 run-id；**run 外（独立 Git 收尾、`wiki propose` 直建候选、仓库级治理）可省略**，Helper 自动降级为 repo 级通知（摘要行显示仓库名、操作者回退创建者/@all），不再因 `state_not_found` 硬失败。
+- `--run-id` 可选：run 内传 run-id；**run 外（独立 Git 收尾、`wiki propose` 直建候选、仓库级治理）可省略**，Helper 自动降级为 repo 级通知（省略 🆔 与 gist 行、操作者回退创建者/@all），不再因 `state_not_found` 硬失败。
+- `--subject` 可选但 **governance 必传**（候选知识 id，如 `KW-pattern-xxx-001`）：subject 是跨 run、跨发送方共享的去重键，同一 subject 只要**成功推送过一次**，后续通知（无论文案、无论 run 内 run 外）一律去重，`--force` 可强制重发。推送失败不写去重日志，后续发送方仍会尝试——**去重永不会把该到的通知吞掉**。
 - `--dry-run`：只打印 payload，不真发。
 - 消息紧凑直指要点：`<@userid>` @ 操作者 + 动作在第一行；需求（requirement）只取首个非空行作为标题 gist（去 `#`、跳过 `---`，超 160 字节按 UTF-8 字符边界截断），**全文 PRD 不进群**。`--summary` 超长导致整条超过企业微信群机器人 markdown **4096 字节**上限时，同样按字符边界截断 summary，固定骨架与 `<@userid>` 强提醒 @ 永远保留。超长内容不再被 API 拒绝（否则通知静默丢失）。
 - 网络级发送失败自动重试 3 次（退避），业务拒绝（`errcode != 0`）不重试。
-- 幂等：同一 `(run_id, gate, phase, 内容摘要)` 不重复推送；`--force` 强制重发。
+- 幂等：同一 `(run_id, gate, phase, 内容摘要)` 不重复推送；带 `--subject` 时按 subject 键存在即去重（不限文案）；`--force` 强制重发。
 - **Review / Blocked 必须传 `--phase <phase>`**：去重键含 phase，缺省时不同阶段同 gate 的内容完全相同，会互相误去重（spec 门发过后，plan 门不再推送）。
 - 失败只写 warning，不中断 workflow。
 
@@ -27,7 +29,7 @@ ai-workflow wecom notify \
 - Review Gate：`workflow review` 返回 `human_review` 时**自动推送**（Helper 机械保证，phase 由 Helper 自动填写），无需 skill 调用。
 - Blocked：`workflow block` **自动推送**（Helper 机械保证，phase 由 Helper 自动填写），无需 skill 调用。
 - Terminal Completion + Git Handoff：`workflow transition`（→completed）/ `workflow abort`（→aborted）时**自动推送一条消息**，同时请团队验收终态并决定 Git 收尾方式（合并单条发送，避免企业微信群机器人 ~20s/条 限频导致第二条被丢弃）。
-- Knowledge Governance：`workflow reflect-submit` 产出 candidate 时**自动推送**（Helper 机械保证），无需 skill 调用；直接 `wiki propose --repo <repo>` 建候选也**自动推送**（run 外 repo 级通知）。
+- Knowledge Governance：`workflow reflect-submit` 产出 candidate 时**自动推送**（Helper 机械保证，以 `run-proposal:<run-id>` 为 subject——此时候选 entry id 尚未生成），无需 skill 调用；随后 `wiki propose` 建候选时**自动按 `--subject <entry-id>` 对齐去重**（从 proposal 的 run source 反查 run 上下文）：reflect-submit 已推送过则去重并把 entry id 记入共享日志，此前推送软失败过则由 wiki propose 补发。直接 `wiki propose --repo <repo>` 建候选（run 外直建）也自动推送（subject 即 entry id）。`$ai-knowledge-governance` 模板带 `--subject <candidate-id>` 的通知在已推送过时自动去重——**同一候选全链路只 ping 一次**，任何一环软失败则下一环兜底。
 - Git Handoff：并入 Terminal Completion 消息（`workflow transition`/`workflow abort`）。run 外独立 Git 收尾时用 `$ai-git-handoff` 模板调用 `--gate git_handoff`（`--run-id` 可省略）。
 - 恢复补发：`workflow status` 检测到 pending 且未通知过的 `human_review` gate 时补发一条 review 通知（幂等，dedup 抑制已通知过的）。恢复会话不再静默卡住。
 - `$ai-git-handoff` / `$ai-knowledge-governance` skill 模板中的 notify 调用仍需带 `--repo <repo>`（`--run-id` 仅 run 内传；run 外省略自动降级）。

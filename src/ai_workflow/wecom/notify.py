@@ -35,6 +35,13 @@ _REQUIREMENT_GIST_MAX_BYTES = 160
 
 _NOTIFY_DIRNAME = "notifications"
 
+# Subject-keyed announcements (the governance gate keys by candidate entry id)
+# are written to one cross-run log so every sender — reflect-submit (run
+# context), wiki propose (run-less at the CLI layer), the governance skill's
+# manual notify — dedups against the same registry no matter which context it
+# fires from.
+_SUBJECTS_LOG_RUN_ID = "__subjects__"
+
 
 def _fit_bytes(text: str, budget: int) -> str:
     """Return ``text`` truncated to fit ``budget`` UTF-8 bytes.
@@ -88,8 +95,11 @@ def reset_notify_dedup(repo_root: Path, run_id: str) -> None:
 
     A run that is blocked and then resumed starts a NEW human decision cycle:
     the old dedup digests must not suppress the fresh review/blocked/terminal
-    notifications that the new cycle needs. Best-effort — an unreadable or
-    unwritable log must never break the resume command.
+    notifications that the new cycle needs. Subject-keyed governance
+    announcements live in the shared ``__subjects__`` log and survive the
+    reset — a candidate's governance decision is per-candidate, not bound to
+    the run's block/resume cycle. Best-effort — an unreadable or unwritable
+    log must never break the resume command.
     """
     try:
         path = notification_log_path(repo_root, run_id)
@@ -103,7 +113,7 @@ def render_message(
     *,
     gate: str,
     phase: str | None,
-    run_id: str,
+    run_id: str | None,
     requirement: str,
     repo: str,
     operators: list[str],
@@ -128,15 +138,18 @@ def render_message(
 
     # Compact layout: the mention and the action share the first line so the
     # pinged operator immediately sees what to do; context (gate/repo/run/what
-    # the run is about) follows. No field-by-field metadata walls.
+    # the run is about) follows. No field-by-field metadata walls. Run-less
+    # (standalone) notifications omit the 🆔 line entirely instead of showing
+    # a placeholder run id.
     def _compose(summary_shown: str) -> str:
         gist_line = f"🏷 {gist}\n" if gist else ""
         summary_line = f"{summary_shown}\n" if summary_shown else ""
+        id_line = f"🆔 `{run_id}`\n" if run_id else ""
         return (
             "**🔔 工作流需要人工处理**\n"
             f"👉 {operator_line}：{action}\n"
             f"📌 {type_line}｜📁 {repo}\n"
-            f"🆔 `{run_id}`\n"
+            f"{id_line}"
             f"{gist_line}"
             f"{summary_line}"
         )
@@ -280,6 +293,33 @@ def _webhook_url(config: RepositoryConfig) -> str | None:
     return value
 
 
+def _save_log(log_path: Path, log: dict[str, object]) -> bool:
+    """Atomically persist the dedup log.
+
+    The message is already delivered; the dedup log is best-effort
+    bookkeeping. A disk-full / read-only / permission failure here must never
+    crash the enclosing workflow command — notify never blocks the main flow.
+    If the log write fails, the next identical notify will simply re-send
+    (over-notify beats a silent miss), and the failure is surfaced so it stays
+    observable.
+    """
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic write: crash mid-write must not corrupt the dedup log.
+        temporary = log_path.with_name(f".{log_path.name}.{uuid4().hex}.tmp")
+        temporary.write_text(
+            json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        temporary.replace(log_path)
+    except OSError as error:
+        print(
+            f"wecom notify dedup-log write failed: {error}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def notify_command(
     repo_root: Path,
     *,
@@ -288,10 +328,29 @@ def notify_command(
     action: str,
     summary: str = "",
     phase: str | None = None,
+    subject: str | None = None,
+    alias_subjects: Sequence[str] = (),
     force: bool = False,
     dry_run: bool = False,
     client: WeComApiClient | None = None,
 ) -> dict[str, object]:
+    """Push one gate notification, deduped per decision.
+
+    ``subject`` keys the announcement to the decision object itself (the
+    governance gate uses the candidate's wiki entry id) in a log shared
+    across runs and senders: the governance gate has three senders
+    (reflect-submit, wiki propose, the governance skill) announcing the SAME
+    candidate, and subject keying collapses them into one group ping per
+    candidate — wording differences no longer defeat the dedup. A subject key
+    present in the log means "announced", regardless of content. ``alias_subjects``
+    are additional keys that also count as announced (checked, never written):
+    wiki propose passes the run-proposal key that reflect-submit announced
+    under, because the entry id does not exist yet at reflect-submit time; a
+    notify suppressed via an alias still records its primary subject so later
+    subject-keyed senders dedup on it. The log is only written after a
+    successful send — a failed announce leaves the subject unannounced and
+    the next sender still pushes, preserving the must-notify guarantee.
+    """
     if gate not in _GATE_LABELS:
         raise AppError("wecom_invalid_gate", f"unknown gate: {gate}")
     config = RepositoryConfig.load(repo_root)
@@ -306,11 +365,11 @@ def notify_command(
     # Resolve the run context when a run is provided. A missing/unknown run must
     # NOT hard-fail the notify: standalone (run-less) flows like `wiki propose`
     # or a manual git handoff still need to reach the team. Degrade to a
-    # repo-level notification (operators fall back to creator/@all, requirement
-    # shows the repo) instead of raising state_not_found.
-    requirement = config.repository
+    # repo-level notification (operators fall back to creator/@all; the 🆔 and
+    # gist lines are omitted since there is no run to show) instead of raising
+    # state_not_found.
+    requirement = ""
     operators: list[str] = []
-    dedup_run_id = run_id or "__standalone__"
     if run_id:
         try:
             service = WorkflowService(repo_root)
@@ -333,22 +392,50 @@ def notify_command(
     content = render_message(
         gate=gate,
         phase=phase,
-        run_id=run_id or "（run 外）",
+        run_id=run_id,
         requirement=requirement,
         repo=config.repository,
         operators=operators,
         action=action,
         summary=summary,
     )
-    log_path = notification_log_path(repo_root, dedup_run_id)
+    subjects = tuple(
+        s for s in (subject, *alias_subjects) if isinstance(s, str) and s
+    )
+    if subjects:
+        # Subject-keyed announcements share one cross-run registry so senders
+        # in different contexts (run vs standalone) dedup against each other.
+        log_path = notification_log_path(repo_root, _SUBJECTS_LOG_RUN_ID)
+    else:
+        log_path = notification_log_path(repo_root, run_id or "__standalone__")
     log = _load_log(log_path)
-    # Key the dedup log by gate plus phase so the same gate at different
-    # phases (review at plan vs review at verify) never collides.
-    log_key = f"{gate}:{phase or ''}"
-    existing = log.get(log_key)
     digest = _content_digest(gate=gate, phase=phase, content=content)
-    if not force and existing == digest:
-        return {"sent": False, "dedup": "repeat", "targets": []}
+
+    def _subject_key(s: str) -> str:
+        return f"{gate}:{phase or ''}:{s}"
+
+    if subject:
+        subject_key = _subject_key(subject)
+        alias_keys = [_subject_key(s) for s in alias_subjects if s]
+        existing = log.get(subject_key)
+        if existing is None:
+            existing = next((log[k] for k in alias_keys if k in log), None)
+        if not force and existing is not None:
+            # Already announced by ANY sender — key presence, not content,
+            # decides. The primary key may be new (suppressed via an alias);
+            # record it so later subject-keyed senders dedup on it too.
+            # Best-effort: a failed write risks a later duplicate ping,
+            # never a lost one.
+            log[subject_key] = digest
+            _save_log(log_path, log)
+            return {"sent": False, "dedup": "repeat", "targets": []}
+    else:
+        # Key the dedup log by gate plus phase so the same gate at different
+        # phases (review at plan vs review at verify) never collides.
+        log_key = f"{gate}:{phase or ''}"
+        existing = log.get(log_key)
+        if not force and existing == digest:
+            return {"sent": False, "dedup": "repeat", "targets": []}
 
     if dry_run:
         return {"sent": False, "dry_run": True, "dedup": "new", "payload": content}
@@ -356,28 +443,17 @@ def notify_command(
     send_client = client if client is not None else _client_for_webhook()
     result = send_client.webhook_send(content=content, webhook_url=webhook_url)
 
-    # A first send is "new"; a resend after content changed is "content_changed";
-    # a forced resend of identical content counts as a fresh "new" send.
+    # A first send is "new"; a resend after content changed is
+    # "content_changed"; a forced resend of identical content counts as a
+    # fresh "new" send. A subject-keyed entry reaching this point is either
+    # unannounced ("new") or forced ("new") — content changes are suppressed
+    # above, so "content_changed" only arises on the per-run digest path.
     dedup = "new" if force or existing is None else "content_changed"
-    # The message is already delivered; the dedup log is best-effort bookkeeping.
-    # A disk-full / read-only / permission failure here must never crash the
-    # enclosing workflow command — notify never blocks the main flow. If the log
-    # write fails, the next identical notify will simply re-send (over-notify
-    # beats a silent miss), and the failure is surfaced so it stays observable.
-    try:
+    if subject:
+        log[_subject_key(subject)] = digest
+    else:
         log[log_key] = digest
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic write: crash mid-write must not corrupt the dedup log.
-        temporary = log_path.with_name(f".{log_path.name}.{uuid4().hex}.tmp")
-        temporary.write_text(
-            json.dumps(log, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-        temporary.replace(log_path)
-    except OSError as error:
-        print(
-            f"wecom notify dedup-log write failed: {error}",
-            file=sys.stderr,
-        )
+    if not _save_log(log_path, log):
         return {
             "sent": True,
             "dedup": dedup,

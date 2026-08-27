@@ -23,6 +23,7 @@ from ai_workflow.workflow.models import Phase, RunState
 from ai_workflow.workflow.review import ReviewDecision
 from ai_workflow.workflow.service import WorkflowService
 from ai_workflow.wiki.repository import WikiRepository
+from ai_workflow.wiki.models import CandidateProposal
 from ai_workflow.wiki.service import WikiService
 from ai_workflow.wiki.search import KnowledgeQuery, SearchLimits
 
@@ -161,6 +162,12 @@ def _parser() -> argparse.ArgumentParser:
     wecom_notify.add_argument("--action", required=True)
     wecom_notify.add_argument("--summary", default="")
     wecom_notify.add_argument("--phase")
+    wecom_notify.add_argument(
+        "--subject",
+        default=None,
+        help="去重主体：同一 subject 只要成功推送过一次（任意发送方），"
+        "后续通知自动去重；--force 可强制重发",
+    )
     wecom_notify.add_argument("--force", action="store_true")
     wecom_notify.add_argument("--dry-run", action="store_true")
     return parser
@@ -325,16 +332,34 @@ def _auto_notify_terminal(repo_root: Path, run_id: str) -> dict[str, object]:
         }
 
 
+def _governance_run_proposal_subject(run_id: str) -> str:
+    """Subject key under which reflect-submit announces a run's candidate.
+
+    A run persists at most one immutable reflection proposal, so the run id
+    identifies the candidate at submit time — the wiki entry id is only minted
+    later by ``wiki propose``, which joins this key as an alias subject and
+    re-keys the announcement under the real entry id.
+    """
+    return f"run-proposal:{run_id}"
+
+
 def _auto_notify_governance(
-    repo_root: Path, run_id: str | None, reason: str
+    repo_root: Path,
+    run_id: str | None,
+    reason: str,
+    *,
+    subject: str | None = None,
+    alias_subjects: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Mechanically push the knowledge-governance notification when a run's
     reflection produces a candidate that needs human promote/reject/keep, so the
     team is asked to govern the knowledge even if the harness LLM never invokes
     the ``$ai-knowledge-governance`` skill template (or invokes it without a
     run-id). Also fires for candidates created via direct ``wiki propose``
-    (run-less, repo-level). Enhancement-only: a failure writes a warning and
-    never breaks the reflection submit / wiki propose."""
+    (run-less, repo-level). ``subject``/``alias_subjects`` key the announcement
+    to the candidate so the three senders (reflect-submit, wiki propose, the
+    governance skill) collapse into one group ping. Enhancement-only: a failure
+    writes a warning and never breaks the reflection submit / wiki propose."""
     try:
         return notify_command(
             repo_root,
@@ -343,6 +368,8 @@ def _auto_notify_governance(
             phase=None,
             action="请选择 promote / reject / 保持",
             summary=reason,
+            subject=subject,
+            alias_subjects=alias_subjects,
         )
     except AppError as error:
         print(
@@ -481,16 +508,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                 path = service.repository.root / "candidates" / f"{entry.id}.md"
                 data = {"id": entry.id, "status": entry.status.value, "path": str(path),
                         "digest": _file_digest(path)}
-                # A candidate created outside the reflect-submit channel still
-                # needs a human governance decision. Push mechanically so a
-                # direct `wiki propose` never silently waits for a human who
-                # was never told. Repo-level (run-less) notify — the wiki has
-                # no run context. Requires --repo for the wecom config.
+                # A candidate still needs a human governance decision — push
+                # mechanically so a direct `wiki propose` never silently waits
+                # for a human who was never told. Keyed by the entry id: when
+                # the proposal came from a run's reflect-submit (its sources
+                # carry the run ref), that submit already announced under
+                # run-proposal:<run>, so this collapses into the same single
+                # ping instead of a second one and records the entry id for
+                # the governance skill's --subject lookup. Requires --repo
+                # for the wecom config.
                 if args.repo is not None:
+                    run_ref = next(
+                        (
+                            source["ref"]
+                            for source in entry.sources
+                            if source.get("kind") == "run" and source.get("ref")
+                        ),
+                        None,
+                    )
                     data = {**data, "notify": _auto_notify_governance(
                         args.repo,
-                        run_id=None,
+                        run_id=run_ref,
                         reason=f"知识候选 {entry.id} 已产生，需人工选择 promote / reject / 保持",
+                        subject=entry.id,
+                        alias_subjects=(
+                            (_governance_run_proposal_subject(run_ref),)
+                            if run_ref
+                            else ()
+                        ),
                     )}
             elif args.wiki_command == "review":
                 data = service.review_candidate(args.id, args.max_related)
@@ -521,6 +566,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         action=args.action,
                         summary=args.summary,
                         phase=args.phase,
+                        subject=args.subject,
                         force=args.force,
                         dry_run=args.dry_run,
                     )
@@ -607,12 +653,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # A candidate reflection needs a human governance decision
                 # (promote/reject/keep). Push it mechanically — the team must
                 # learn about the candidate even if the LLM skips the
-                # $ai-knowledge-governance skill's notify call.
+                # $ai-knowledge-governance skill's notify call. The wiki entry
+                # id does not exist yet (wiki propose mints it later), so the
+                # announcement is keyed by the run's proposal; wiki propose
+                # joins that key and re-keys under the entry id.
                 if record.get("outcome") == "candidate":
+                    try:
+                        proposal_title = CandidateProposal.from_json(
+                            args.proposal
+                        ).title
+                        reason = (
+                            f"知识候选「{proposal_title}」已产生，"
+                            "需人工选择 promote / reject / 保持"
+                        )
+                    except AppError:
+                        reason = "知识候选已产生，需人工选择 promote / reject / 保持"
                     data = {**record, "notify": _auto_notify_governance(
                         args.repo,
                         args.run_id,
-                        "知识候选已产生，需人工选择 promote / reject / 保持",
+                        reason,
+                        subject=_governance_run_proposal_subject(args.run_id),
                     )}
             elif args.workflow_command == "review":
                 try:
