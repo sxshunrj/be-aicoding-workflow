@@ -128,3 +128,36 @@ def test_git_status_endpoint(client: TestClient, tmp_path):
     data = client.get(f"/api/repos/{repo_id}/git-status").json()
     assert "tracked.txt" in data["status"]
     assert isinstance(data["stat"], str)
+
+
+def test_meta_and_client_errors(client: TestClient):
+    meta = client.get("/api/meta")
+    assert meta.status_code == 200
+    body = meta.json()
+    assert body["version"]
+    assert body["python"]
+
+    reported = client.post(
+        "/api/client-errors",
+        json={"message": "render failed", "context": "RunDetail", "stack": "at x"},
+    )
+    assert reported.status_code == 204
+
+
+def test_git_diff_endpoint(client: TestClient, tmp_path):
+    import subprocess
+
+    repo = make_repo(tmp_path)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    env = {
+        "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        "HOME": str(tmp_path),
+    }
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True, env=env)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init", "-q"], check=True, capture_output=True, env=env)
+    (repo / ".ai-workflow.yaml").write_text("repository: demo2\n", encoding="utf-8")
+    repo_id = register(client, repo)
+    data = client.get(f"/api/repos/{repo_id}/git-diff").json()
+    assert "+repository: demo2" in data["diff"]

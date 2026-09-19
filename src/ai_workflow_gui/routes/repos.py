@@ -119,6 +119,15 @@ def repo_git_status(repo_id_value: str, request: Request):
     return {"status": status, "stat": stat}
 
 
+@router.get("/{repo_id_value}/git-diff")
+def repo_git_diff(repo_id_value: str, request: Request):
+    entry = find_repo(current_config(request), repo_id_value)
+    diff = _git(repo_dir(entry), "diff", "HEAD")
+    if diff is None:
+        raise AppError("invalid_arguments", "git diff failed (not a git repository?)")
+    return {"diff": diff[-400_000:]}
+
+
 @settings_router.put("")
 def update_settings(body: SettingsBody, request: Request):
     config = current_config(request)

@@ -2,8 +2,8 @@ from pathlib import Path
 import re
 
 
-SMALL_TDD_DIR = Path("skills/ai-small-tdd-change")
-GIT_HANDOFF_DIR = Path("skills/ai-git-handoff")
+SMALL_TDD_DIR = Path("src/ai_workflow/skills/ai-small-tdd-change")
+GIT_HANDOFF_DIR = Path("src/ai_workflow/skills/ai-git-handoff")
 
 
 def _read(skill_dir: Path, relative: str = "SKILL.md") -> str:

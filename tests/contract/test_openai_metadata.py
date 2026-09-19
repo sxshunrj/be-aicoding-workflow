@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 def test_openai_skill_list_display_names_are_english() -> None:
-    for path in sorted(Path("skills").glob("*/agents/openai.yaml")):
+    for path in sorted(Path("src/ai_workflow/skills").glob("*/agents/openai.yaml")):
         text = path.read_text(encoding="utf-8")
         assert "display_name:" in text
         assert "short_description:" in text

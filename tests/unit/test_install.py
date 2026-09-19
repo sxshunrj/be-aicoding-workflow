@@ -146,7 +146,7 @@ def test_repo_scope_installs_under_repository_directory(tmp_path: Path) -> None:
 
 
 def test_installs_full_wave2_skill_suite_from_repository(tmp_path: Path) -> None:
-    source_root = Path(__file__).resolve().parents[2] / "skills"
+    source_root = Path(__file__).resolve().parents[2] / "src" / "ai_workflow" / "skills"
 
     report = install_skills(
         source_root=source_root,

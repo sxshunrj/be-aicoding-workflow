@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from tests.gui.conftest import REPO_ROOT, make_repo, register
 
-SKILLS_SOURCE = str(REPO_ROOT / "skills")
+SKILLS_SOURCE = str(REPO_ROOT / "src" / "ai_workflow" / "skills")
 
 
 def test_install_then_doctor_green(client: TestClient, tmp_path):

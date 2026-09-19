@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+import platform
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel
 
 from ai_workflow.doctor import run_doctor
 from ai_workflow.errors import AppError
 from ai_workflow.install import install_skills
 
+from ai_workflow_gui import __version__
 from ai_workflow_gui._deps import (
     current_config,
     discover_source_root,
@@ -18,6 +21,30 @@ from ai_workflow_gui._deps import (
 )
 
 router = APIRouter(prefix="/api", tags=["admin"])
+
+logger = logging.getLogger("ai_workflow_gui")
+
+
+@router.get("/meta")
+def meta():
+    return {"version": __version__, "python": platform.python_version()}
+
+
+class ClientErrorBody(BaseModel):
+    message: str
+    context: str = ""
+    stack: str = ""
+
+
+@router.post("/client-errors", status_code=204)
+def client_error(body: ClientErrorBody):
+    logger.error(
+        "client-error %s | ctx=%s | stack=%s",
+        body.message[:500],
+        body.context[:300],
+        body.stack[:2000],
+    )
+    return Response(status_code=204)
 
 
 class InstallBody(BaseModel):

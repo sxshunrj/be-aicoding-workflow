@@ -94,6 +94,9 @@ export const api = {
     ),
   gitStatus: (repoId: string) =>
     request<{ status: string; stat: string }>(`/api/repos/${repoId}/git-status`),
+  gitDiff: (repoId: string) =>
+    request<{ diff: string }>(`/api/repos/${repoId}/git-diff`),
+  meta: () => request<{ version: string; python: string }>('/api/meta'),
 
   candidates: (repoId: string) =>
     request<{ candidates: Candidate[] }>(`/api/repos/${repoId}/wiki/candidates`),

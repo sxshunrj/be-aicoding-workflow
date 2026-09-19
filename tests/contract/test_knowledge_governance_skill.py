@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-SKILL_DIR = Path("skills/ai-knowledge-governance")
+SKILL_DIR = Path("src/ai_workflow/skills/ai-knowledge-governance")
 
 
 def _read(relative: str = "SKILL.md") -> str:

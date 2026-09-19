@@ -9,7 +9,8 @@ import { NavLink, Route, Routes, useNavigate } from 'react-router-dom'
 import { api } from './api'
 import type { RepoEntry } from './types'
 import { useToast } from './toast'
-import { Modal } from './ui'
+import { Modal, useConfirm } from './ui'
+import { ErrorBoundary, useGlobalErrorReporting } from './errors'
 import Dashboard from './screens/Dashboard'
 import RunDetail from './screens/RunDetail'
 import Knowledge from './screens/Knowledge'
@@ -46,6 +47,10 @@ export default function App() {
   const [adding, setAdding] = useState(false)
   const [candidatePath, setCandidatePath] = useState('')
   const [reviewerDraft, setReviewerDraft] = useState<string | null>(null)
+  const [version, setVersion] = useState('')
+  const confirm = useConfirm()
+
+  useGlobalErrorReporting()
 
   const reloadRepos = useCallback(async () => {
     try {
@@ -59,6 +64,7 @@ export default function App() {
 
   useEffect(() => {
     void reloadRepos()
+    void api.meta().then((data) => setVersion(`v${data.version} · py${data.python}`)).catch(() => {})
   }, [reloadRepos])
 
   const selectedRepo = repos.find((repo) => repo.id === selectedId) ?? null
@@ -88,14 +94,20 @@ export default function App() {
   }
 
   async function removeRepo(id: string, name: string) {
-    if (!window.confirm(`移除已注册的仓库「${name}」？（不会动磁盘上的任何文件）`)) return
-    try {
-      await api.removeRepo(id)
-      await reloadRepos()
-      toast.info(`已移除：${name}`)
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : String(error))
-    }
+    confirm.confirm(
+      '移除仓库',
+      `移除已注册的仓库「${name}」？（不会动磁盘上的任何文件）`,
+      async () => {
+        try {
+          await api.removeRepo(id)
+          await reloadRepos()
+          toast.info(`已移除：${name}`)
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : String(error))
+        }
+      },
+      { confirmText: '移除', danger: true },
+    )
   }
 
   async function saveReviewer() {
@@ -116,6 +128,7 @@ export default function App() {
   }
 
   return (
+    <ErrorBoundary>
     <AppContext.Provider
       value={{ repos, reviewer, selectedRepo, selectRepo, reloadRepos }}
     >
@@ -187,6 +200,7 @@ export default function App() {
               </div>
             )}
           </div>
+          <div className="small" style={{ color: "#5d6577", marginTop: 6 }}>{version}</div>
         </aside>
         <main className="main">
           <Routes>
@@ -197,6 +211,7 @@ export default function App() {
           </Routes>
         </main>
       </div>
+      {confirm.dialog}
       {adding && (
         <Modal title="添加仓库" onClose={() => setAdding(false)}>
           <div className="field">
@@ -221,5 +236,6 @@ export default function App() {
         </Modal>
       )}
     </AppContext.Provider>
+    </ErrorBoundary>
   )
 }

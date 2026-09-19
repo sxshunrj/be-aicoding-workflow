@@ -17,6 +17,7 @@ ai-workflow = "ai_workflow.cli:entrypoint"
 ai-workflow-gui = "ai_workflow_gui.app:main"
 
 [tool.setuptools.package-data]
+ai_workflow = ["skills/**/*"]
 ai_workflow_gui = ["static/**/*"]
 
 [tool.pytest.ini_options]

@@ -17,12 +17,12 @@ EXPECTED_SKILLS = (
 
 
 def test_wave2_skill_suite_contains_all_eleven_skills() -> None:
-    assert tuple(sorted(path.name for path in Path("skills").iterdir() if path.is_dir())) == EXPECTED_SKILLS
+    assert tuple(sorted(path.name for path in Path("src/ai_workflow/skills").iterdir() if path.is_dir())) == EXPECTED_SKILLS
 
 
 def test_wave2_skill_suite_has_frontmatter_and_metadata() -> None:
     for name in EXPECTED_SKILLS:
-        root = Path("skills") / name
+        root = Path("src/ai_workflow/skills") / name
         skill = (root / "SKILL.md").read_text(encoding="utf-8")
         metadata = (root / "agents" / "openai.yaml").read_text(encoding="utf-8")
         assert f"name: {name}" in skill

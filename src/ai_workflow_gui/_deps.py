@@ -49,17 +49,20 @@ def resolve_clients(client: str) -> tuple[str, ...]:
 
 
 def discover_source_root(config: GuiConfig | None = None) -> Path | None:
+    import ai_workflow
+
+    packaged = Path(ai_workflow.__file__).resolve().parent / "skills"
+    if packaged.is_dir():
+        return packaged
+    for parent in Path(ai_workflow.__file__).resolve().parents:
+        candidate = parent / "skills"
+        if candidate.is_dir():
+            return candidate.resolve()
     if config is not None:
         for entry in config.repos:
             candidate = Path(entry.path).expanduser() / "skills"
             if candidate.is_dir():
                 return candidate.resolve()
-    import ai_workflow
-
-    for parent in Path(ai_workflow.__file__).resolve().parents:
-        candidate = parent / "skills"
-        if candidate.is_dir():
-            return candidate.resolve()
     return None
 
 

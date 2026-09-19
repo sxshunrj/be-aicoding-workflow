@@ -3,7 +3,7 @@ import json
 import re
 
 
-SKILL_DIR = Path("skills/ai-knowledge-reflection")
+SKILL_DIR = Path("src/ai_workflow/skills/ai-knowledge-reflection")
 
 
 def _read(relative: str = "SKILL.md") -> str:

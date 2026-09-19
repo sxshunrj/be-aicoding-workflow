@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-SKILL_DIR = Path("skills/ai-integration-test-checklists")
+SKILL_DIR = Path("src/ai_workflow/skills/ai-integration-test-checklists")
 
 
 def _read(relative: str = "SKILL.md") -> str:

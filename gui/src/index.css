@@ -182,3 +182,17 @@ tr.row-link:hover td { background: #fafbfd; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 pre.code { background: #f6f8fa; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 11.5px; overflow: auto; max-height: 420px; font-family: ui-monospace, Menlo, monospace; }
+
+/* ---- skeleton ---- */
+.skeleton {
+  height: 13px; border-radius: 6px; margin: 8px 0;
+  background: linear-gradient(90deg, #eef1f5 25%, #f7f9fb 50%, #eef1f5 75%);
+  background-size: 200% 100%; animation: shimmer 1.3s infinite;
+}
+@keyframes shimmer { to { background-position: -200% 0; } }
+
+/* ---- diff 视图 ---- */
+.diff { white-space: pre-wrap; word-break: break-all; }
+.diff-add { background: #e6f6ee; color: #116640; }
+.diff-del { background: #fdecec; color: #a33; }
+.diff-hunk { color: var(--brand); font-weight: 600; }

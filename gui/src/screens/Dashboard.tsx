@@ -5,7 +5,7 @@ import { useApp } from '../App'
 import { usePolling } from '../hooks'
 import { useToast } from '../toast'
 import { parseRunTime, pendingGate, type RunState } from '../types'
-import { LiveIndicator, Modal, StatusPill } from '../ui'
+import { LiveIndicator, Modal, StatusPill, TableSkeleton } from '../ui'
 
 type Filter = 'all' | 'active' | 'blocked' | 'completed' | 'aborted'
 
@@ -149,6 +149,10 @@ function RunList({
         {polling.error && <span style={{ color: 'var(--danger)' }}>拉取失败：{polling.error}</span>}
       </div>
 
+      {polling.data === null && polling.error === null ? (
+        <TableSkeleton rows={5} />
+      ) : (
+      <>
       <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
         <StatCard label="总数" value={counts.all} />
         <StatCard label="进行中" value={counts.active} color="var(--brand)" />
@@ -237,6 +241,8 @@ function RunList({
         </div>
       )}
 
+      </>
+      )}
       {creating && (
         <CreateRunModal
           repoId={repoId}

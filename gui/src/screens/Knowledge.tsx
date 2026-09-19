@@ -3,6 +3,7 @@ import { api } from '../api'
 import { useApp } from '../App'
 import { usePolling } from '../hooks'
 import { useToast } from '../toast'
+import { TableSkeleton } from '../ui'
 import type { ApprovedEntry, Candidate } from '../types'
 
 export default function Knowledge() {
@@ -71,7 +72,11 @@ export default function Knowledge() {
             onChanged={() => void polling.refresh()}
           />
         ) : (
+          polling.data === null && polling.error === null ? (
+          <TableSkeleton rows={3} />
+        ) : (
           <CandidatesTable candidates={candidates} error={polling.error} onOpen={setSelected} />
+        )
         )
       ) : selected ? (
         <ApprovedDetail repoId={selectedRepo.id} entryId={selected} onBack={() => setSelected(null)} />

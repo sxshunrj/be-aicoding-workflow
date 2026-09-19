@@ -12,7 +12,7 @@ import {
   VALIDITY_LABEL,
   type RunState,
 } from '../types'
-import { LiveIndicator, Modal, StatusPill } from '../ui'
+import { LiveIndicator, Modal, StatusPill, useConfirm } from '../ui'
 
 const ARTIFACT_META: Record<string, { label: string; icon: string; color: string }> = {
   run_policy: { label: '运行策略', icon: '📜', color: '#5b6472' },
@@ -117,6 +117,7 @@ function Overview({
   onChanged: () => void
 }) {
   const toast = useToast()
+  const confirm = useConfirm()
   const [showEvents, setShowEvents] = useState(false)
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null)
   const [artifact, setArtifact] = useState<{ key: string; value: unknown } | null>(null)
@@ -132,18 +133,24 @@ function Overview({
   )
   const terminal = `$${run.profile === 'grill' ? 'ai-workflow-harness-grill' : 'ai-workflow-harness'} resume ${run.run_id}`
 
-  async function abort() {
-    if (!window.confirm(`确认中止 run ${run.run_id}？`)) return
-    setBusy(true)
-    try {
-      await api.abort(repoId, run.run_id)
-      toast.info('已中止该 run')
-      onChanged()
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : String(error))
-    } finally {
-      setBusy(false)
-    }
+  function confirmAbort() {
+    confirm.confirm(
+      '中止 Run',
+      `确认中止 run ${run.run_id}？该 run 将进入 aborted 终态。`,
+      async () => {
+        setBusy(true)
+        try {
+          await api.abort(repoId, run.run_id)
+          toast.info('已中止该 run')
+          onChanged()
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : String(error))
+        } finally {
+          setBusy(false)
+        }
+      },
+      { confirmText: '中止', danger: true },
+    )
   }
 
   async function submitResume() {
@@ -225,7 +232,7 @@ function Overview({
               <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setBlocking((value) => !value)}>
                 阻止
               </button>
-              <button className="btn btn-danger btn-sm" disabled={busy} onClick={() => void abort()}>
+              <button className="btn btn-danger btn-sm" disabled={busy} onClick={() => confirmAbort()}>
                 中止 Run
               </button>
             </>
@@ -400,6 +407,7 @@ function Overview({
 
       <RepoChanges repoId={repoId} />
 
+      {confirm.dialog}
       {artifact && (
         <Modal title={`产物 · ${artifact.key}`} onClose={() => setArtifact(null)}>
           <pre className="code">{JSON.stringify(artifact.value, null, 2)}</pre>
@@ -595,8 +603,22 @@ function FilesTab({ repoId, runId }: { repoId: string; runId: string }) {
 
 function RepoChanges({ repoId }: { repoId: string }) {
   const polling = usePolling(() => api.gitStatus(repoId), 10000)
+  const [diff, setDiff] = useState<string | null>(null)
+  const [loadingDiff, setLoadingDiff] = useState(false)
   const git = polling.data
   if (!git) return null
+
+  async function showDiff() {
+    setLoadingDiff(true)
+    try {
+      const data = await api.gitDiff(repoId)
+      setDiff(data.diff || '（无文本差异——可能是未跟踪文件，见上方状态列表）')
+    } catch (error) {
+      setDiff(`读取 diff 失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setLoadingDiff(false)
+    }
+  }
   const lines = git.status.trim() ? git.status.trim().split('\n') : []
   return (
     <div className="card">
@@ -615,7 +637,31 @@ function RepoChanges({ repoId }: { repoId: string }) {
           ))}
           {lines.length > 12 && <div className="muted small">…还有 {lines.length - 12} 个</div>}
           {git.stat.trim() && <pre className="code" style={{ marginTop: 8 }}>{git.stat}</pre>}
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ marginTop: 8 }}
+            disabled={loadingDiff}
+            onClick={() => void showDiff()}
+          >
+            {loadingDiff ? '加载中…' : '查看完整 diff'}
+          </button>
         </>
+      )}
+      {diff !== null && (
+        <Modal title="完整 diff（工作树 vs HEAD）" onClose={() => setDiff(null)}>
+          <pre className="code diff">
+            {diff.split('\n').map((line, index) => (
+              <div
+                key={index}
+                className={
+                  line.startsWith('+') ? 'diff-add' : line.startsWith('-') ? 'diff-del' : line.startsWith('@@') ? 'diff-hunk' : undefined
+                }
+              >
+                {line || ' '}
+              </div>
+            ))}
+          </pre>
+        </Modal>
       )}
     </div>
   )

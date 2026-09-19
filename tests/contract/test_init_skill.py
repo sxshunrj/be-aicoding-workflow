@@ -3,7 +3,7 @@ from pathlib import Path
 from ai_workflow.cli import main
 
 
-SKILL_DIR = Path("skills/ai-workflow-init")
+SKILL_DIR = Path("src/ai_workflow/skills/ai-workflow-init")
 
 
 def _read(relative: str = "SKILL.md") -> str:

@@ -15,7 +15,7 @@ EXPECTED_WAVE2 = {
 
 def test_wave2_reference_parity_local_suite_installs_and_documents_routes(tmp_path: Path) -> None:
     repo = Path(__file__).resolve().parents[2]
-    source_root = repo / "skills"
+    source_root = repo / "src" / "ai_workflow" / "skills"
 
     report = install_skills(
         source_root=source_root,

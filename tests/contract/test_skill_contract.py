@@ -5,7 +5,7 @@ import re
 from ai_workflow.contracts.artifacts import ChildResult
 
 
-SKILL_DIR = Path("skills/ai-workflow-harness")
+SKILL_DIR = Path("src/ai_workflow/skills/ai-workflow-harness")
 REQUIRED_FILES = {
     "SKILL.md",
     "agents/openai.yaml",
