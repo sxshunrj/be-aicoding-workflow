@@ -123,6 +123,10 @@ def test_git_status_endpoint(client: TestClient, tmp_path):
         check=True, capture_output=True, env=env,
     )
     (repo / "tracked.txt").write_text("hello", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True, env=env)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "add file", "-q"], check=True, capture_output=True, env=env)
+    # commit 后再修改 → 是真正的 tracked 变更（-uno 只列 tracked）
+    (repo / "tracked.txt").write_text("hello world", encoding="utf-8")
     repo_id = register(client, repo)
 
     data = client.get(f"/api/repos/{repo_id}/git-status").json()
