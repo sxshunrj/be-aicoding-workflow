@@ -112,9 +112,21 @@ def _git(repo_root: Path, *args: str) -> str | None:
 def repo_git_status(repo_id_value: str, request: Request):
     entry = find_repo(current_config(request), repo_id_value)
     root = repo_dir(entry)
-    status = _git(root, "status", "--porcelain=v1")
+    status = _git(root, "status", "--porcelain=v1", "-uno")
     if status is None:
         raise AppError("invalid_arguments", "git status failed (not a git repository?)")
+    tracked_noise = {
+        name
+        for name in ("uv.lock", ".DS_Store")
+        if (root / name).exists()
+    }
+    if tracked_noise:
+        keep = [
+            line
+            for line in status.splitlines()
+            if not any(line.endswith(name) for name in tracked_noise)
+        ]
+        status = "\n".join(keep) + ("\n" if keep else "")
     stat = _git(root, "diff", "--stat", "HEAD") or ""
     return {"status": status, "stat": stat}
 

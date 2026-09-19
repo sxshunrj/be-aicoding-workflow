@@ -391,12 +391,17 @@ function Overview({
           (events.data?.events.length ? (
             <div className="timeline">
               {events.data.events.map((event, index) => (
-                <div className="event" key={index}>
-                  <span className="type">{event.type}</span>
+                <div
+                  className="event row-link"
+                  key={index}
+                  title="点击查看完整事件数据"
+                  onClick={() => setArtifact({ key: `${event.type} @ ${event.timestamp ?? index}`, value: event })}
+                >
+                  <span className="type">{EVENT_LABEL[event.type] ?? event.type}</span>
                   <span className="muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {JSON.stringify(event.data)}
+                    {eventSummary(event.type, event.data)}
                   </span>
-                  <span className="ts">{event.timestamp ?? ''}</span>
+                  <span className="ts">{(event.timestamp ?? '').replace('T', ' ').slice(0, 19)}</span>
                 </div>
               ))}
             </div>
@@ -539,6 +544,55 @@ function Approval({
   )
 }
 
+
+const EVENT_LABEL: Record<string, string> = {
+  run_created: 'run 创建',
+  phase_begun: '阶段开始',
+  child_result_staged: '子任务结果提交',
+  phase_finalized: '阶段聚合完成',
+  review_proposed: '生成审批 gate，等待人工',
+  review_accepted: '人工审批接受',
+  workflow_transitioned: '流转到下一阶段',
+  run_resumed: '恢复 run（rerun 标记）',
+  run_blocked: 'run 被阻止',
+  run_aborted: 'run 中止',
+  reflection_submitted: '反思提交',
+}
+
+function eventSummary(type: string, data: Record<string, unknown> | undefined): string {
+  if (!data) return ''
+  const pick = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = data[key]
+      if (typeof value === 'string' && value) return value
+    }
+    return null
+  }
+  switch (type) {
+    case 'phase_begun':
+      return [pick('phase'), pick('attempt_id') ?? pick('attempt')].filter(Boolean).join(' · ')
+    case 'child_result_staged':
+      return [pick('node'), pick('child'), pick('status')].filter(Boolean).join(' · ')
+    case 'phase_finalized':
+      return [pick('phase'), pick('attempt_id'), pick('status')].filter(Boolean).join(' · ')
+    case 'review_proposed':
+    case 'review_accepted':
+      return [pick('decision'), `phase=${pick('phase')}`, `v${pick('state_version') ?? ''}`].filter((part) => part && !part.endsWith('=')).join(' · ')
+    case 'workflow_transitioned':
+      return data.accepted === true ? `已接受 → ${pick('phase') ?? '下一阶段'}` : pick('phase') ?? ''
+    case 'run_resumed':
+      return pick('reason') ?? '恢复执行'
+    case 'run_blocked':
+      return pick('reason') ?? ''
+    case 'reflection_submitted':
+      return pick('outcome') ?? ''
+    default: {
+      const text = JSON.stringify(data)
+      return text.length > 90 ? `${text.slice(0, 90)}…` : text
+    }
+  }
+}
+
 function FilesTab({ repoId, runId }: { repoId: string; runId: string }) {
   const [file, setFile] = useState<{ path: string; content: string; truncated: boolean } | null>(null)
   const [filter, setFilter] = useState('')
@@ -601,10 +655,20 @@ function FilesTab({ repoId, runId }: { repoId: string; runId: string }) {
   )
 }
 
+const NOISE_PATTERN = /(^|\/)(__pycache__|\.DS_Store|\.mimosa|\.zcode|\.venv|node_modules|build|dist|uv\.lock|\.pytest_cache)($|\/)/
+
+function isNoise(line: string): boolean {
+  const path = line.slice(3).trim().replace(/^"|"$/g, '')
+  if (NOISE_PATTERN.test(path)) return true
+  // 二进制/导出产物：按后缀过滤
+  return /\.(zip|png|jpg|jpeg|gif|pdf|mp4|mov|woff2?|ttf|jar|class|DS_Store)$/i.test(path)
+}
+
 function RepoChanges({ repoId }: { repoId: string }) {
   const polling = usePolling(() => api.gitStatus(repoId), 10000)
   const [diff, setDiff] = useState<string | null>(null)
   const [loadingDiff, setLoadingDiff] = useState(false)
+  const [showNoise, setShowNoise] = useState(false)
   const git = polling.data
   if (!git) return null
 
@@ -612,23 +676,36 @@ function RepoChanges({ repoId }: { repoId: string }) {
     setLoadingDiff(true)
     try {
       const data = await api.gitDiff(repoId)
-      setDiff(data.diff || '（无文本差异——可能是未跟踪文件，见上方状态列表）')
+      setDiff(
+        data.diff ||
+          '（无已跟踪文件的文本差异。上方列表里的 "？?" 是未跟踪文件——它们还没进 git，diff 不可见；若这些是 agent 的产出，让 agent 正常提交后即可在此审查）',
+      )
     } catch (error) {
       setDiff(`读取 diff 失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setLoadingDiff(false)
     }
   }
-  const lines = git.status.trim() ? git.status.trim().split('\n') : []
+  const allLines = git.status.trim() ? git.status.trim().split('\n') : []
+  const signal = allLines.filter((line) => !isNoise(line))
+  const noise = allLines.filter(isNoise)
+  const lines = showNoise ? allLines : signal
   return (
     <div className="card">
-      <h5>仓库变更（git，工作树 vs HEAD）</h5>
+      <h5>
+        仓库变更（git，工作树 vs HEAD）
+        {noise.length > 0 && (
+          <button className="btn btn-ghost btn-sm" style={{ float: 'right' }} onClick={() => setShowNoise((v) => !v)}>
+            {showNoise ? '隐藏产物噪音' : `显示 ${noise.length} 条噪音`}
+          </button>
+        )}
+      </h5>
       {lines.length === 0 ? (
-        <div className="muted">工作树干净，没有未提交变更</div>
+        <div className="muted">{noise.length > 0 ? `仅 ${noise.length} 条产物噪音（未跟踪文件/构建产物），无有效变更` : '工作树干净，没有未提交变更'}</div>
       ) : (
         <>
           <div style={{ marginBottom: 6 }} className="small muted">
-            {lines.length} 个文件有变更：
+            {signal.length} 个有效变更{noise.length ? `（另有 ${noise.length} 条噪音已折叠）` : ''}：
           </div>
           {lines.slice(0, 12).map((line) => (
             <div className="mono" key={line} style={{ padding: '2px 0' }}>

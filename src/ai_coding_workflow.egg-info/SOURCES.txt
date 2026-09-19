@@ -92,5 +92,5 @@ src/ai_workflow_gui/routes/runs.py
 src/ai_workflow_gui/static/favicon.svg
 src/ai_workflow_gui/static/icons.svg
 src/ai_workflow_gui/static/index.html
-src/ai_workflow_gui/static/assets/index-C1HSDwZ_.js
-src/ai_workflow_gui/static/assets/index-DGan6qd9.css
+src/ai_workflow_gui/static/assets/index-BV9_69Iy.css
+src/ai_workflow_gui/static/assets/index-DYbdznU1.js
