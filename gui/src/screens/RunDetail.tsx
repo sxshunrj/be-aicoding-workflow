@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { api } from '../api'
 import { useApp } from '../App'
-import { usePolling } from '../hooks'
+import { usePolling, useRunStream } from '../hooks'
 import { useToast } from '../toast'
 import {
   parseRunTime,
@@ -10,6 +10,7 @@ import {
   PHASE_LABEL,
   PHASE_ORDER,
   VALIDITY_LABEL,
+  type DriveStatus,
   type RunState,
 } from '../types'
 import { LiveIndicator, Modal, StatusPill, useConfirm } from '../ui'
@@ -37,12 +38,8 @@ export default function RunDetail() {
   const { selectedRepo } = useApp()
   const [tab, setTab] = useState<'overview' | 'approval' | 'files'>('overview')
   const [, setTick] = useState(0)
-  const polling = usePolling(
-    () => api.run(selectedRepo!.id, runId),
-    5000,
-    Boolean(selectedRepo),
-  )
-  const run = polling.data
+  const stream = useRunStream(selectedRepo?.id ?? '', runId, Boolean(selectedRepo))
+  const run = stream.run
   const gate = run ? pendingGate(run) : null
 
   // 让 LiveIndicator 的“N 秒前”随时间刷新
@@ -58,7 +55,7 @@ export default function RunDetail() {
     return (
       <div className="empty">
         <div className="icon">⏳</div>
-        <div className="hint">{polling.error ? `加载失败：${polling.error}` : '加载中…'}</div>
+        <div className="hint">{stream.fatal ? stream.fatal : stream.connected ? '加载中…' : '连接中…'}</div>
       </div>
     )
   }
@@ -77,9 +74,9 @@ export default function RunDetail() {
         </div>
       </div>
       {tab === 'overview' ? (
-        <Overview repoId={selectedRepo.id} run={run} lastUpdated={polling.lastUpdated} onChanged={() => void polling.refresh()} />
+        <Overview repoId={selectedRepo.id} run={run} lastUpdated={stream.receivedAt} connected={stream.connected} drive={stream.drive} />
       ) : tab === 'approval' ? (
-        <Approval repoId={selectedRepo.id} run={run} gate={gate} onChanged={() => void polling.refresh()} />
+        <Approval repoId={selectedRepo.id} run={run} gate={gate} />
       ) : (
         <FilesTab repoId={selectedRepo.id} runId={run.run_id} />
       )}
@@ -111,12 +108,14 @@ function Overview({
   repoId,
   run,
   lastUpdated,
-  onChanged,
+  connected,
+  drive,
 }: {
   repoId: string
   run: RunState
   lastUpdated: number | null
-  onChanged: () => void
+  connected: boolean
+  drive: DriveStatus | null
 }) {
   const toast = useToast()
   const confirm = useConfirm()
@@ -143,8 +142,7 @@ function Overview({
         try {
           await api.abort(repoId, run.run_id)
           toast.info('已中止该 run')
-          onChanged()
-        } catch (error) {
+            } catch (error) {
           toast.error(error instanceof Error ? error.message : String(error))
         } finally {
           setBusy(false)
@@ -165,7 +163,6 @@ function Overview({
       toast.success(rerunRows.length ? '已恢复并标记 rerun 节点' : '已恢复该 run')
       setResuming(false)
       setRerunRows([])
-      onChanged()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error))
     } finally {
@@ -184,7 +181,6 @@ function Overview({
       toast.info('已阻止该 run')
       setBlocking(false)
       setBlockReason('')
-      onChanged()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error))
     } finally {
@@ -206,6 +202,7 @@ function Overview({
     <div>
       <div className="meta-bar">
         <LiveIndicator lastUpdated={lastUpdated} />
+        {!connected && <span style={{ color: 'var(--danger)' }}>实时连接断开，重连中…</span>}
         <StatusPill status={run.status} />
         <span>
           profile <b style={{ color: 'var(--ink-2)' }}>{run.profile}</b>
@@ -234,7 +231,7 @@ function Overview({
         </span>
       </div>
 
-      <DriverCard repoId={repoId} run={run} />
+      <DriverCard repoId={repoId} run={run} drive={drive} />
 
       {resuming && operable && (
         <div className="card">
@@ -413,14 +410,13 @@ function Approval({
   repoId,
   run,
   gate,
-  onChanged,
 }: {
   repoId: string
   run: RunState
   gate: ReturnType<typeof pendingGate>
-  onChanged: () => void
 }) {
   const toast = useToast()
+  const confirm = useConfirm()
   const [reason, setReason] = useState('')
   const [blocking, setBlocking] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -432,12 +428,39 @@ function Approval({
       toast.success(done)
       setBlocking(false)
       setReason('')
-      onChanged()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error))
     } finally {
       setBusy(false)
     }
+  }
+
+  function confirmAccept() {
+    if (!gate) return
+    confirm.confirm(
+      '接受 gate',
+      '接受后 GUI 会自动继续驱动 agent 执行后续阶段（无需回终端）。',
+      async () => {
+        setBusy(true)
+        try {
+          const data = await api.reviewAccept(repoId, run.run_id, gate.digest)
+          if (data.auto_resume?.resumed) {
+            toast.success('已接受，agent 已自动继续执行')
+          } else if (data.auto_resume?.reason === 'gate_pending') {
+            toast.info('已接受；gate 状态尚未就绪，请手动点「驱动 agent」')
+          } else if (data.auto_resume?.reason) {
+            toast.error(`已接受，但自动驱动失败：${data.auto_resume.reason}`)
+          } else {
+            toast.success('已接受')
+          }
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : String(error))
+        } finally {
+          setBusy(false)
+        }
+      },
+      { confirmText: '接受并继续' },
+    )
   }
 
   if (!gate) {
@@ -490,7 +513,7 @@ function Approval({
             <button
               className="btn btn-ok"
               disabled={busy}
-              onClick={() => void act(() => api.reviewAccept(repoId, run.run_id, gate.digest), '已接受，可回终端继续')}
+              onClick={confirmAccept}
             >
               ✓ 接受并继续（digest 自动校验）
             </button>
@@ -525,6 +548,7 @@ function Approval({
               修复 review gate
             </button>
           </div>
+          {confirm.dialog}
         </div>
       </div>
     </div>
@@ -732,14 +756,20 @@ function RepoChanges({ repoId }: { repoId: string }) {
 }
 
 
-function DriverCard({ repoId, run }: { repoId: string; run: RunState }) {
+function DriverCard({
+  repoId,
+  run,
+  drive,
+}: {
+  repoId: string
+  run: RunState
+  drive: DriveStatus | null
+}) {
   const toast = useToast()
   const confirm = useConfirm()
   const operable = run.status !== 'completed' && run.status !== 'aborted'
-  const polling = usePolling(() => api.driveStatus(repoId, run.run_id), 2000, operable)
   const [showConsole, setShowConsole] = useState(false)
   const consoleRef = useRef<HTMLPreElement>(null)
-  const drive = polling.data
 
   useEffect(() => {
     if (consoleRef.current) consoleRef.current.scrollTop = consoleRef.current.scrollHeight
@@ -764,7 +794,6 @@ function DriverCard({ repoId, run }: { repoId: string; run: RunState }) {
             await api.drive(repoId, run.run_id)
             toast.success('agent 已启动，输出见下方控制台')
             setShowConsole(true)
-            void polling.refresh()
           } catch (error) {
             toast.error(error instanceof Error ? error.message : String(error))
           }
@@ -780,18 +809,18 @@ function DriverCard({ repoId, run }: { repoId: string; run: RunState }) {
     try {
       await api.driveStop(repoId, run.run_id)
       toast.info('已发送停止信号')
-      void polling.refresh()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error))
     }
   }
 
   function statusPill(): { cls: string; text: string } {
-    if (!drive) return { cls: 'pill-pending', text: '未启动' }
-    if (drive.active) return { cls: 'pill-running', text: `● 运行中 · pid ${drive.pid}` }
+    if (!drive || drive.state === 'idle') return { cls: 'pill-pending', text: '未启动' }
+    if (drive.state === 'running')
+      return { cls: 'pill-running', text: `● 运行中 · pid ${drive.pid}${drive.adopted ? '（重启接管）' : ''}` }
+    if (drive.state === 'unknown') return { cls: 'pill-blocked', text: '✕ 已结束（GUI 重启期间，退出码未知）' }
     if (drive.exit_code === 0) return { cls: 'pill-completed', text: '✓ 已正常退出' }
-    if (drive.exit_code !== null) return { cls: 'pill-blocked', text: `✕ 已退出（code ${drive.exit_code}）` }
-    return { cls: 'pill-pending', text: '未启动' }
+    return { cls: 'pill-blocked', text: `✕ 已退出（code ${drive.exit_code}）` }
   }
   const pill = statusPill()
 

@@ -68,9 +68,10 @@ export const api = {
   run: (repoId: string, runId: string) =>
     request<RunState>(`/api/repos/${repoId}/runs/${runId}`),
   reviewAccept: (repoId: string, runId: string, expectedDigest: string) =>
-    post<RunState>(`/api/repos/${repoId}/runs/${runId}/review-accept`, {
-      expected_digest: expectedDigest,
-    }),
+    post<{ run: RunState; auto_resume: { resumed: boolean; reason?: string } }>(
+      `/api/repos/${repoId}/runs/${runId}/review-accept`,
+      { expected_digest: expectedDigest },
+    ),
   block: (repoId: string, runId: string, reason: string) =>
     post<RunState>(`/api/repos/${repoId}/runs/${runId}/block`, { reason }),
   repairGate: (repoId: string, runId: string) =>

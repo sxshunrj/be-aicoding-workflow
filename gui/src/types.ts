@@ -112,6 +112,8 @@ export interface ApprovedEntry {
 
 export interface DriveStatus {
   active: boolean
+  state: 'running' | 'exited' | 'unknown' | 'idle'
+  adopted: boolean
   command: string | null
   pid: number | null
   exit_code: number | null

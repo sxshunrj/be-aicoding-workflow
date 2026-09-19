@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import os
 import shlex
@@ -13,7 +13,8 @@ import time
 from ai_workflow.errors import AppError
 
 DEFAULT_AGENT_COMMAND = "claude -p {prompt} --dangerously-skip-permissions"
-MAX_TAIL_LINES = 500
+MAX_TAIL_LINES = 400
+TAIL_READ_BYTES = 32_000
 
 
 def build_prompt(profile: str, run_id: str, requirement: str) -> str:
@@ -28,125 +29,291 @@ def build_prompt(profile: str, run_id: str, requirement: str) -> str:
     )
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _process_lstart(pid: int) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
+def _pid_matches(pid: int, lstart: str) -> bool:
+    """防 PID 复用误伤：比对进程启动时间指纹（秒级，复用撞指纹的概率可忽略）。"""
+    if not lstart:
+        return False
+    current = _process_lstart(pid)
+    return current is not None and current == lstart
+
+
+def _tail_file(path: Path, max_lines: int = 200) -> list[str]:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    if size == 0:
+        return []
+    try:
+        with path.open("rb") as stream:
+            stream.seek(max(0, size - TAIL_READ_BYTES))
+            data = stream.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = data.splitlines()
+    if size > TAIL_READ_BYTES and lines:
+        lines = lines[1:]
+    return lines[-max_lines:]
+
+
 @dataclass
 class DriverJob:
     run_id: str
+    repo_id: str
     command: str
     prompt: str
+    binary: str
+    pid: int
+    lstart: str
     started_at: float
-    lines: deque[str]
-    process: subprocess.Popen
+    log_path: Path
+    process: subprocess.Popen | None = None  # None = 重启后收养的孤儿进程
+    adopted: bool = False
     exit_code: int | None = None
     finished_at: float | None = None
 
+    def state(self) -> str:
+        if self.exit_code is not None:
+            return "exited"
+        if self.process is None:
+            return "running" if _pid_alive(self.pid) else "unknown"
+        code = self.process.poll()
+        if code is not None:
+            self.exit_code = code
+            self.finished_at = time.time()
+            return "exited"
+        return "running"
+
 
 class AgentDriver:
-    """Per-run headless agent subprocess supervision (thread-based, loop-independent)."""
+    """Per-run headless agent supervision.
+
+    stdout 直写日志文件（不经管道）：GUI 重启后 agent 存活且日志完整，
+    通过 job 文件收养存活进程继续监督与停止。
+    """
 
     def __init__(self, log_dir: Path | None = None) -> None:
-        self._jobs: dict[str, DriverJob] = {}
-        self._lock = threading.Lock()
         self._log_dir = log_dir or (Path.home() / ".ai-workflow-gui" / "agent-logs")
+        self._jobs: dict[str, DriverJob] = {}
+        self._recover()
 
-    def status(self, run_id: str, tail: int = 200) -> dict[str, object]:
-        with self._lock:
-            job = self._jobs.get(run_id)
-            if job is None:
-                return {
-                    "active": False,
-                    "command": None,
-                    "pid": None,
-                    "exit_code": None,
-                    "started_at": None,
-                    "finished_at": None,
-                    "tail": [],
-                }
-            return {
-                "active": job.exit_code is None,
-                "command": job.command,
-                "pid": job.process.pid,
-                "exit_code": job.exit_code,
-                "started_at": job.started_at,
-                "finished_at": job.finished_at,
-                "tail": list(job.lines)[-tail:],
-            }
+    # ---- 持久化 ----
 
-    def is_active(self, run_id: str) -> bool:
-        with self._lock:
-            job = self._jobs.get(run_id)
-            return job is not None and job.exit_code is None
+    def _job_file(self, run_id: str) -> Path:
+        return self._log_dir / f"{run_id}.job.json"
 
-    def start(
-        self, *, run_id: str, repo_root: Path, template: str, prompt: str
-    ) -> dict[str, object]:
-        with self._lock:
-            existing = self._jobs.get(run_id)
-            if existing is not None and existing.exit_code is None:
-                raise AppError("driver_busy", "该 run 的 agent 已在运行中")
-            if "{prompt}" not in template:
-                raise AppError(
-                    "invalid_arguments", "agent 命令模板必须包含 {prompt} 占位符"
-                )
-            argv: list[str] = []
-            for token in shlex.split(template):
-                if "{prompt}" in token:
-                    argv.append(token.replace("{prompt}", prompt))
-                else:
-                    argv.append(token)
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
-            log_path = self._log_dir / f"{run_id}-{timestamp}.log"
+    def _persist(self, job: DriverJob) -> None:
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "run_id": job.run_id,
+            "repo_id": job.repo_id,
+            "pid": job.pid,
+            "command": job.command,
+            "prompt": job.prompt,
+            "binary": job.binary,
+            "lstart": job.lstart,
+            "started_at": job.started_at,
+            "log_path": str(job.log_path),
+        }
+        tmp = self._job_file(job.run_id).with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, self._job_file(job.run_id))
+
+    def _recover(self) -> None:
+        if not self._log_dir.is_dir():
+            return
+        for job_file in self._log_dir.glob("*.job.json"):
             try:
-                process = subprocess.Popen(
-                    argv,
-                    cwd=str(repo_root),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    stdin=subprocess.DEVNULL,
-                    start_new_session=True,
-                    text=True,
-                    errors="replace",
-                )
-            except (FileNotFoundError, NotADirectoryError, PermissionError) as error:
-                raise AppError(
-                    "agent_spawn_failed",
-                    f"无法启动 agent 命令「{argv[0]}」：{error}。请在装机与诊断页检查命令模板。",
-                ) from error
+                data = json.loads(job_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            run_id = data.get("run_id")
+            pid = data.get("pid")
+            binary = data.get("binary", "")
+            if not isinstance(run_id, str) or not isinstance(pid, int):
+                continue
+            if run_id in self._jobs:
+                continue
+            lstart = str(data.get("lstart", ""))
+            adopted = _pid_alive(pid) and _pid_matches(pid, lstart)
             job = DriverJob(
                 run_id=run_id,
-                command=template,
-                prompt=prompt,
-                started_at=time.time(),
-                lines=deque(maxlen=MAX_TAIL_LINES),
-                process=process,
+                repo_id=str(data.get("repo_id", "")),
+                command=str(data.get("command", "")),
+                prompt=str(data.get("prompt", "")),
+                binary=binary,
+                lstart=lstart,
+                pid=pid,
+                started_at=float(data.get("started_at", 0.0)),
+                log_path=Path(str(data.get("log_path", ""))),
+                process=None,
+                adopted=True,
+                exit_code=None,
+                finished_at=None,
             )
+            if not adopted:
+                job.finished_at = None  # GUI 停机期间结束，退出码不可知
             self._jobs[run_id] = job
-        reader = threading.Thread(target=self._pump, args=(job, log_path), daemon=True)
-        reader.start()
+
+    # ---- 查询 ----
+
+    def status(self, run_id: str, tail: int = 200) -> dict[str, object]:
+        job = self._jobs.get(run_id)
+        if job is None:
+            return {
+                "active": False,
+                "state": "idle",
+                "adopted": False,
+                "command": None,
+                "pid": None,
+                "exit_code": None,
+                "started_at": None,
+                "finished_at": None,
+                "tail": [],
+            }
+        state = job.state()
+        if job.process is not None and job.exit_code is not None:
+            pass
+        return {
+            "active": state == "running",
+            "state": state,
+            "adopted": job.adopted,
+            "command": job.command,
+            "pid": job.pid,
+            "exit_code": job.exit_code,
+            "started_at": job.started_at,
+            "finished_at": job.finished_at,
+            "tail": _tail_file(job.log_path, tail),
+        }
+
+    def is_active(self, run_id: str) -> bool:
+        job = self._jobs.get(run_id)
+        return job is not None and job.state() == "running"
+
+    # ---- 操作 ----
+
+    def start(
+        self, *, run_id: str, repo_id: str, repo_root: Path, template: str, prompt: str
+    ) -> dict[str, object]:
+        if self.is_active(run_id):
+            raise AppError("driver_busy", "该 run 的 agent 已在运行中")
+        if "{prompt}" not in template:
+            raise AppError(
+                "invalid_arguments", "agent 命令模板必须包含 {prompt} 占位符"
+            )
+        argv: list[str] = []
+        for token in shlex.split(template):
+            if "{prompt}" in token:
+                argv.append(token.replace("{prompt}", prompt))
+            else:
+                argv.append(token)
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        log_path = self._log_dir / f"{run_id}-{timestamp}.log"
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        log_handle = open(log_path, "w", encoding="utf-8")
+        try:
+            process = subprocess.Popen(
+                argv,
+                cwd=str(repo_root),
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except (FileNotFoundError, NotADirectoryError, PermissionError) as error:
+            raise AppError(
+                "agent_spawn_failed",
+                f"无法启动 agent 命令「{argv[0]}」：{error}。请在装机与诊断页检查命令模板。",
+            ) from error
+        finally:
+            log_handle.close()
+        job = DriverJob(
+            run_id=run_id,
+            repo_id=repo_id,
+            command=template,
+            prompt=prompt,
+            binary=argv[0],
+            pid=process.pid,
+            lstart=_process_lstart(process.pid) or "",
+            started_at=time.time(),
+            log_path=log_path,
+            process=process,
+        )
+        self._jobs[run_id] = job
+        self._persist(job)
+        threading.Thread(target=self._reap, args=(job,), daemon=True).start()
         return self.status(run_id)
 
-    def stop(self, run_id: str) -> dict[str, object]:
-        with self._lock:
-            job = self._jobs.get(run_id)
-            if job is None or job.exit_code is not None:
-                raise AppError("invalid_arguments", "该 run 没有正在运行的 agent")
-            try:
-                os.killpg(job.process.pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                try:
-                    job.process.terminate()
-                except ProcessLookupError:
-                    pass
-        return self.status(run_id)
-
-    def _pump(self, job: DriverJob, log_path: Path) -> None:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as log:
-            assert job.process.stdout is not None
-            for line in job.process.stdout:
-                line = line.rstrip("\n")
-                job.lines.append(line)
-                log.write(line + "\n")
-                log.flush()
+    def _reap(self, job: DriverJob) -> None:
         code = job.process.wait()
         job.exit_code = code
         job.finished_at = time.time()
+
+    def stop(self, run_id: str) -> dict[str, object]:
+        job = self._jobs.get(run_id)
+        if job is None or job.state() != "running":
+            raise AppError("invalid_arguments", "该 run 没有正在运行的 agent")
+        if job.adopted and not _pid_matches(job.pid, job.lstart):
+            raise AppError("invalid_arguments", "进程身份校验失败，拒绝停止陌生 PID")
+        try:
+            os.killpg(job.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            try:
+                if job.process is not None:
+                    job.process.terminate()
+                else:
+                    os.kill(job.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        return self.status(run_id)
+
+    def auto_resume(
+        self, *, run_id: str, repo_id: str, repo_root: Path, state, template: str
+    ) -> dict[str, object]:
+        """gate 接受后的自动接力：可驱且空闲才启动。"""
+        if state.status in ("completed", "aborted"):
+            return {"resumed": False, "reason": "terminal"}
+        gate = state.artifacts.get("review_gate")
+        if (
+            isinstance(gate, dict)
+            and gate.get("decision") == "human_review"
+            and not gate.get("accepted_at")
+        ):
+            return {"resumed": False, "reason": "gate_pending"}
+        if self.is_active(run_id):
+            return {"resumed": False, "reason": "already_running"}
+        prompt = build_prompt(state.profile, run_id, state.requirement)
+        self.start(
+            run_id=run_id,
+            repo_id=repo_id,
+            repo_root=repo_root,
+            template=template,
+            prompt=prompt,
+        )
+        return {"resumed": True}

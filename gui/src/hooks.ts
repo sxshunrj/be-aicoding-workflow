@@ -59,3 +59,36 @@ export function timeAgo(timestamp: number | null): string {
   if (minutes < 60) return `${minutes} 分钟前`
   return `${Math.round(minutes / 60)} 小时前`
 }
+
+/** SSE 实时流：run 状态 + agent 驱动状态，断线自动重连。 */
+export function useRunStream(repoId: string, runId: string, enabled: boolean) {
+  const [run, setRun] = useState<import('./types').RunState | null>(null)
+  const [drive, setDrive] = useState<import('./types').DriveStatus | null>(null)
+  const [connected, setConnected] = useState(false)
+  const [receivedAt, setReceivedAt] = useState<number | null>(null)
+  const [fatal, setFatal] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!enabled) return
+    const source = new EventSource(`/api/repos/${repoId}/runs/${runId}/stream`)
+    source.onopen = () => {
+      setConnected(true)
+      setFatal(null)
+    }
+    source.onerror = () => setConnected(false)
+    source.addEventListener('run', (event) => {
+      setRun(JSON.parse((event as MessageEvent).data))
+      setReceivedAt(Date.now())
+    })
+    source.addEventListener('drive', (event) => {
+      setDrive(JSON.parse((event as MessageEvent).data))
+    })
+    source.addEventListener('fatal', (event) => {
+      const data = JSON.parse((event as MessageEvent).data)
+      setFatal(data.message ?? 'run 不存在')
+    })
+    return () => source.close()
+  }, [repoId, runId, enabled])
+
+  return { run, drive, connected, receivedAt, fatal }
+}

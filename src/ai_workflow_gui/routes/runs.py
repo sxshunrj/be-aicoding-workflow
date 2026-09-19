@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import time
 
 from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ai_workflow.errors import AppError
@@ -73,11 +76,24 @@ def run_status(run_id: str, repo_id_value: str, request: Request):
 
 @router.post("/{run_id}/review-accept")
 def review_accept(run_id: str, body: ReviewAcceptBody, repo_id_value: str, request: Request):
-    return (
-        service(request, repo_id_value)
-        .record_review_acceptance(run_id, body.expected_digest)
-        .to_dict()
-    )
+    root = repo_root(request, repo_id_value)
+    service = WorkflowService(root)
+    accepted = service.record_review_acceptance(run_id, body.expected_digest).to_dict()
+    auto_resume: dict[str, object]
+    try:
+        template = (
+            current_config(request).agent_command.strip() or DEFAULT_AGENT_COMMAND
+        )
+        auto_resume = request.app.state.driver.auto_resume(
+            run_id=run_id,
+            repo_id=repo_id_value,
+            repo_root=root,
+            state=service.status(run_id),
+            template=template,
+        )
+    except AppError as error:
+        auto_resume = {"resumed": False, "reason": error.message}
+    return {"run": accepted, "auto_resume": auto_resume}
 
 
 @router.post("/{run_id}/block")
@@ -161,7 +177,11 @@ def drive_run(run_id: str, repo_id_value: str, request: Request):
     template = config.agent_command.strip() or DEFAULT_AGENT_COMMAND
     prompt = build_prompt(state.profile, run_id, state.requirement)
     return driver.start(
-        run_id=run_id, repo_root=root, template=template, prompt=prompt
+        run_id=run_id,
+        repo_id=repo_id_value,
+        repo_root=root,
+        template=template,
+        prompt=prompt,
     )
 
 
@@ -173,3 +193,52 @@ def drive_status(run_id: str, repo_id_value: str, request: Request):
 @router.delete("/{run_id}/drive")
 def drive_stop(run_id: str, repo_id_value: str, request: Request):
     return request.app.state.driver.stop(run_id)
+
+
+@router.get("/{run_id}/stream")
+def run_stream(run_id: str, repo_id_value: str, request: Request):
+    """SSE：1s 推送 run 状态与 driver 状态（仅在变化时发数据帧）。"""
+    root = repo_root(request, repo_id_value)
+    service = WorkflowService(root)
+    driver = request.app.state.driver
+
+    def sse(event: str, data: str) -> str:
+        return f"event: {event}\ndata: {data}\n\n"
+
+    def generate():
+        last_run: str | None = None
+        last_drive_key: tuple | None = None
+        ticks = 0
+        while True:
+            try:
+                run_payload = json.dumps(
+                    service.status(run_id).to_dict(),
+                    ensure_ascii=False,
+                    default=str,
+                )
+            except AppError as error:
+                yield sse("fatal", json.dumps({"code": error.code, "message": error.message}))
+                return
+            if run_payload != last_run:
+                last_run = run_payload
+                yield sse("run", run_payload)
+            drive = driver.status(run_id, tail=200)
+            drive_key = (
+                drive["state"],
+                drive["exit_code"],
+                len(drive["tail"]),
+                drive["tail"][-1] if drive["tail"] else "",
+            )
+            if drive_key != last_drive_key:
+                last_drive_key = drive_key
+                yield sse("drive", json.dumps(drive, ensure_ascii=False))
+            ticks += 1
+            if ticks % 15 == 0:
+                yield ": ping\n\n"
+            time.sleep(1.0)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

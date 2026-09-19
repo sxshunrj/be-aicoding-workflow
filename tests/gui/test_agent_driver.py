@@ -50,6 +50,7 @@ def test_drive_spawns_captures_output_and_exits(client: TestClient, tmp_path):
             break
         time.sleep(0.1)
     assert status["exit_code"] == 0
+    assert status["state"] == "exited"
     joined = "\n".join(tail)
     assert run_id in joined
     assert "resume" in joined
@@ -111,3 +112,102 @@ def test_drive_rejects_unspawnable_command(client: TestClient, tmp_path):
     response = client.post(f"/api/repos/{repo_id}/runs/{run_id}/drive")
     assert response.status_code == 400
     assert response.json()["code"] == "agent_spawn_failed"
+
+def test_restart_adopts_running_agent(client: TestClient, tmp_path):
+    from ai_workflow_gui.agent_runner import AgentDriver
+
+    home = tmp_path / "home"
+    repo_id = register(client, make_repo(tmp_path))
+    client.put("/api/agent-config", json={"command": "bash -c 'sleep 30' {prompt}"})
+    run_id = _init(client, repo_id)
+
+    started = client.post(f"/api/repos/{repo_id}/runs/{run_id}/drive")
+    assert started.status_code == 200
+
+    log_dir = home / ".ai-workflow-gui" / "agent-logs"
+    driver2 = AgentDriver(log_dir=log_dir)
+    status = driver2.status(run_id)
+    assert status["state"] == "running"
+    assert status["adopted"] is True
+
+    stopped = driver2.stop(run_id)
+    assert stopped["active"] in (True, False)
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        status = driver2.status(run_id)
+        if status["state"] != "running":
+            break
+        time.sleep(0.1)
+    assert status["state"] == "unknown"  # 收养进程无退出码
+    assert driver2.is_active(run_id) is False
+
+
+def test_auto_resume_paths(client: TestClient, tmp_path):
+    from ai_workflow.workflow.service import WorkflowService
+
+    home = tmp_path / "home"
+    repo = make_repo(tmp_path)
+    repo_id = register(client, repo)
+    run_id = _init(client, repo_id)
+    driver = client.app.state.driver
+
+    state = WorkflowService(repo).status(run_id)
+    result = driver.auto_resume(
+        run_id=run_id,
+        repo_id=repo_id,
+        repo_root=repo,
+        state=state,
+        template="bash -c 'sleep 30' {prompt}",
+    )
+    assert result == {"resumed": True}
+
+    # 已在运行 → 跳过
+    state = WorkflowService(repo).status(run_id)
+    again = driver.auto_resume(
+        run_id=run_id,
+        repo_id=repo_id,
+        repo_root=repo,
+        state=state,
+        template="bash -c 'sleep 30' {prompt}",
+    )
+    assert again["resumed"] is False and again["reason"] == "already_running"
+
+    stopped = driver.stop(run_id)
+    assert stopped is not None
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if driver.status(run_id)["state"] == "exited":
+            break
+        time.sleep(0.1)
+
+    # pending gate → 拒绝接力
+    state = WorkflowService(repo).status(run_id)
+    state.artifacts["review_gate"] = {
+        "decision": "human_review",
+        "accepted_at": None,
+        "digest": "d" * 64,
+        "phase": "verify",
+        "state_version": 2,
+        "proposed_reruns": [],
+        "effective_reruns": [],
+    }
+    gated = driver.auto_resume(
+        run_id=run_id,
+        repo_id=repo_id,
+        repo_root=repo,
+        state=state,
+        template="printf '%s' {prompt}",
+    )
+    assert gated["resumed"] is False and gated["reason"] == "gate_pending"
+
+    # 终态 → 跳过
+    state.status = "aborted"
+    terminal = driver.auto_resume(
+        run_id=run_id,
+        repo_id=repo_id,
+        repo_root=repo,
+        state=state,
+        template="printf '%s' {prompt}",
+    )
+    assert terminal["resumed"] is False and terminal["reason"] == "terminal"
+    assert (home / ".ai-workflow-gui" / "agent-logs").is_dir()
