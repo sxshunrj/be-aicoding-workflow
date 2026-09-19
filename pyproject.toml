@@ -9,10 +9,15 @@ requires-python = ">=3.11"
 dependencies = ["PyYAML>=6.0,<7"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9"]
+dev = ["pytest>=8,<9", "httpx2>=0.1; python_version >= '3.11'"]
+gui = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
 
 [project.scripts]
 ai-workflow = "ai_workflow.cli:entrypoint"
+ai-workflow-gui = "ai_workflow_gui.app:main"
+
+[tool.setuptools.package-data]
+ai_workflow_gui = ["static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
