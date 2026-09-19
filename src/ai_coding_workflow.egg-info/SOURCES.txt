@@ -31,3 +31,13 @@ src/ai_workflow/workflow/review.py
 src/ai_workflow/workflow/runner.py
 src/ai_workflow/workflow/service.py
 src/ai_workflow/workflow/store.py
+src/ai_workflow_gui/__init__.py
+src/ai_workflow_gui/_deps.py
+src/ai_workflow_gui/app.py
+src/ai_workflow_gui/config_store.py
+src/ai_workflow_gui/runlist.py
+src/ai_workflow_gui/routes/__init__.py
+src/ai_workflow_gui/routes/admin.py
+src/ai_workflow_gui/routes/knowledge.py
+src/ai_workflow_gui/routes/repos.py
+src/ai_workflow_gui/routes/runs.py

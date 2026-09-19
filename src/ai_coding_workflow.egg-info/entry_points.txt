@@ -1,2 +1,3 @@
 [console_scripts]
 ai-workflow = ai_workflow.cli:entrypoint
+ai-workflow-gui = ai_workflow_gui.app:main

@@ -15,6 +15,17 @@ Status: P0 workflow correctness locally verified; real-client parity evidence pe
 4. 诊断环境：`ai-workflow doctor --source-root "$PWD/skills" --repo "$PWD/examples/language-neutral" --client all`。
 5. 运行离线验证：`python -m pytest -q`。
 
+## 本地 GUI（第一期：单人本地）
+
+浏览器形态的本地控制台：发起 run、看四阶段状态、审批 review gate、治理候选知识、装机诊断。Agent 仍在终端跑，GUI 不驱动 agent。
+
+```bash
+pip install -e '.[gui]'     # 或开发环境：uv sync --extra gui --extra dev
+ai-workflow-gui             # 启动本地服务（仅 127.0.0.1，随机端口）并自动打开浏览器
+```
+
+首次使用：左侧「＋ 添加仓库」注册含 `.ai-workflow.yaml` 的仓库 → 发起 Run → 在详情页审批。前端源码在 `gui/`（React + Vite），构建产物已包含在包内（`src/ai_workflow_gui/static/`），使用方无需 Node；改前端后 `cd gui && npm run build` 重新构建并提交产物。
+
 ## Skill Overview
 
 Skill 名称保持英文，便于在 Codex/Claude Code 中稳定调用；说明和流程以中文为主。调用时使用 `$skill-name`，不是 `/skills` 列表里的展示标题。

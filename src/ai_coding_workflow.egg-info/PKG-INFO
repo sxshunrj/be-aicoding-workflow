@@ -5,3 +5,7 @@ Requires-Python: >=3.11
 Requires-Dist: PyYAML<7,>=6.0
 Provides-Extra: dev
 Requires-Dist: pytest<9,>=8; extra == "dev"
+Requires-Dist: httpx2>=0.1; python_version >= "3.11" and extra == "dev"
+Provides-Extra: gui
+Requires-Dist: fastapi<1,>=0.115; extra == "gui"
+Requires-Dist: uvicorn<1,>=0.30; extra == "gui"

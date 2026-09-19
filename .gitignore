@@ -9,3 +9,4 @@ __pycache__/
 .pytest_cache/
 build/
 uv.lock
+gui/node_modules/
