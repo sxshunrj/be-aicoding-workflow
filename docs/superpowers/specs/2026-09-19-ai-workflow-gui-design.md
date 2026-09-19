@@ -96,16 +96,18 @@ GUI 自身配置：`~/.ai-workflow-gui/config.json`，记录注册的 repo 路�
 
 GUI 不提供 `workflow review`（agent 阶段结束时调用以生成 decision；审批屏只消费 `status` 里的 gate）。
 
-错误处理：FastAPI 全局 exception handler 把 `AppError.code` 映射为 HTTP 状态码（`*_not_found`/`invalid_run_id` → 404，`state_exists`/`immutable_conflict` → 409，`config_*`/`invalid_*` → 400，其余 → 500），响应体统一 `{"code": ..., "message": ...}`。前端 toast 展示。
+错误处理：FastAPI 全局 exception handler 把 `AppError.code` 映射为 HTTP 状态码（`*_not_found`/`invalid_run_id` → 404，`state_exists`/`immutable_conflict`/`stale_review_gate`/`stale_state` → 409，`config_*`/`invalid_*`/`repository_required` → 400，其余 → 500），响应体统一 `{"code": ..., "message": ...}`。前端 toast 展示；`stale_state`（GUI 与终端 agent 并发写导致版本过期）前端行为 = 静默刷新数据后让用户重试。
 
-安全边界：只绑 127.0.0.1；无鉴权（本机自用，与终端 CLI 同一信任级别）。写操作全部经过 `StateStore` 既有的 fcntl 锁，GUI 与终端 agent 可并发操作同一 run。
+安全边界：只绑 127.0.0.1；无鉴权（本机自用，与终端 CLI 同一信任级别）；加 Host 头校验中间件（仅放行 `127.0.0.1:<port>`/`localhost:<port>`，防 DNS rebinding 与浏览器跨源简单请求）。写操作全部经过 `StateStore` 既有的 fcntl 锁，GUI 与终端 agent 可并发操作同一 run。
+
+状态词汇表（源码核实，2026-09-19 终审）：**run 级状态** `RunState.status ∈ {pending, running, blocked, completed, aborted}`，终态 `{completed, aborted}`（`machine.TERMINAL_STATUSES`）；`blocked` = 等待人工（review gate 生成或手动 block 置位）。**节点级状态** `RunGraphNode.validity ∈ {pending, valid, rerun}` 三态（没有 running/blocked）。**图结构随 profile 变化**：full = 8 节点 4 阶段（spec×1、plan×2、implement×1、verify×4），grill = 7 节点 3 阶段（plan.prd 起步、无 spec）。
 
 ## 5. 前端设计（第一期五屏）
 
 技术：React + Vite + TypeScript，无重型 UI 框架依赖偏好（组件库可选轻量级，如不上组件库则手写样式）；状态获取用轮询（5s）+ 操作后立即刷新；SSE 后置。优化稿（v2 mockup）确认的五处体验改进一并纳入：筛选 chips 与待审批高亮、创建时间列（从 run_id 解析）、阶段产物可读卡片、"N 秒前自动刷新"指示、驳回理由点击展开。
 
-1. **Runs 仪表盘**：左侧 repo 列表（含「添加 repo」路径输入）；右侧当前 repo 的 run 列表（run_id、requirement 摘要、current_phase、status、创建时间、profile），筛选 chips（全部/进行中/待审批/已完成），待审批行高亮置顶；「发起 run」表单（requirement 多行文本、profile 下拉、source-revision 预填可改）。首次启动显示空状态引导（添加仓库 → 校验 `.ai-workflow.yaml`）。
-2. **Run 详情**：顶部 meta 条（自动刷新指示、profile、source、创建时间、摘要/中止操作）；run_graph 四阶段节点图（spec → plan → implement → verify），节点状态五色映射 pending/running/valid/rerun/blocked；阶段产物可读卡片（友好名称 + 查看入口，映射自 artifacts，不做原始路径罗列）；事件时间线折叠区（`events.jsonl` 只读尾部，按类型着色）。
+1. **Runs 仪表盘**：左侧 repo 列表（含「添加 repo」路径输入）；右侧当前 repo 的 run 列表（run_id、requirement 摘要、current_phase、status、创建时间、profile），筛选 chips 按状态词汇表定义（进行中={pending,running}、待审批={blocked}、已完成={completed}、已中止={aborted}），待审批行高亮置顶；「发起 run」表单（requirement 多行文本、profile 下拉、source-revision 预填自 `GET /api/repos/{id}/head` 可改）。首次启动显示空状态引导（添加仓库 → 校验 `.ai-workflow.yaml`）。
+2. **Run 详情**：顶部 meta 条（自动刷新指示、profile、source、创建时间、摘要/中止操作、run 级状态 badge）；**阶段进度区按 run_graph 动态渲染**——full 渲染 4 张阶段卡（spec→plan→implement→verify）、grill 渲染 3 张（无 spec），每张阶段卡内列出该阶段的节点（child 名 + validity 三态色 pending/valid/rerun + rerun reason），当前阶段高亮；阶段产物可读卡片（友好名称 + 查看入口，映射自 artifacts，不做原始路径罗列）；事件时间线折叠区（`events.jsonl` 只读尾部，行格式 `{"type","version","data","timestamp"?}`，按类型着色）。
 3. **Review 审批**：并入 Run 详情页（独立 Tab），不设单独路由。数据源是 `service.status` 返回的 `RunState.artifacts["review_gate"]`：`decision == "human_review"` 且 `accepted_at` 为空即 pending gate，展示 phase、proposed_reruns、digest；卡片内置"本阶段产出摘要"（只读解析 artifacts 生成，审批人先知道批的是什么）；按钮：接受（`review-accept`）、驳回（`block`，点击后展开 reason 输入）、修复（`repair-review-gate`）。
 4. **知识治理**：候选知识列表（`WikiRepository.list("candidate")`）→ 候选详情（`review_candidate` 返回条目内容 + 相关已批准条目对照）→ 治理操作：批准（promote）/ 驳回（reject，reason 必填）/ 归档（archive），均带 `reviewer`（GUI 设置中的审批人名）与 `expected_digest` 乐观锁。侧边导航入口与 Runs 平级。
 5. **装机与诊断**：诊断页对选中 repo 运行 `doctor`，分组展示检查项（skill 安装、CLI、repo config、wiki lint），failed 项红色明细；装机页运行 `install`（client/scope/mode 选择，repo scope 时选 repo），渲染 installed/updated/skipped/failed 报告；`config show` 以只读表单展示 repo 配置（含 protected_paths、adapter 路径、commands）。

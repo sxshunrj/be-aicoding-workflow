@@ -18,7 +18,7 @@
 - 验收：单元测试覆盖读写、损坏容错、原子性。
 
 ### A3 FastAPI 工厂 + 错误映射 `app.py`
-- `create_app() -> FastAPI`：挂载四个 router；全局 `AppError` handler（`*_not_found`/`invalid_run_id`→404，`state_exists`/`immutable_conflict`/`stale_review_gate`→409，`config_*`/`invalid_*`/`repository_required`→400，其余→500，响应体 `{"code","message"}`）；托管 `static/`（SPA fallback 到 index.html）。
+- `create_app() -> FastAPI`：挂载四个 router；全局 `AppError` handler（`*_not_found`/`invalid_run_id`→404，`state_exists`/`immutable_conflict`/`stale_review_gate`/`stale_state`→409，`config_*`/`invalid_*`/`repository_required`→400，其余→500，响应体 `{"code","message"}`）；Host 头校验中间件（仅放行 `127.0.0.1:<port>`/`localhost:<port>`，防 DNS rebinding/跨源简单请求）；托管 `static/`，SPA fallback 用自定义 404 handler（非 `/api` 的 GET 一律返回 index.html——StaticFiles(html=True) 不支持 history 路由 fallback）。
 - `main()`：uvicorn 绑 127.0.0.1、port=0 探测实际端口，webbrowser 打开 `http://127.0.0.1:<port>`，Ctrl-C 干净退出。
 - 验收：TestClient 请求不存在的 run 得 404 JSON；测试用 `create_app()` 不触发浏览器。
 
@@ -33,19 +33,20 @@
 
 ### A6 run 生命周期与审批路由 `routes/runs.py`
 - `GET /api/repos/{id}/runs` → `list_runs`。
-- `POST /api/repos/{id}/runs` `{requirement, profile, source_revision?}` → `WorkflowService(repo).init`；source_revision 缺省时后端执行 `git -C <repo> rev-parse HEAD` 预填，非 git 目录则要求前端必填（400 `invalid_source_revision`）。
+- `GET /api/repos/{id}/head` → `git -C <repo> rev-parse HEAD`（非 git 目录返回 `{"head": null}`，前端表单据此提示手填）。
+- `POST /api/repos/{id}/runs` `{requirement, profile, source_revision?}` → `WorkflowService(repo).init`；source_revision 缺省时后端同样执行 rev-parse HEAD 填充，无 HEAD 且未传 → 400 `invalid_source_revision`。
 - `GET /api/repos/{id}/runs/{run_id}` → `status().to_dict()`。
 - `POST .../review-accept` `{expected_digest}` → `record_review_acceptance`。
 - `POST .../block` `{reason}`（非空）→ `block`。
 - `POST .../repair-review-gate` → `repair_review_gate`。
 - `POST .../resume` `{reruns?: {node: reason}}` → `resume`（reason 非空校验，复用 CLI `_reruns` 语义）。
 - `POST .../abort` → `abort`；`GET .../summary` → `summary().to_dict()`。
-- `GET .../events?limit=50` → 只读读 `events.jsonl` 尾部（StateStore events_path，存在性检查，逐行 json.loads，损坏行跳过）。
+- `GET .../events?limit=50` → 只读读 `events.jsonl` 尾部（StateStore events_path，存在性检查，逐行 json.loads，损坏行跳过）。行格式（store._serialize_event）：`{"type","version","data","timestamp"?}`，version 可用于展示顺序。
 - 验收：用 `examples/language-neutral` 复制的临时 repo fixture 走通 init→status；审批三动作的参数与错误码各有断言（含 stale digest→409）。
 
 ### A7 知识治理路由 `routes/knowledge.py`
 - wiki 路径取 `RepositoryConfig(repo).wiki_path`。
-- `GET .../wiki/candidates` → `WikiRepository(wiki).list("candidate")` 序列化（id/title/type/status/path/digest）。
+- `GET .../wiki/candidates` → `WikiRepository(wiki).list("candidate")` 序列化。注意 `KnowledgeEntry` 无现成 to_dict，手写字段映射（id/title/type/status/summary/scope/tags，`path` 取 `candidates/<id>.md`，`digest` 用 `repository.path_digest(path)`）。
 - `GET .../wiki/candidates/{cid}/review` → `WikiService.review_candidate(cid, max_related)`。
 - `POST .../wiki/candidates/{cid}/promote` `{expected_digest}` + `POST .../reject`/`.../archive` `{reason?, expected_digest}` → 对应方法，`reviewer` 取 GUI 配置。
 - 验收：临时 wiki fixture（复制 examples 或 tests 现有 wiki fixture 模式）走 propose→list→review→promote 断言 digest 守卫生效（错 digest→409）。
@@ -74,11 +75,11 @@
 - 验收：空配置时显示引导（先添加仓库）。
 
 ### B4 屏一：Runs 仪表盘
-- run 表格（run_id/requirement 摘要/current_phase/status/创建时间/profile）；筛选 chips（全部/进行中/待审批/已完成，待审批 = status 返回的 artifacts.review_gate pending）；待审批行高亮置顶；行点击进详情；「发起 Run」弹层表单（requirement 多行、profile 下拉 full|grill、source-revision 预填 GET `/api/repos/{id}/head`——若无此路由则 init 后端预填，前端留空提示"留空自动取当前 HEAD"）。
+- run 表格（run_id/requirement 摘要/current_phase/status/创建时间/profile）；筛选 chips 按状态词汇表（进行中={pending,running}、待审批={status=="blocked"}、已完成={completed}、已中止={aborted}）；待审批行高亮置顶；行点击进详情；「发起 Run」弹层表单（requirement 多行、profile 下拉 full|grill、source-revision 预填自 `GET /api/repos/{id}/head`，null 时提示手填）。
 - 验收：对 examples/language-neutral 真 repo 手动走通：发起→列表出现新 run。
 
 ### B5 屏二：Run 详情（概览）
-- meta 条（自动刷新指示/profile/source/创建时间/摘要/中止按钮）；四阶段节点图（五态五色，节点取 run_graph + current_phase + status）；阶段产物可读卡片（artifacts 键→友好名映射：spec/plan/implement/verify 产物 + review_gate/run_policy）；事件时间线折叠区（events 接口，类型着色，最新在上）。
+- meta 条（自动刷新指示/profile/source/创建时间/摘要/中止按钮 + run 级状态 badge：pending/running/blocked/completed/aborted）；**阶段进度区按 run_graph 动态渲染**：把 run_graph 的 key 按 phase 前缀分组，full=4 张阶段卡、grill=3 张（无 spec），每卡内列节点（child 名 + validity 三态色 pending/valid/rerun + reason），当前阶段高亮——禁止硬编码四阶段五色（终审修正：节点无 running/blocked 态）；阶段产物可读卡片（artifacts 键→友好名映射：spec/plan/implement/verify 产物 + review_gate/run_policy）；事件时间线折叠区（events 接口，类型着色，最新在上）。
 - 验收：对一个 fake_agent 推进的 run 手动核对节点状态与 events 一致。
 
 ### B6 屏二 Tab：审批
