@@ -16,8 +16,9 @@ import { LiveIndicator, Modal, StatusPill, useConfirm } from '../ui'
 import { Term } from '../Term'
 
 const ARTIFACT_META: Record<string, { label: string; icon: string; color: string }> = {
-  run_policy: { label: '运行策略', icon: '📜', color: '#5b6472' },
-  review_gate: { label: '审批 Gate', icon: '⚖️', color: '#d64545' },
+  _run_policy: { label: '运行策略（run 创建时固化的规则快照）', icon: '📜', color: '#5b6472' },
+  run_policy: { label: '运行策略（run 创建时固化的规则快照）', icon: '📜', color: '#5b6472' },
+  review_gate: { label: '审批 Gate（等你决定是否继续）', icon: '⚖️', color: '#d64545' },
 }
 
 function artifactMeta(key: string) {

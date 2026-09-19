@@ -5,7 +5,7 @@ import { useApp } from '../App'
 import { usePolling } from '../hooks'
 import { useToast } from '../toast'
 import { parseRunTime, pendingGate, type RunState } from '../types'
-import { LiveIndicator, Modal, StatusPill, TableSkeleton } from '../ui'
+import { ConfirmDialog, LiveIndicator, Modal, StatusPill, TableSkeleton } from '../ui'
 import { Term } from '../Term'
 
 type Filter = 'all' | 'active' | 'blocked' | 'completed' | 'aborted'
@@ -316,6 +316,7 @@ function CreateRunModal({
   const [head, setHead] = useState<string | null | undefined>(undefined)
   const [sourceRevision, setSourceRevision] = useState('')
   const [busy, setBusy] = useState(false)
+  const [confirmQuestion, setConfirmQuestion] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -334,11 +335,38 @@ function CreateRunModal({
     }
   }, [repoId])
 
+  function looksLikeQuestion(text: string): boolean {
+    const trimmed = text.trim()
+    if (/[?？]\s*$/.test(trimmed)) return true
+    return /^(当前|现在|这是|什么是|什么|怎么|如何|为什么|为啥|多少|哪个|哪些|是不是|有没有)/.test(trimmed) && trimmed.length <= 30
+  }
+
   async function submit() {
     if (!requirement.trim()) {
       toast.error('需求描述不能为空')
       return
     }
+    if (looksLikeQuestion(requirement)) {
+      setConfirmQuestion(true)
+      return
+    }
+    setBusy(true)
+    try {
+      const run = await api.initRun(repoId, {
+        requirement: requirement.trim(),
+        profile,
+        source_revision: sourceRevision.trim() || undefined,
+      })
+      onCreated(run.run_id)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submitConfirmed() {
+    setConfirmQuestion(false)
     setBusy(true)
     try {
       const run = await api.initRun(repoId, {
@@ -399,6 +427,22 @@ function CreateRunModal({
           {busy ? '创建中…' : '发起 Run'}
         </button>
       </div>
+      {confirmQuestion && (
+        <ConfirmDialog
+          title="这看起来像一个提问，而不是任务"
+          message={
+            <div style={{ lineHeight: 1.8 }}>
+              工作流是用来推进<b>开发任务</b>的（改代码、修问题、加功能），agent 会按四阶段产出规格、计划和代码——拿提问当任务会得到无意义的消耗（终端里的 agent 也会拒绝执行）。
+              <br />
+              如果只是想问个问题，直接问你的 AI 助手即可。仍要把它作为 Run 发起吗？
+            </div>
+          }
+          confirmText="它就是任务，继续发起"
+          danger
+          onConfirm={() => void submitConfirmed()}
+          onCancel={() => setConfirmQuestion(false)}
+        />
+      )}
     </Modal>
   )
 }
