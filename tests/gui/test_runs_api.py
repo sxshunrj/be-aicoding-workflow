@@ -143,3 +143,36 @@ def test_resume_validates_rerun_reasons(client: TestClient, tmp_path):
     )
     assert empty_reason.status_code == 400
     assert empty_reason.json()["code"] == "invalid_arguments"
+
+
+def test_run_files_listing_read_and_traversal_guard(client: TestClient, tmp_path):
+    repo_id = register(client, make_repo(tmp_path))
+    run = init_run(client, repo_id)
+
+    listing = client.get(f"/api/repos/{repo_id}/runs/{run['run_id']}/files")
+    assert listing.status_code == 200
+    paths = [item["path"] for item in listing.json()["files"]]
+    assert "state.yaml" in paths
+    assert "run-policy.json" in paths
+
+    state = client.get(
+        f"/api/repos/{repo_id}/runs/{run['run_id']}/file",
+        params={"path": "state.yaml"},
+    )
+    assert state.status_code == 200
+    assert "run_id" in state.json()["content"]
+
+    escape = client.get(
+        f"/api/repos/{repo_id}/runs/{run['run_id']}/file",
+        params={"path": "../../../.ai-workflow.yaml"},
+    )
+    assert escape.status_code == 400
+
+    missing = client.get(
+        f"/api/repos/{repo_id}/runs/{run['run_id']}/file",
+        params={"path": "nope.json"},
+    )
+    assert missing.status_code == 404
+
+    bad_run = client.get("/api/repos/%s/runs/RUN-20990101-000000-abcdef/files" % repo_id)
+    assert bad_run.status_code == 404

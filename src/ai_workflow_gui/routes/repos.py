@@ -92,6 +92,33 @@ def repo_head(repo_id_value: str, request: Request):
     return {"head": git_head(repo_dir(entry))}
 
 
+def _git(repo_root: Path, *args: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), *args],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
+@router.get("/{repo_id_value}/git-status")
+def repo_git_status(repo_id_value: str, request: Request):
+    entry = find_repo(current_config(request), repo_id_value)
+    root = repo_dir(entry)
+    status = _git(root, "status", "--porcelain=v1")
+    if status is None:
+        raise AppError("invalid_arguments", "git status failed (not a git repository?)")
+    stat = _git(root, "diff", "--stat", "HEAD") or ""
+    return {"status": status, "stat": stat}
+
+
 @settings_router.put("")
 def update_settings(body: SettingsBody, request: Request):
     config = current_config(request)

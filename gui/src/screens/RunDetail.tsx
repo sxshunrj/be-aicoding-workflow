@@ -33,7 +33,7 @@ function artifactMeta(key: string) {
 export default function RunDetail() {
   const { runId = '' } = useParams()
   const { selectedRepo } = useApp()
-  const [tab, setTab] = useState<'overview' | 'approval'>('overview')
+  const [tab, setTab] = useState<'overview' | 'approval' | 'files'>('overview')
   const [, setTick] = useState(0)
   const polling = usePolling(
     () => api.run(selectedRepo!.id, runId),
@@ -70,11 +70,16 @@ export default function RunDetail() {
         <div className={`tab${tab === 'approval' ? ' active' : ''}`} onClick={() => setTab('approval')}>
           审批{gate ? <span className="badge">1</span> : null}
         </div>
+        <div className={`tab${tab === 'files' ? ' active' : ''}`} onClick={() => setTab('files')}>
+          运行文件
+        </div>
       </div>
       {tab === 'overview' ? (
         <Overview repoId={selectedRepo.id} run={run} lastUpdated={polling.lastUpdated} onChanged={() => void polling.refresh()} />
-      ) : (
+      ) : tab === 'approval' ? (
         <Approval repoId={selectedRepo.id} run={run} gate={gate} onChanged={() => void polling.refresh()} />
+      ) : (
+        <FilesTab repoId={selectedRepo.id} runId={run.run_id} />
       )}
     </div>
   )
@@ -393,6 +398,8 @@ function Overview({
           ))}
       </div>
 
+      <RepoChanges repoId={repoId} />
+
       {artifact && (
         <Modal title={`产物 · ${artifact.key}`} onClose={() => setArtifact(null)}>
           <pre className="code">{JSON.stringify(artifact.value, null, 2)}</pre>
@@ -520,6 +527,96 @@ function Approval({
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+function FilesTab({ repoId, runId }: { repoId: string; runId: string }) {
+  const [file, setFile] = useState<{ path: string; content: string; truncated: boolean } | null>(null)
+  const [filter, setFilter] = useState('')
+  const polling = usePolling(() => api.runFiles(repoId, runId), 15000)
+
+  const files = (polling.data?.files ?? []).filter((item) =>
+    item.path.toLowerCase().includes(filter.trim().toLowerCase()),
+  )
+
+  async function open(path: string) {
+    try {
+      setFile(await api.runFile(repoId, runId, path))
+    } catch (error) {
+      setFile({ path, content: `读取失败：${error instanceof Error ? error.message : String(error)}`, truncated: false })
+    }
+  }
+
+  return (
+    <div>
+      <div className="meta-bar">
+        <span className="muted">该 run 目录下的全部产物：dispatch 包、给 agent 的 prompt、staged 结果、反思包等（只读）</span>
+        <input
+          className="input"
+          style={{ width: 220, marginLeft: 'auto' }}
+          placeholder="按路径过滤…"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+        />
+      </div>
+      <table className="data">
+        <thead>
+          <tr>
+            <th>文件</th>
+            <th style={{ width: 110 }}>大小</th>
+          </tr>
+        </thead>
+        <tbody>
+          {files.map((item) => (
+            <tr key={item.path} className="row-link" onClick={() => void open(item.path)}>
+              <td className="mono">{item.path}</td>
+              <td className="muted">{item.size} B</td>
+            </tr>
+          ))}
+          {files.length === 0 && (
+            <tr>
+              <td colSpan={2} className="muted" style={{ textAlign: 'center', padding: 26 }}>
+                {polling.error ? `拉取失败：${polling.error}` : '没有匹配的文件'}
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      {file && (
+        <Modal title={file.path} onClose={() => setFile(null)}>
+          {file.truncated && <div className="note note-warn">文件过大，内容被截断</div>}
+          <pre className="code">{file.content}</pre>
+        </Modal>
+      )}
+    </div>
+  )
+}
+
+function RepoChanges({ repoId }: { repoId: string }) {
+  const polling = usePolling(() => api.gitStatus(repoId), 10000)
+  const git = polling.data
+  if (!git) return null
+  const lines = git.status.trim() ? git.status.trim().split('\n') : []
+  return (
+    <div className="card">
+      <h5>仓库变更（git，工作树 vs HEAD）</h5>
+      {lines.length === 0 ? (
+        <div className="muted">工作树干净，没有未提交变更</div>
+      ) : (
+        <>
+          <div style={{ marginBottom: 6 }} className="small muted">
+            {lines.length} 个文件有变更：
+          </div>
+          {lines.slice(0, 12).map((line) => (
+            <div className="mono" key={line} style={{ padding: '2px 0' }}>
+              {line}
+            </div>
+          ))}
+          {lines.length > 12 && <div className="muted small">…还有 {lines.length - 12} 个</div>}
+          {git.stat.trim() && <pre className="code" style={{ marginTop: 8 }}>{git.stat}</pre>}
+        </>
+      )}
     </div>
   )
 }

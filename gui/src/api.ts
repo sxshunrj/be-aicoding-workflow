@@ -84,6 +84,16 @@ export const api = {
     request<{ events: RunEvent[] }>(
       `/api/repos/${repoId}/runs/${runId}/events?limit=${limit}`,
     ),
+  runFiles: (repoId: string, runId: string) =>
+    request<{ run_id: string; files: Array<{ path: string; size: number; suffix: string }> }>(
+      `/api/repos/${repoId}/runs/${runId}/files`,
+    ),
+  runFile: (repoId: string, runId: string, path: string) =>
+    request<{ path: string; size: number; truncated: boolean; content: string }>(
+      `/api/repos/${repoId}/runs/${runId}/file?path=${encodeURIComponent(path)}`,
+    ),
+  gitStatus: (repoId: string) =>
+    request<{ status: string; stat: string }>(`/api/repos/${repoId}/git-status`),
 
   candidates: (repoId: string) =>
     request<{ candidates: Candidate[] }>(`/api/repos/${repoId}/wiki/candidates`),

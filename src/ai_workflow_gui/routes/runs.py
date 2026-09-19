@@ -117,3 +117,17 @@ def run_events(
 ):
     bounded = max(1, min(limit, 500))
     return {"events": read_events(repo_root(request, repo_id_value), run_id, bounded)}
+
+
+@router.get("/{run_id}/files")
+def run_files(repo_id_value: str, run_id: str, request: Request):
+    from ai_workflow_gui.run_files import list_run_files
+
+    return list_run_files(repo_root(request, repo_id_value), run_id)
+
+
+@router.get("/{run_id}/file")
+def run_file(repo_id_value: str, run_id: str, request: Request, path: str):
+    from ai_workflow_gui.run_files import read_run_file
+
+    return read_run_file(repo_root(request, repo_id_value), run_id, path)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { useApp } from '../App'
@@ -79,6 +79,31 @@ function RunList({
   const polling = usePolling(() => api.runs(repoId), 5000)
 
   const runs = polling.data?.runs ?? []
+  const seenBlocked = useRef<Set<string> | null>(null)
+
+  useEffect(() => {
+    if (!('Notification' in window)) return
+    if (Notification.permission === 'default') void Notification.requestPermission()
+  }, [])
+
+  useEffect(() => {
+    const blocked = new Set(runs.filter((run) => run.status === 'blocked').map((run) => run.run_id))
+    if (seenBlocked.current !== null) {
+      for (const runId of blocked) {
+        if (!seenBlocked.current.has(runId)) {
+          const run = runs.find((item) => item.run_id === runId)
+          const title = '⚑ 有 run 等待处理'
+          const body = `${runId}\n${run?.requirement.slice(0, 60) ?? ''}`
+          toast.info(`${title}：${runId}`)
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification(title, { body })
+          }
+        }
+      }
+    }
+    seenBlocked.current = blocked
+  }, [runs, toast])
+
   const counts = useMemo(() => {
     const base: Record<Filter, number> = { all: runs.length, active: 0, blocked: 0, completed: 0, aborted: 0 }
     for (const run of runs) {
