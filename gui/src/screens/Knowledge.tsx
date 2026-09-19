@@ -3,16 +3,22 @@ import { api } from '../api'
 import { useApp } from '../App'
 import { usePolling } from '../hooks'
 import { useToast } from '../toast'
-import { LiveIndicator } from '../ui'
+import type { ApprovedEntry, Candidate } from '../types'
 
 export default function Knowledge() {
   const { selectedRepo, reviewer } = useApp()
   const [selected, setSelected] = useState<string | null>(null)
+  const [section, setSection] = useState<'candidates' | 'approved'>('candidates')
 
   const polling = usePolling(
     () => api.candidates(selectedRepo!.id),
     10000,
-    Boolean(selectedRepo),
+    Boolean(selectedRepo) && section === 'candidates',
+  )
+  const approvedPolling = usePolling(
+    () => api.approved(selectedRepo!.id),
+    30000,
+    Boolean(selectedRepo) && section === 'approved',
   )
 
   if (!selectedRepo) {
@@ -26,55 +32,203 @@ export default function Knowledge() {
       <div className="page-head">
         <h2>
           知识治理 · {selectedRepo.name}
-          {polling.refreshing && <span className="spinner" style={{ verticalAlign: -1, marginLeft: 8 }} />}
+          {(polling.refreshing || approvedPolling.refreshing) && (
+            <span className="spinner" style={{ verticalAlign: -1, marginLeft: 8 }} />
+          )}
         </h2>
-        <span className="muted small">审批人：{reviewer || <span style={{ color: 'var(--danger)' }}>未设置（见左栏底部）</span>}</span>
-      </div>
-      <div className="meta-bar">
-        <LiveIndicator lastUpdated={polling.lastUpdated} />
-        {polling.error && <span style={{ color: 'var(--danger)' }}>拉取失败：{polling.error}</span>}
+        <span className="muted small">
+          审批人：{reviewer || <span style={{ color: 'var(--danger)' }}>未设置（见左栏底部）</span>}
+        </span>
       </div>
 
-      {selected ? (
-        <CandidateDetail
-          repoId={selectedRepo.id}
-          entryId={selected}
-          onBack={() => setSelected(null)}
-          onChanged={() => void polling.refresh()}
-        />
+      <div className="tabs" style={{ marginTop: -6 }}>
+        <div
+          className={`tab${section === 'candidates' ? ' active' : ''}`}
+          onClick={() => {
+            setSection('candidates')
+            setSelected(null)
+          }}
+        >
+          候选 {candidates.length > 0 && <span className="badge">{candidates.length}</span>}
+        </div>
+        <div
+          className={`tab${section === 'approved' ? ' active' : ''}`}
+          onClick={() => {
+            setSection('approved')
+            setSelected(null)
+          }}
+        >
+          已批准
+        </div>
+      </div>
+
+      {section === 'candidates' ? (
+        selected ? (
+          <CandidateDetail
+            repoId={selectedRepo.id}
+            entryId={selected}
+            onBack={() => setSelected(null)}
+            onChanged={() => void polling.refresh()}
+          />
+        ) : (
+          <CandidatesTable candidates={candidates} error={polling.error} onOpen={setSelected} />
+        )
+      ) : selected ? (
+        <ApprovedDetail repoId={selectedRepo.id} entryId={selected} onBack={() => setSelected(null)} />
       ) : (
-        <table className="data">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>标题</th>
-              <th>类型</th>
-              <th>提交时间</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {candidates.map((candidate) => (
-              <tr key={candidate.id} className="row-link" onClick={() => setSelected(candidate.id)}>
-                <td className="mono">{candidate.id}</td>
-                <td>{candidate.title}</td>
-                <td>
-                  <span className="pill pill-type">{candidate.type}</span>
-                </td>
-                <td className="muted">{candidate.created_at}</td>
-                <td className="chev">›</td>
-              </tr>
-            ))}
-            {candidates.length === 0 && (
-              <tr>
-                <td colSpan={5} className="muted" style={{ textAlign: 'center', padding: 30 }}>
-                  暂无候选知识（run 结束后由 agent 的 reflect 流程产出）
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        <ApprovedTable
+          entries={approvedPolling.data?.approved ?? []}
+          error={approvedPolling.error}
+          onOpen={setSelected}
+        />
       )}
+    </div>
+  )
+}
+
+function CandidatesTable({
+  candidates,
+  error,
+  onOpen,
+}: {
+  candidates: Candidate[]
+  error: string | null
+  onOpen: (id: string) => void
+}) {
+  return (
+    <div>
+      {error && <div className="note note-warn">拉取失败：{error}</div>}
+      <table className="data">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>标题</th>
+            <th>类型</th>
+            <th>提交时间</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {candidates.map((candidate) => (
+            <tr key={candidate.id} className="row-link" onClick={() => onOpen(candidate.id)}>
+              <td className="mono">{candidate.id}</td>
+              <td>{candidate.title}</td>
+              <td>
+                <span className="pill pill-type">{candidate.type}</span>
+              </td>
+              <td className="muted">{candidate.created_at}</td>
+              <td className="chev">›</td>
+            </tr>
+          ))}
+          {candidates.length === 0 && (
+            <tr>
+              <td colSpan={5} className="muted" style={{ textAlign: 'center', padding: 30 }}>
+                暂无候选知识（run 结束后由 agent 的 reflect 流程产出）
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function ApprovedTable({
+  entries,
+  error,
+  onOpen,
+}: {
+  entries: ApprovedEntry[]
+  error: string | null
+  onOpen: (id: string) => void
+}) {
+  return (
+    <div>
+      {error && <div className="note note-warn">拉取失败：{error}</div>}
+      <table className="data">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>标题</th>
+            <th>类型</th>
+            <th>摘要</th>
+            <th>复审期限</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((entry) => (
+            <tr key={entry.id} className="row-link" onClick={() => onOpen(entry.id)}>
+              <td className="mono">{entry.id}</td>
+              <td>{entry.title}</td>
+              <td>
+                <span className="pill pill-type">{entry.type}</span>
+              </td>
+              <td style={{ maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {entry.summary}
+              </td>
+              <td className="muted">{entry.review_after}</td>
+              <td className="chev">›</td>
+            </tr>
+          ))}
+          {entries.length === 0 && (
+            <tr>
+              <td colSpan={6} className="muted" style={{ textAlign: 'center', padding: 30 }}>
+                知识库还是空的（候选被批准后会出现在这里）
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function ApprovedDetail({
+  repoId,
+  entryId,
+  onBack,
+}: {
+  repoId: string
+  entryId: string
+  onBack: () => void
+}) {
+  const polling = usePolling(() => api.approvedDetail(repoId, entryId), 0, true)
+  const entry = polling.data
+
+  if (polling.error) {
+    return (
+      <div className="empty">
+        <div className="icon">⚠️</div>
+        <div className="hint">{polling.error}</div>
+        <button className="btn btn-ghost" onClick={onBack}>
+          ‹ 返回列表
+        </button>
+      </div>
+    )
+  }
+  if (!entry) return <div className="muted">加载中…</div>
+
+  return (
+    <div>
+      <div style={{ marginBottom: 10 }}>
+        <button className="btn btn-ghost btn-sm" onClick={onBack}>
+          ‹ 返回已批准列表
+        </button>
+      </div>
+      <div className="card">
+        <h5>{entry.title}</h5>
+        <div className="kv"><b>id</b><span className="mono">{entry.id}</span></div>
+        <div className="kv"><b>type</b><span className="pill pill-type">{entry.type}</span></div>
+        <div className="kv"><b>tags</b><span>{entry.tags.join(', ') || '—'}</span></div>
+        <div className="kv"><b>批准时间</b><span>{entry.reviewed_at ?? '—'}</span></div>
+        <div className="kv"><b>复审期限</b><span>{entry.review_after}</span></div>
+        <div className="kv"><b>digest</b><span className="mono">{entry.digest.slice(0, 20)}…</span></div>
+      </div>
+      <div className="card">
+        <h5>内容</h5>
+        <pre className="code">{entry.body}</pre>
+      </div>
     </div>
   )
 }

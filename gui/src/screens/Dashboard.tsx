@@ -45,6 +45,23 @@ function EmptyState() {
   )
 }
 
+function StatCard({ label, value, color }: { label: string; value: number | string; color?: string }) {
+  return (
+    <div
+      style={{
+        background: '#fff',
+        border: '1px solid var(--line)',
+        borderRadius: 'var(--radius)',
+        padding: '9px 16px',
+        minWidth: 88,
+      }}
+    >
+      <div className="muted small">{label}</div>
+      <div style={{ fontSize: 19, fontWeight: 700, color: color ?? 'var(--ink)' }}>{value}</div>
+    </div>
+  )
+}
+
 function RunList({
   repoId,
   repoName,
@@ -56,6 +73,8 @@ function RunList({
 }) {
   const toast = useToast()
   const [filter, setFilter] = useState<Filter>('all')
+  const [query, setQuery] = useState('')
+  const [profile, setProfile] = useState('all')
   const [creating, setCreating] = useState(false)
   const polling = usePolling(() => api.runs(repoId), 5000)
 
@@ -72,6 +91,12 @@ function RunList({
 
   const visible = runs
     .filter((run) => matchesFilter(run, filter))
+    .filter((run) => profile === 'all' || run.profile === profile)
+    .filter((run) => {
+      const needle = query.trim().toLowerCase()
+      if (!needle) return true
+      return run.requirement.toLowerCase().includes(needle) || run.run_id.toLowerCase().includes(needle)
+    })
     .slice()
     .sort((a, b) => {
       const hotA = a.status === 'blocked' ? 1 : 0
@@ -79,6 +104,8 @@ function RunList({
       if (hotA !== hotB) return hotB - hotA
       return a.run_id < b.run_id ? 1 : -1
     })
+
+  const completion = runs.length ? Math.round((counts.completed / runs.length) * 100) : 0
 
   return (
     <div>
@@ -95,6 +122,28 @@ function RunList({
       <div className="meta-bar">
         <LiveIndicator lastUpdated={polling.lastUpdated} />
         {polling.error && <span style={{ color: 'var(--danger)' }}>拉取失败：{polling.error}</span>}
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <StatCard label="总数" value={counts.all} />
+        <StatCard label="进行中" value={counts.active} color="var(--brand)" />
+        <StatCard label="待处理" value={counts.blocked} color="var(--danger)" />
+        <StatCard label="已完成" value={counts.completed} color="var(--ok)" />
+        <StatCard label="完成率" value={`${completion}%`} color="var(--ok)" />
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            className="input"
+            style={{ width: 220 }}
+            placeholder="搜索需求 / Run ID…"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <select className="select" style={{ width: 110 }} value={profile} onChange={(event) => setProfile(event.target.value)}>
+            <option value="all">全部 profile</option>
+            <option value="full">full</option>
+            <option value="grill">grill</option>
+          </select>
+        </div>
       </div>
 
       <div className="chips">

@@ -97,6 +97,19 @@ export interface DoctorReport {
   data: { checks: DoctorCheck[]; failed: DoctorCheck[] }
 }
 
+export interface ApprovedEntry {
+  id: string
+  title: string
+  type: string
+  status: string
+  summary: string
+  tags: string[]
+  created_at: string
+  reviewed_at: string | null
+  review_after: string
+  digest: string
+}
+
 export const PHASE_ORDER = ['spec', 'plan', 'implement', 'verify'] as const
 
 export const PHASE_LABEL: Record<string, string> = {

@@ -1,4 +1,5 @@
 import type {
+  ApprovedEntry,
   Candidate,
   CandidateReview,
   DoctorReport,
@@ -86,6 +87,12 @@ export const api = {
 
   candidates: (repoId: string) =>
     request<{ candidates: Candidate[] }>(`/api/repos/${repoId}/wiki/candidates`),
+  approved: (repoId: string) =>
+    request<{ approved: ApprovedEntry[] }>(`/api/repos/${repoId}/wiki/approved`),
+  approvedDetail: (repoId: string, entryId: string) =>
+    request<ApprovedEntry & { body: string; path: string }>(
+      `/api/repos/${repoId}/wiki/approved/${entryId}`,
+    ),
   candidateReview: (repoId: string, entryId: string) =>
     request<CandidateReview>(`/api/repos/${repoId}/wiki/candidates/${entryId}`),
   promote: (repoId: string, entryId: string, expectedDigest: string) =>

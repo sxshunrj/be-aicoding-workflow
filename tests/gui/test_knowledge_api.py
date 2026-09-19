@@ -112,3 +112,30 @@ def test_review_unknown_candidate_is_404(client: TestClient, tmp_path):
     response = client.get(f"/api/repos/{repo_id}/wiki/candidates/KB-none")
     assert response.status_code == 404
     assert response.json()["code"] == "wiki_not_found"
+
+
+def test_approved_browsing_after_promote(client: TestClient, tmp_path):
+    repo = make_repo(tmp_path)
+    repo_id = register(client, repo)
+    entry_id = seed_candidate(tmp_path)
+    client.put("/api/settings", json={"reviewer": "sxshunrj"})
+    digest = client.get(f"/api/repos/{repo_id}/wiki/candidates").json()[
+        "candidates"
+    ][0]["digest"]
+    promoted = client.post(
+        f"/api/repos/{repo_id}/wiki/candidates/{entry_id}/promote",
+        json={"expected_digest": digest},
+    )
+    assert promoted.status_code == 200
+
+    listing = client.get(f"/api/repos/{repo_id}/wiki/approved").json()
+    assert [item["id"] for item in listing["approved"]] == [entry_id]
+    assert listing["approved"][0]["reviewed_at"] is not None
+
+    detail = client.get(f"/api/repos/{repo_id}/wiki/approved/{entry_id}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert "Promotions must check the digest" in body["body"]
+
+    missing = client.get(f"/api/repos/{repo_id}/wiki/approved/KB-none")
+    assert missing.status_code == 404

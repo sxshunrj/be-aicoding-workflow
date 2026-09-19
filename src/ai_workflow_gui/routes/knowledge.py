@@ -62,6 +62,40 @@ def list_candidates(repo_id_value: str, request: Request):
     return {"candidates": [entry_summary(entry, repository) for entry in entries]}
 
 
+def _approved_summary(entry: KnowledgeEntry, repository: WikiRepository) -> dict[str, object]:
+    path = repository.root / "approved" / f"{entry.id}.md"
+    return {
+        "id": entry.id,
+        "title": entry.title,
+        "type": entry.type.value,
+        "status": entry.status.value,
+        "summary": entry.summary,
+        "tags": list(entry.tags),
+        "created_at": entry.created_at.isoformat(),
+        "reviewed_at": entry.reviewed_at.isoformat() if entry.reviewed_at else None,
+        "review_after": entry.review_after.isoformat(),
+        "digest": repository.path_digest(path),
+    }
+
+
+@router.get("/approved")
+def list_approved(repo_id_value: str, request: Request):
+    repository = WikiRepository(wiki_root(request, repo_id_value), validate_layout=False)
+    return {"approved": [_approved_summary(entry, repository) for entry in repository.list("approved")]}
+
+
+@router.get("/approved/{entry_id}")
+def approved_detail(entry_id: str, repo_id_value: str, request: Request):
+    repository = WikiRepository(wiki_root(request, repo_id_value), validate_layout=False)
+    for entry in repository.list("approved"):
+        if entry.id == entry_id:
+            summary = _approved_summary(entry, repository)
+            summary["body"] = entry.body
+            summary["path"] = str(repository.root / "approved" / f"{entry.id}.md")
+            return summary
+    raise AppError("wiki_not_found", f"approved knowledge not found: {entry_id}")
+
+
 @router.get("/candidates/{entry_id}")
 def review_candidate(entry_id: str, repo_id_value: str, request: Request, max_related: int = 8):
     return make_service(wiki_root(request, repo_id_value)).review_candidate(

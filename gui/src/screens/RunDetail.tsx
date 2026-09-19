@@ -115,20 +115,67 @@ function Overview({
   const [showEvents, setShowEvents] = useState(false)
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null)
   const [artifact, setArtifact] = useState<{ key: string; value: unknown } | null>(null)
+  const [resuming, setResuming] = useState(false)
+  const [rerunRows, setRerunRows] = useState<Array<{ node: string; reason: string }>>([])
+  const [blocking, setBlocking] = useState(false)
+  const [blockReason, setBlockReason] = useState('')
+  const [busy, setBusy] = useState(false)
   const events = usePolling(
     () => api.events(repoId, run.run_id, 100),
     showEvents ? 5000 : 0,
     showEvents,
   )
+  const terminal = `$${run.profile === 'grill' ? 'ai-workflow-harness-grill' : 'ai-workflow-harness'} resume ${run.run_id}`
 
   async function abort() {
     if (!window.confirm(`确认中止 run ${run.run_id}？`)) return
+    setBusy(true)
     try {
       await api.abort(repoId, run.run_id)
       toast.info('已中止该 run')
       onChanged()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submitResume() {
+    const reruns: Record<string, string> = {}
+    for (const row of rerunRows) {
+      if (row.node && row.reason.trim()) reruns[row.node] = row.reason.trim()
+    }
+    setBusy(true)
+    try {
+      await api.resume(repoId, run.run_id, reruns)
+      toast.success(rerunRows.length ? '已恢复并标记 rerun 节点' : '已恢复该 run')
+      setResuming(false)
+      setRerunRows([])
+      onChanged()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submitBlock() {
+    if (!blockReason.trim()) {
+      toast.error('阻止理由必填')
+      return
+    }
+    setBusy(true)
+    try {
+      await api.block(repoId, run.run_id, blockReason.trim())
+      toast.info('已阻止该 run')
+      setBlocking(false)
+      setBlockReason('')
+      onChanged()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -139,6 +186,15 @@ function Overview({
       toast.error(error instanceof Error ? error.message : String(error))
     }
   }
+
+  function copyTerminal() {
+    void navigator.clipboard.writeText(terminal).then(
+      () => toast.success('已复制，去终端粘贴即可'),
+      () => toast.error('复制失败，请手动选择复制'),
+    )
+  }
+
+  const operable = run.status !== 'completed' && run.status !== 'aborted'
 
   return (
     <div>
@@ -156,13 +212,104 @@ function Overview({
           <button className="btn btn-ghost btn-sm" onClick={() => void loadSummary()}>
             查看摘要
           </button>
-          {run.status !== 'completed' && run.status !== 'aborted' && (
-            <button className="btn btn-danger btn-sm" onClick={() => void abort()}>
-              中止 Run
-            </button>
+          {operable && (
+            <>
+              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setResuming((value) => !value)}>
+                恢复 / Rerun
+              </button>
+              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setBlocking((value) => !value)}>
+                阻止
+              </button>
+              <button className="btn btn-danger btn-sm" disabled={busy} onClick={() => void abort()}>
+                中止 Run
+              </button>
+            </>
           )}
         </span>
       </div>
+
+      <div className="note" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span>
+          Agent 在终端继续本 run：<span className="mono">{terminal}</span>
+        </span>
+        <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={copyTerminal}>
+          复制命令
+        </button>
+      </div>
+
+      {resuming && operable && (
+        <div className="card">
+          <h5>恢复 / 标记 Rerun（NODE=REASON，理由必填）</h5>
+          {rerunRows.map((row, index) => (
+            <div key={index} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              <select
+                className="select"
+                style={{ width: 220 }}
+                value={row.node}
+                onChange={(event) =>
+                  setRerunRows((rows) => rows.map((item, i) => (i === index ? { ...item, node: event.target.value } : item)))
+                }
+              >
+                <option value="">（选择节点）</option>
+                {Object.keys(run.run_graph).map((node) => (
+                  <option key={node} value={node}>
+                    {node}
+                  </option>
+                ))}
+              </select>
+              <input
+                className="input"
+                placeholder="rerun 理由"
+                value={row.reason}
+                onChange={(event) =>
+                  setRerunRows((rows) => rows.map((item, i) => (i === index ? { ...item, reason: event.target.value } : item)))
+                }
+              />
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => setRerunRows((rows) => rows.filter((_, i) => i !== index))}
+              >
+                删
+              </button>
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setRerunRows((rows) => [...rows, { node: '', reason: '' }])}
+            >
+              ＋ 添加 rerun 节点（可选）
+            </button>
+            <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => void submitResume()}>
+              确认恢复
+            </button>
+            <span className="muted small" style={{ alignSelf: 'center' }}>
+              不选节点 = 直接恢复，不标记任何 rerun
+            </span>
+          </div>
+        </div>
+      )}
+
+      {blocking && operable && (
+        <div className="card">
+          <h5>阻止该 run（需理由）</h5>
+          <textarea
+            className="textarea"
+            style={{ minHeight: 48 }}
+            placeholder="说明阻止原因，等待后续处理…"
+            value={blockReason}
+            onChange={(event) => setBlockReason(event.target.value)}
+          />
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button className="btn btn-danger btn-sm" disabled={busy || !blockReason.trim()} onClick={() => void submitBlock()}>
+              确认阻止
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setBlocking(false)}>
+              取消
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="muted small" style={{ marginBottom: 3 }}>需求</div>
       <div style={{ fontWeight: 600, marginBottom: 14 }}>{run.requirement}</div>
