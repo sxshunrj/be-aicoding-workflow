@@ -2,3 +2,10 @@
 .superpowers/
 __pycache__/
 *.py[cod]
+.mimosa/
+.zcode/
+.DS_Store
+.venv/
+.pytest_cache/
+build/
+uv.lock
