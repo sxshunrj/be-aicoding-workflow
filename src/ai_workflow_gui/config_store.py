@@ -24,6 +24,7 @@ class RepoEntry:
 class GuiConfig:
     repos: tuple[RepoEntry, ...] = ()
     reviewer: str = ""
+    agent_command: str = ""
 
 
 def repo_id(path: str | Path) -> str:
@@ -58,7 +59,12 @@ def load_config(path: Path | None = None) -> GuiConfig:
                 )
             )
     reviewer = raw.get("reviewer")
-    return GuiConfig(tuple(repos), reviewer if isinstance(reviewer, str) else "")
+    agent_command = raw.get("agent_command")
+    return GuiConfig(
+        tuple(repos),
+        reviewer if isinstance(reviewer, str) else "",
+        agent_command if isinstance(agent_command, str) else "",
+    )
 
 
 def save_config(config: GuiConfig, path: Path | None = None) -> None:
@@ -67,6 +73,7 @@ def save_config(config: GuiConfig, path: Path | None = None) -> None:
     payload = {
         "repos": [entry.to_dict() for entry in config.repos],
         "reviewer": config.reviewer,
+        "agent_command": config.agent_command,
     }
     descriptor, temporary = tempfile.mkstemp(
         prefix=".config.", suffix=".tmp", dir=path.parent

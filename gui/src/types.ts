@@ -110,6 +110,16 @@ export interface ApprovedEntry {
   digest: string
 }
 
+export interface DriveStatus {
+  active: boolean
+  command: string | null
+  pid: number | null
+  exit_code: number | null
+  started_at: number | null
+  finished_at: number | null
+  tail: string[]
+}
+
 export const PHASE_ORDER = ['spec', 'plan', 'implement', 'verify'] as const
 
 export const PHASE_LABEL: Record<string, string> = {

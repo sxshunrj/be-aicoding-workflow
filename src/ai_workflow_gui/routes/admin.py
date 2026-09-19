@@ -13,12 +13,15 @@ from ai_workflow.install import install_skills
 
 from ai_workflow_gui import __version__
 from ai_workflow_gui._deps import (
+    config_path,
     current_config,
     discover_source_root,
     find_repo,
     repo_dir,
     resolve_clients,
 )
+from ai_workflow_gui.agent_runner import DEFAULT_AGENT_COMMAND
+from ai_workflow_gui.config_store import GuiConfig, save_config
 
 router = APIRouter(prefix="/api", tags=["admin"])
 
@@ -28,6 +31,30 @@ logger = logging.getLogger("ai_workflow_gui")
 @router.get("/meta")
 def meta():
     return {"version": __version__, "python": platform.python_version()}
+
+
+@router.get("/agent-config")
+def get_agent_config(request: Request):
+    config = current_config(request)
+    return {"command": config.agent_command or DEFAULT_AGENT_COMMAND}
+
+
+class AgentConfigBody(BaseModel):
+    command: str
+
+
+@router.put("/agent-config")
+def put_agent_config(body: AgentConfigBody, request: Request):
+    command = body.command.strip()
+    if not command:
+        raise AppError("invalid_arguments", "agent 命令模板不能为空")
+    if "{prompt}" not in command:
+        raise AppError("invalid_arguments", "agent 命令模板必须包含 {prompt} 占位符")
+    config = current_config(request)
+    save_config(
+        GuiConfig(config.repos, config.reviewer, command), config_path(request)
+    )
+    return {"command": command}
 
 
 class ClientErrorBody(BaseModel):

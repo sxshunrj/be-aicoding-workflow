@@ -24,7 +24,7 @@ pip install -e '.[gui]'     # 或开发环境：uv sync --extra gui --extra dev
 ai-workflow-gui             # 启动本地服务（仅 127.0.0.1，随机端口）并自动打开浏览器
 ```
 
-首次使用：左侧「＋ 添加仓库」注册含 `.ai-workflow.yaml` 的仓库 → 发起 Run → 在详情页审批。前端源码在 `gui/`（React + Vite），构建产物已包含在包内（`src/ai_workflow_gui/static/`），使用方无需 Node；改前端后 `cd gui && npm run build` 重新构建并提交产物。
+首次使用：左侧「＋ 添加仓库」注册含 `.ai-workflow.yaml` 的仓库 → 发起 Run → 详情页点「▶ 驱动 agent」由 GUI 无人值守指挥 agent 执行（命令模板在「装机与诊断 → Agent 命令」配置），或在终端手动跑。到达审批 gate 时回 GUI 审批。前端源码在 `gui/`（React + Vite），构建产物已包含在包内（`src/ai_workflow_gui/static/`），使用方无需 Node；改前端后 `cd gui && npm run build` 重新构建并提交产物。
 
 ## Skill Overview
 

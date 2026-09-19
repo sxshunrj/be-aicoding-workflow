@@ -1,5 +1,6 @@
 import type {
   ApprovedEntry,
+  DriveStatus,
   Candidate,
   CandidateReview,
   DoctorReport,
@@ -97,6 +98,20 @@ export const api = {
   gitDiff: (repoId: string) =>
     request<{ diff: string }>(`/api/repos/${repoId}/git-diff`),
   meta: () => request<{ version: string; python: string }>('/api/meta'),
+  agentConfig: () => request<{ command: string }>('/api/agent-config'),
+  saveAgentConfig: (command: string) =>
+    request<{ command: string }>('/api/agent-config', {
+      method: 'PUT',
+      body: JSON.stringify({ command }),
+    }),
+  drive: (repoId: string, runId: string) =>
+    post<DriveStatus>(`/api/repos/${repoId}/runs/${runId}/drive`),
+  driveStop: (repoId: string, runId: string) =>
+    request<DriveStatus>(`/api/repos/${repoId}/runs/${runId}/drive`, {
+      method: 'DELETE',
+    }),
+  driveStatus: (repoId: string, runId: string) =>
+    request<DriveStatus>(`/api/repos/${repoId}/runs/${runId}/drive`),
 
   candidates: (repoId: string) =>
     request<{ candidates: Candidate[] }>(`/api/repos/${repoId}/wiki/candidates`),

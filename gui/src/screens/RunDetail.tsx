@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { api } from '../api'
 import { useApp } from '../App'
@@ -133,7 +133,6 @@ function Overview({
     showEvents ? 5000 : 0,
     showEvents,
   )
-  const terminal = `$${run.profile === 'grill' ? 'ai-workflow-harness-grill' : 'ai-workflow-harness'} resume ${run.run_id}`
 
   function confirmAbort() {
     confirm.confirm(
@@ -201,13 +200,6 @@ function Overview({
     }
   }
 
-  function copyTerminal() {
-    void navigator.clipboard.writeText(terminal).then(
-      () => toast.success('已复制，去终端粘贴即可'),
-      () => toast.error('复制失败，请手动选择复制'),
-    )
-  }
-
   const operable = run.status !== 'completed' && run.status !== 'aborted'
 
   return (
@@ -242,14 +234,7 @@ function Overview({
         </span>
       </div>
 
-      <div className="note" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span>
-          Agent 在终端继续本 run：<span className="mono">{terminal}</span>
-        </span>
-        <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={copyTerminal}>
-          复制命令
-        </button>
-      </div>
+      <DriverCard repoId={repoId} run={run} />
 
       {resuming && operable && (
         <div className="card">
@@ -741,6 +726,131 @@ function RepoChanges({ repoId }: { repoId: string }) {
             ))}
           </pre>
         </Modal>
+      )}
+    </div>
+  )
+}
+
+
+function DriverCard({ repoId, run }: { repoId: string; run: RunState }) {
+  const toast = useToast()
+  const confirm = useConfirm()
+  const operable = run.status !== 'completed' && run.status !== 'aborted'
+  const polling = usePolling(() => api.driveStatus(repoId, run.run_id), 2000, operable)
+  const [showConsole, setShowConsole] = useState(false)
+  const consoleRef = useRef<HTMLPreElement>(null)
+  const drive = polling.data
+
+  useEffect(() => {
+    if (consoleRef.current) consoleRef.current.scrollTop = consoleRef.current.scrollHeight
+  }, [drive?.tail?.length])
+
+  async function start() {
+    try {
+      const config = await api.agentConfig()
+      const preview = config.command.replace(
+        '{prompt}',
+        `接管 ${run.run_id}（需求：${run.requirement.slice(0, 40)}…）`,
+      )
+      confirm.confirm(
+        '驱动 agent（无人值守）',
+        <div style={{ lineHeight: 1.8 }}>
+          将在仓库目录启动 agent，<b>全自动读写文件、执行命令</b>，直到 run 到达终态或等待审批：
+          <pre className="code" style={{ margin: '8px 0' }}>{preview}</pre>
+          随时可在本页停止。
+        </div>,
+        async () => {
+          try {
+            await api.drive(repoId, run.run_id)
+            toast.success('agent 已启动，输出见下方控制台')
+            setShowConsole(true)
+            void polling.refresh()
+          } catch (error) {
+            toast.error(error instanceof Error ? error.message : String(error))
+          }
+        },
+        { confirmText: '启动 agent', danger: true },
+      )
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function stop() {
+    try {
+      await api.driveStop(repoId, run.run_id)
+      toast.info('已发送停止信号')
+      void polling.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  function statusPill(): { cls: string; text: string } {
+    if (!drive) return { cls: 'pill-pending', text: '未启动' }
+    if (drive.active) return { cls: 'pill-running', text: `● 运行中 · pid ${drive.pid}` }
+    if (drive.exit_code === 0) return { cls: 'pill-completed', text: '✓ 已正常退出' }
+    if (drive.exit_code !== null) return { cls: 'pill-blocked', text: `✕ 已退出（code ${drive.exit_code}）` }
+    return { cls: 'pill-pending', text: '未启动' }
+  }
+  const pill = statusPill()
+
+  return (
+    <div className="card" style={{ borderLeft: drive?.active ? '4px solid var(--brand)' : undefined }}>
+      <h5>
+        Agent 驱动（GUI 直接指挥 agent 干活）
+        <span className={`pill ${pill.cls}`} style={{ float: 'right' }}>{pill.text}</span>
+      </h5>
+      {drive?.command && (
+        <div className="muted small mono" style={{ marginBottom: 8, wordBreak: 'break-all' }}>
+          命令模板：{drive.command}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        {operable && !drive?.active && (
+          <button className="btn btn-primary" onClick={() => void start()}>
+            ▶ 驱动 agent
+          </button>
+        )}
+        {drive?.active && (
+          <button className="btn btn-danger" onClick={() => void stop()}>
+            ⏹ 停止 agent
+          </button>
+        )}
+        {drive && drive.tail.length > 0 && (
+          <button className="btn btn-ghost btn-sm" onClick={() => setShowConsole((value) => !value)}>
+            {showConsole ? '收起控制台' : `控制台（${drive.tail.length} 行）`}
+          </button>
+        )}
+        <button
+          className="btn btn-ghost btn-sm"
+          style={{ marginLeft: 'auto' }}
+          title="改为自己在终端跑"
+          onClick={() => {
+            const cmd = `$${run.profile === 'grill' ? 'ai-workflow-harness-grill' : 'ai-workflow-harness'} resume ${run.run_id}`
+            void navigator.clipboard.writeText(cmd).then(
+              () => toast.success('已复制，去终端粘贴即可'),
+              () => toast.error('复制失败，请手动选择复制'),
+            )
+          }}
+        >
+          偏好终端？复制命令
+        </button>
+      </div>
+      {!operable && (
+        <div className="muted small" style={{ marginTop: 8 }}>
+          run 已终态（{run.status}），无需驱动。
+        </div>
+      )}
+      {drive?.active && !showConsole && (
+        <div className="muted small" style={{ marginTop: 8 }}>
+          agent 正在执行，点「控制台」查看实时输出。它会在到达审批 gate 时停下——届时到「审批」Tab 处理。
+        </div>
+      )}
+      {showConsole && drive && (
+        <pre className="code" ref={consoleRef} style={{ marginTop: 10, maxHeight: 300 }}>
+          {drive.tail.length ? drive.tail.join('\n') : '（暂无输出）'}
+        </pre>
       )}
     </div>
   )

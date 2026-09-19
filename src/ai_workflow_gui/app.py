@@ -17,6 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from ai_workflow.errors import AppError
 
 from ai_workflow_gui import __version__
+from ai_workflow_gui.agent_runner import AgentDriver
 from ai_workflow_gui.config_store import DEFAULT_CONFIG_PATH
 from ai_workflow_gui.routes import admin, knowledge, repos, runs
 
@@ -32,6 +33,8 @@ _CONFLICT_CODES = {
     "review_gate_required",
     "review_gate_mismatch",
     "wiki_conflict",
+    "driver_busy",
+    "driver_gate_pending",
 }
 
 
@@ -56,7 +59,12 @@ def status_for(code: str) -> int:
         return 404
     if code in _CONFLICT_CODES:
         return 409
-    if code.startswith("config_") or code.startswith("invalid_") or code == "repository_required":
+    if (
+        code.startswith("config_")
+        or code.startswith("invalid_")
+        or code == "repository_required"
+        or code == "agent_spawn_failed"
+    ):
         return 400
     return 500
 
@@ -70,6 +78,9 @@ def create_app(
     app = FastAPI(title="ai-workflow GUI", version=__version__)
     app.state.config_path = config_path or DEFAULT_CONFIG_PATH
     app.state.home = home or Path.home()
+    app.state.driver = AgentDriver(
+        log_dir=app.state.home / ".ai-workflow-gui" / "agent-logs"
+    )
     setup_logging(app.state.home / ".ai-workflow-gui" / "logs")
 
     @app.middleware("http")

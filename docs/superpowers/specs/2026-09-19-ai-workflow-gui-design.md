@@ -93,6 +93,8 @@ GUI 自身配置：`~/.ai-workflow-gui/config.json`，记录注册的 repo 路�
 | `/api/repos/{id}/config` | GET | `RepositoryConfig.load` | `config show` 等价，只读展示 |
 | `/api/install` | POST | `install_skills` | body：`client`、`scope`、`mode`、`repo`（repo scope 时）；`source_root` 取当前安装来源的 skills 目录 |
 | `/api/doctor` | GET | `run_doctor` | query：`repo`、`client`；返回全部检查项与 failed 明细 |
+| `/api/agent-config` | GET/PUT | GUI 配置 | agent 命令模板（必须含 `{prompt}`） |
+| `.../runs/{run_id}/drive` | POST/GET/DELETE | **新增** AgentDriver | 启动/状态+控制台尾迹/终止 agent 子进程 |
 
 GUI 不提供 `workflow review`（agent 阶段结束时调用以生成 decision；审批屏只消费 `status` 里的 gate）。
 
@@ -129,7 +131,7 @@ GUI 不提供 `workflow review`（agent 阶段结束时调用以生成 decision�
 
 ## 8. 明确不做（YAGNI）
 
-- 不驱动任何 agent、不内嵌终端
+- ~~不驱动任何 agent~~ → **2026-09-19 用户决定跨过该边界**：GUI 以无人值守 headless 模式驱动配置的 agent CLI（命令模板可配，默认 `claude -p {prompt} --dangerously-skip-permissions`），一次驱动推进到终态或审批 gate。v1 为子进程监督 + 控制台尾迹，不内嵌交互终端、不实现自有 agent 循环。护栏：终态/运行中/待审批 gate 拒绝启动
 - 不做模型 API 层
 - 不做多用户/鉴权/远程访问
 - 不改 `ai_workflow` 包的任何现有行为（GUI 只做消费者；唯一例外：pyproject 新增 extra 与 entry point）

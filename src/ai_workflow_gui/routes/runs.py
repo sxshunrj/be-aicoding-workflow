@@ -9,6 +9,7 @@ from ai_workflow.errors import AppError
 from ai_workflow.workflow.service import WorkflowService
 
 from ai_workflow_gui._deps import current_config, find_repo, repo_dir
+from ai_workflow_gui.agent_runner import DEFAULT_AGENT_COMMAND, build_prompt
 from ai_workflow_gui.runlist import list_runs, read_events
 
 router = APIRouter(prefix="/api/repos/{repo_id_value}/runs", tags=["runs"])
@@ -131,3 +132,44 @@ def run_file(repo_id_value: str, run_id: str, request: Request, path: str):
     from ai_workflow_gui.run_files import read_run_file
 
     return read_run_file(repo_root(request, repo_id_value), run_id, path)
+
+
+def _pending_gate(state) -> bool:
+    gate = state.artifacts.get("review_gate")
+    return (
+        isinstance(gate, dict)
+        and gate.get("decision") == "human_review"
+        and not gate.get("accepted_at")
+    )
+
+
+@router.post("/{run_id}/drive")
+def drive_run(run_id: str, repo_id_value: str, request: Request):
+    root = repo_root(request, repo_id_value)
+    state = WorkflowService(root).status(run_id)
+    if state.status in ("completed", "aborted"):
+        raise AppError("invalid_arguments", "run 已是终态，无需驱动 agent")
+    if _pending_gate(state):
+        raise AppError(
+            "driver_gate_pending",
+            "存在待审批的 review gate：请先在审批 Tab 接受或驳回，再驱动 agent",
+        )
+    driver = request.app.state.driver
+    if driver.is_active(run_id):
+        raise AppError("driver_busy", "该 run 的 agent 已在运行中")
+    config = current_config(request)
+    template = config.agent_command.strip() or DEFAULT_AGENT_COMMAND
+    prompt = build_prompt(state.profile, run_id, state.requirement)
+    return driver.start(
+        run_id=run_id, repo_root=root, template=template, prompt=prompt
+    )
+
+
+@router.get("/{run_id}/drive")
+def drive_status(run_id: str, repo_id_value: str, request: Request):
+    return request.app.state.driver.status(run_id)
+
+
+@router.delete("/{run_id}/drive")
+def drive_stop(run_id: str, repo_id_value: str, request: Request):
+    return request.app.state.driver.stop(run_id)

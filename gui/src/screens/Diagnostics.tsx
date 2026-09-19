@@ -4,7 +4,7 @@ import { useApp } from '../App'
 import { useToast } from '../toast'
 import type { DoctorReport, InstallReport } from '../types'
 
-type Tab = 'doctor' | 'install' | 'config'
+type Tab = 'doctor' | 'install' | 'config' | 'agent'
 
 export default function Diagnostics() {
   const [tab, setTab] = useState<Tab>('doctor')
@@ -23,10 +23,14 @@ export default function Diagnostics() {
         <div className={`tab${tab === 'config' ? ' active' : ''}`} onClick={() => setTab('config')}>
           Repo 配置
         </div>
+        <div className={`tab${tab === 'agent' ? ' active' : ''}`} onClick={() => setTab('agent')}>
+          Agent 命令
+        </div>
       </div>
       {tab === 'doctor' && <DoctorTab />}
       {tab === 'install' && <InstallTab />}
       {tab === 'config' && <ConfigTab />}
+      {tab === 'agent' && <AgentTab />}
     </div>
   )
 }
@@ -281,6 +285,69 @@ function ConfigTab() {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function AgentTab() {
+  const toast = useToast()
+  const [command, setCommand] = useState('')
+  const [loaded, setLoaded] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    void api
+      .agentConfig()
+      .then((data) => setCommand(data.command))
+      .catch((error: unknown) => toast.error(error instanceof Error ? error.message : String(error)))
+      .finally(() => setLoaded(true))
+  }, [toast])
+
+  async function save() {
+    setBusy(true)
+    try {
+      await api.saveAgentConfig(command.trim())
+      toast.success('已保存，下次驱动 agent 生效')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!loaded) return <div className="muted">加载中…</div>
+  return (
+    <div>
+      <div className="note">
+        「驱动 agent」会用这里的命令模板在仓库目录<b>无人值守</b>启动 AI agent（全自动读写文件、执行命令）。
+        模板必须包含 <span className="mono">{'{prompt}'}</span> 占位符——GUI 会把任务指令填进去。
+      </div>
+      <div className="card">
+        <h5>命令模板</h5>
+        <div className="field">
+          <label>当前模板</label>
+          <input
+            className="input mono"
+            value={command}
+            onChange={(event) => setCommand(event.target.value)}
+            placeholder="claude -p {prompt} --dangerously-skip-permissions"
+          />
+        </div>
+        <div className="chips">
+          <button className="chip" onClick={() => setCommand('claude -p {prompt} --dangerously-skip-permissions')}>
+            Claude Code 无头模式
+          </button>
+          <button className="chip" onClick={() => setCommand('caffeinate claude -p {prompt} --dangerously-skip-permissions')}>
+            Claude + 防休眠
+          </button>
+          <button className="chip" onClick={() => setCommand('codex exec --full-auto {prompt}')}>
+            Codex exec
+          </button>
+        </div>
+        <button className="btn btn-primary" disabled={busy || command === ''} onClick={() => void save()}>
+          {busy ? '保存中…' : '保存模板'}
+        </button>
+      </div>
     </div>
   )
 }
