@@ -75,7 +75,7 @@
 - 验收：空配置时显示引导（先添加仓库）。
 
 ### B4 屏一：Runs 仪表盘
-- run 表格（run_id/requirement 摘要/current_phase/status/创建时间/profile）；筛选 chips 按状态词汇表（进行中={pending,running}、待审批={status=="blocked"}、已完成={completed}、已中止={aborted}）；待审批行高亮置顶；行点击进详情；「发起 Run」弹层表单（requirement 多行、profile 下拉 full|grill、source-revision 预填自 `GET /api/repos/{id}/head`，null 时提示手填）。
+- run 表格（run_id/requirement 摘要/current_phase/status/创建时间/profile）；筛选 chips 按状态词汇表（进行中={pending,running}、待处理={status=="blocked"}、已完成={completed}、已中止={aborted}；blocked 双来源——pending gate 或手动 block——行内小字区分或详情页区分）；待处理行高亮置顶；行点击进详情；「发起 Run」弹层表单（requirement 多行、profile 下拉 full|grill、source-revision 预填自 `GET /api/repos/{id}/head`，null 时提示手填）。
 - 验收：对 examples/language-neutral 真 repo 手动走通：发起→列表出现新 run。
 
 ### B5 屏二：Run 详情（概览）
