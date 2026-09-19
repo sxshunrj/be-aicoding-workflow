@@ -2,7 +2,7 @@
 
 日期：2026-09-19
 状态：待用户评审
-范围里程碑：G-MVP（本 spec 覆盖）→ M2 → M3（后两者仅列方向，不在本 spec 实施范围）
+范围里程碑：第一期（本 spec 覆盖，含本项目全部人类面功能）→ 第二期（扩展：桌面壳、分发、SSE）
 
 ## 1. 背景与产品定义
 
@@ -22,11 +22,11 @@ GUI 的功能面 = CLI 已暴露的人类操作面：
 | `workflow init` | 发起 run 表单（repo、requirement、profile、source-revision） |
 | `workflow status` | run 列表与 run 详情 |
 | `workflow review-accept` / `block` / `repair-review-gate` | Review 审批屏（核心价值；`workflow review` 是 agent 侧命令，GUI 不调用） |
-| `wiki review` / `promote` / `reject` / `archive` | 知识治理屏（第四屏；全功能审计后从"不做"改为 MVP，见第 9 节） |
+| `wiki review` / `promote` / `reject` / `archive` | 知识治理屏（第四屏；全功能审计后从"不做"改为第一期范围，见第 9 节） |
 | `workflow resume --rerun` / `abort` / `summary` | Run 详情页操作按钮 |
-| `install` / `doctor` | 装机与诊断页（M2） |
-| `wiki lint` | 诊断页 wiki 健康检查（M2） |
-| `config show` | repo 配置只读展示（M2） |
+| `install` / `doctor` | 装机与诊断页（第一期） |
+| `wiki lint` | 诊断页 wiki 健康检查（第一期） |
+| `config show` | repo 配置只读展示（第一期） |
 
 Agent 专用命令（`begin` / `stage` / `stage-owned` / `finalize` / `transition` / `review` / `reflect` / `reflect-submit` / `wiki search` / `wiki packet` / `wiki propose` / `config authorize-path`）不由 GUI 暴露，理由见第 8 节。
 
@@ -56,13 +56,13 @@ Agent 专用命令（`begin` / `stage` / `stage-owned` / `finalize` / `transitio
 │  │  ├─ repos.py                # repo 注册与列表
 │  │  ├─ runs.py                 # run 生命周期 + 审批
 │  │  ├─ knowledge.py            # wiki 候选治理（第四屏）
-│  │  └─ admin.py                # install / doctor（M2 接线，接口先留）
+│  │  └─ admin.py                # install / doctor / config 只读（第五屏）
 │  └─ static/                    # 前端构建产物（构建后提交，pip 安装不依赖 Node）
 ├─ gui/                          # 前端源码（React + Vite + TypeScript，不进 wheel）
 └─ pyproject.toml                # 新增 gui extra 与 ai-workflow-gui 入口
 ```
 
-进程模型：`ai-workflow-gui` 启动 FastAPI → 自动打开浏览器访问 `http://127.0.0.1:<port>`。MVP 即浏览器形态；pywebview 独立窗口壳是 M3，不改变架构。
+进程模型：`ai-workflow-gui` 启动 FastAPI → 自动打开浏览器访问 `http://127.0.0.1:<port>`。第一期即浏览器形态；pywebview 独立窗口壳在第二期，不改变架构。
 
 GUI 自身配置：`~/.ai-workflow-gui/config.json`，记录注册的 repo 路径列表和审批人名 `reviewer`（知识治理的 promote/reject/archive 需要）。注册 repo 时用 `RepositoryConfig.load(path)` 校验，无 `.ai-workflow.yaml` 的目录拒绝注册。
 
@@ -89,7 +89,10 @@ GUI 自身配置：`~/.ai-workflow-gui/config.json`，记录注册的 repo 路�
 | `.../wiki/candidates/{id}/review` | GET | `WikiService.review_candidate` | 候选详情 + 相关已批准条目 |
 | `.../wiki/candidates/{id}/promote` | POST | `service.promote` | body：`reviewer`(GUI 配置)、`expected_digest` |
 | `.../wiki/candidates/{id}/reject`、`/archive` | POST | `service.reject` / `service.archive` | body：`reviewer`、`reason`、`expected_digest` |
-| `/api/install`、`/api/doctor` | POST/GET | `install_skills` / doctor 模块 | M2 接线 |
+| `.../runs/{run_id}/events` | GET | 只读读 `events.jsonl` 尾部 | run 事件时间线数据源，纯只读 |
+| `/api/repos/{id}/config` | GET | `RepositoryConfig.load` | `config show` 等价，只读展示 |
+| `/api/install` | POST | `install_skills` | body：`client`、`scope`、`mode`、`repo`（repo scope 时）；`source_root` 取当前安装来源的 skills 目录 |
+| `/api/doctor` | GET | `run_doctor` | query：`repo`、`client`；返回全部检查项与 failed 明细 |
 
 GUI 不提供 `workflow review`（agent 阶段结束时调用以生成 decision；审批屏只消费 `status` 里的 gate）。
 
@@ -97,28 +100,30 @@ GUI 不提供 `workflow review`（agent 阶段结束时调用以生成 decision�
 
 安全边界：只绑 127.0.0.1；无鉴权（本机自用，与终端 CLI 同一信任级别）。写操作全部经过 `StateStore` 既有的 fcntl 锁，GUI 与终端 agent 可并发操作同一 run。
 
-## 5. 前端设计（MVP 四屏）
+## 5. 前端设计（第一期五屏）
 
-技术：React + Vite + TypeScript，无重型 UI 框架依赖偏好（组件库可选轻量级，如不上组件库则手写样式）；状态获取用轮询（5s）+ 操作后立即刷新；SSE 后置到 M2。优化稿（v2 mockup）确认的五处体验改进一并纳入：筛选 chips 与待审批高亮、创建时间列（从 run_id 解析）、阶段产物可读卡片、"N 秒前自动刷新"指示、驳回理由点击展开。
+技术：React + Vite + TypeScript，无重型 UI 框架依赖偏好（组件库可选轻量级，如不上组件库则手写样式）；状态获取用轮询（5s）+ 操作后立即刷新；SSE 后置。优化稿（v2 mockup）确认的五处体验改进一并纳入：筛选 chips 与待审批高亮、创建时间列（从 run_id 解析）、阶段产物可读卡片、"N 秒前自动刷新"指示、驳回理由点击展开。
 
 1. **Runs 仪表盘**：左侧 repo 列表（含「添加 repo」路径输入）；右侧当前 repo 的 run 列表（run_id、requirement 摘要、current_phase、status、创建时间、profile），筛选 chips（全部/进行中/待审批/已完成），待审批行高亮置顶；「发起 run」表单（requirement 多行文本、profile 下拉、source-revision 预填可改）。首次启动显示空状态引导（添加仓库 → 校验 `.ai-workflow.yaml`）。
-2. **Run 详情**：顶部 meta 条（自动刷新指示、profile、source、创建时间、摘要/中止操作）；run_graph 四阶段节点图（spec → plan → implement → verify），节点状态五色映射 pending/running/valid/rerun/blocked；阶段产物可读卡片（友好名称 + 查看入口，映射自 artifacts，不做原始路径罗列）。
-3. **Review 审批**：并入 Run 详情页（独立 Tab），不设单独路由。数据源是 `service.status` 返回的 `RunState.artifacts["review_gate"]`：`decision == "human_review"` 且 `accepted_at` 为空即 pending gate，展示 phase、proposed_reruns、digest；卡片内置"本阶段产出摘要"（只读解析 artifacts 生成，审批人先知道批的是什么）；按钮：接受（`review-accept`）、驳回（`block`，点击后展开 reason 输入）、修复（`repair-review-gate`）。历史审批记录依赖 events 时间线，放 M2。
+2. **Run 详情**：顶部 meta 条（自动刷新指示、profile、source、创建时间、摘要/中止操作）；run_graph 四阶段节点图（spec → plan → implement → verify），节点状态五色映射 pending/running/valid/rerun/blocked；阶段产物可读卡片（友好名称 + 查看入口，映射自 artifacts，不做原始路径罗列）；事件时间线折叠区（`events.jsonl` 只读尾部，按类型着色）。
+3. **Review 审批**：并入 Run 详情页（独立 Tab），不设单独路由。数据源是 `service.status` 返回的 `RunState.artifacts["review_gate"]`：`decision == "human_review"` 且 `accepted_at` 为空即 pending gate，展示 phase、proposed_reruns、digest；卡片内置"本阶段产出摘要"（只读解析 artifacts 生成，审批人先知道批的是什么）；按钮：接受（`review-accept`）、驳回（`block`，点击后展开 reason 输入）、修复（`repair-review-gate`）。
 4. **知识治理**：候选知识列表（`WikiRepository.list("candidate")`）→ 候选详情（`review_candidate` 返回条目内容 + 相关已批准条目对照）→ 治理操作：批准（promote）/ 驳回（reject，reason 必填）/ 归档（archive），均带 `reviewer`（GUI 设置中的审批人名）与 `expected_digest` 乐观锁。侧边导航入口与 Runs 平级。
+5. **装机与诊断**：诊断页对选中 repo 运行 `doctor`，分组展示检查项（skill 安装、CLI、repo config、wiki lint），failed 项红色明细；装机页运行 `install`（client/scope/mode 选择，repo scope 时选 repo），渲染 installed/updated/skipped/failed 报告；`config show` 以只读表单展示 repo 配置（含 protected_paths、adapter 路径、commands）。
 
-路由：`/`（仪表盘）、`/runs/:runId`（详情 + 审批 Tab）、`/knowledge`（知识治理）。
+路由：`/`（仪表盘）、`/runs/:runId`（详情 + 审批 Tab）、`/knowledge`（知识治理）、`/diagnostics`（装机与诊断）。
 
 ## 6. 测试策略
 
-- 后端：pytest + FastAPI TestClient，复用现有 `tests/` 的 repo fixture 模式。必测：repo 注册校验、list_runs 枚举与排序、init/status/审批路由 ↔ service 方法映射、知识治理路由（候选列表/详情/promote/reject/archive 的参数与 AppError 映射）、AppError → HTTP 映射。service 层本身已有测试，不重复覆盖。
-- 前端：MVP 不强制单测（自用优先），以手动验收为准；Vitest 引入与否留 M2 决定。
+- 后端：pytest + FastAPI TestClient，复用现有 `tests/` 的 repo fixture 模式。必测：repo 注册校验、list_runs 枚举与排序、init/status/审批路由 ↔ service 方法映射、知识治理路由（候选列表/详情/promote/reject/archive 的参数与 AppError 映射）、events 只读解析、install/doctor/config 路由、AppError → HTTP 映射。service 层本身已有测试，不重复覆盖。
+- 前端：第一期不强制单测（自用优先），以手动验收为准；Vitest 引入与否留第二期决定。
 - 不做 E2E（YAGNI）。
 
 ## 7. 里程碑
 
-- **G-MVP（本 spec 的实施范围）**：`ai_workflow_gui` 子包 + repos/runs/审批/知识治理全部路由 + 四屏前端 + 浏览器自动打开 + 后端测试通过。
-- **M2**：install/doctor 装机诊断页（含 `wiki lint`）、`config show` 只读展示、events.jsonl 只读时间线、SSE 实时推送。
-- **M3**：pywebview 桌面窗口壳、随 whl 打包分发（`[gui]` extra）、前端单测。
+按"第一期做本项目全部功能，之后再扩展别的功能"切分（2026-09-19 用户确认）：
+
+- **第一期（本 spec 的实施范围）**：本项目全部人类面功能——五屏前端（仪表盘 / Run 详情+审批 / 知识治理 / 装机与诊断）+ 全部对应路由（含 install / doctor / config show / events 只读）+ 浏览器自动打开 + 后端测试通过。
+- **第二期（扩展，均为项目外能力或呈现优化）**：pywebview 桌面窗口壳、随 whl 打包分发（`[gui]` extra）、SSE 实时推送、前端单测。
 
 ## 8. 明确不做（YAGNI）
 
@@ -136,5 +141,6 @@ GUI 不提供 `workflow review`（agent 阶段结束时调用以生成 decision�
 - **审计修正 1**：知识治理（`wiki review/promote/reject/archive` + 候选枚举）原 spec 误标为 YAGNI。它是 MVP 验收标准第 5、6 条（"完成 run 产出候选知识，人类批准后可被检索"）和 Wave 1 governance 证据链的一半，且全部操作是人类面——已改为 MVP 第四屏。
 - **审计修正 2**：`review-accept` 需要 `expected-digest`（digest 乐观锁），原 API 表漏写；`resume --rerun` 实为 `NODE=REASON`（reason 必填），原表误写为 attempt。
 - **审计修正 3**：`workflow review` 是 agent 侧命令（生成 decision），GUI 原表误列为自己的路由，已移除；审批屏只消费 `status` 的 gate。
-- 其余归类不变：install/doctor/wiki lint/config show → M2；agent 专用命令不暴露（第 8 节）；`src/ai_workflow/wecom/` 在 main 上为空目录（分支功能），不涉及；11 个 skills 均为 agent 面资产，由 install/doctor 覆盖安装诊断。
+- **审计修正 4**（范围确认后）：按用户决定"第一期做本项目全部功能"，原 M2 中的人类面功能（install/doctor 诊断页、`wiki lint`、`config show` 展示、events 时间线）全部并入第一期；第二期只留项目外能力与呈现优化（桌面壳、whl 分发、SSE、前端单测）。
+- 其余归类（经审计修正 4 调整后）：agent 专用命令不暴露（第 8 节）；`src/ai_workflow/wecom/` 在 main 上为空目录（分支功能），不涉及；11 个 skills 均为 agent 面资产，由第一期的 install/doctor 覆盖安装诊断。
 - GUI 的新增逻辑仍然只有两个只读枚举：`list_runs`（枚举 `.ai-workflow/runs/*/state.yaml`）与候选列表（复用现成 `WikiRepository.list`）。
