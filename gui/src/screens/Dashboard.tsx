@@ -357,33 +357,40 @@ function CreateRunModal({
   return (
     <Modal title={`发起 Run — ${repoName}`} onClose={onClose}>
       <div className="field">
-        <label>需求描述——「给 AI 的工单」，写清楚要做什么</label>
+        <label>需求描述 —— 要做什么、有什么约束、怎么算完成。写得越具体，AI 做得越准</label>
         <textarea
           className="textarea"
-          placeholder="用一段话描述这次要完成的需求…"
+          placeholder="例：修复订单导出在勾选自定义列时报错的问题。报错日志见 docs/bug-1024.log。完成后单元测试全部通过。"
           value={requirement}
           onChange={(event) => setRequirement(event.target.value)}
           autoFocus
         />
       </div>
-      <div style={{ display: 'flex', gap: 12 }}>
-        <div className="field" style={{ flex: 1 }}>
-          <label><Term term="profile">Profile</Term>（流程模板）</label>
-          <select className="select" value={profile} onChange={(event) => setProfile(event.target.value)}>
-            <option value="full">full（四阶段）</option>
-            <option value="grill">grill（三阶段，PRD 驱动）</option>
-          </select>
-        </div>
-        <div className="field" style={{ flex: 2 }}>
-          <label><Term term="source revision">源 revision</Term>{head === null ? '（该仓库不是 git 仓库，必填）' : '（留空自动取当前 HEAD）'}</label>
+      <div className="field">
+        <label><Term term="profile">Profile</Term>（流程模板，不确定就选 full）</label>
+        <select className="select" value={profile} onChange={(event) => setProfile(event.target.value)}>
+          <option value="full">full —— 完整四阶段：先写规格、再拆计划、再写代码、最后验证（推荐）</option>
+          <option value="grill">grill —— 三阶段：需求已有 PRD 文档时用，直接从计划开始</option>
+        </select>
+      </div>
+
+      <details className="advanced">
+        <summary>高级选项（一般不用动）</summary>
+        <div className="field" style={{ marginTop: 10 }}>
+          <label>
+            <Term term="source revision">起始版本</Term>
+            {head === null
+              ? ' —— 该目录不是 git 仓库，需要手填一个标识'
+              : ` —— 将从当前最新代码（${head?.slice(0, 7) ?? ''}）开始，保持留空即可`}
+          </label>
           <input
             className="input mono"
             value={sourceRevision}
             onChange={(event) => setSourceRevision(event.target.value)}
-            placeholder={head ? head.slice(0, 12) : '如 cad3901 或完整 SHA'}
+            placeholder={head ? `留空 = 从 ${head?.slice(0, 7) ?? ''} 开始（推荐）` : '填一个标识字符串'}
           />
         </div>
-      </div>
+      </details>
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
         <button className="btn btn-ghost" onClick={onClose}>
           取消

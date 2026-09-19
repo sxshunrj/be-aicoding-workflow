@@ -206,3 +206,13 @@ pre.code { background: #f6f8fa; border: 1px solid var(--line); border-radius: 8p
   display: flex; flex-direction: column; gap: 4px; cursor: default;
 }
 .term-pop b { color: #9ec2ff; font-weight: 600; }
+
+/* ---- 高级选项折叠 ---- */
+details.advanced { border: 1px dashed var(--line); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
+details.advanced summary { cursor: pointer; font-size: 12px; color: var(--ink-3); user-select: none; }
+details.advanced[open] summary { margin-bottom: 4px; }
+
+/* ---- 高级选项折叠 ---- */
+details.advanced { border: 1px dashed var(--line); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
+details.advanced summary { cursor: pointer; font-size: 12px; color: var(--ink-3); user-select: none; }
+details.advanced[open] summary { margin-bottom: 4px; }
