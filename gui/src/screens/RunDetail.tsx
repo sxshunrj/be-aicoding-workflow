@@ -13,6 +13,7 @@ import {
   type RunState,
 } from '../types'
 import { LiveIndicator, Modal, StatusPill, useConfirm } from '../ui'
+import { Term } from '../Term'
 
 const ARTIFACT_META: Record<string, { label: string; icon: string; color: string }> = {
   run_policy: { label: '运行策略', icon: '📜', color: '#5b6472' },
@@ -336,13 +337,13 @@ function Overview({
               <span>{phase.toUpperCase()}</span>
               <span>{phaseState(run, phase) === 'current' ? '● 当前' : ''}</span>
             </div>
-            <div className="phase-name">{PHASE_LABEL[phase] ?? phase}</div>
+            <div className="phase-name">{PHASE_LABEL[phase] ?? phase} <span className="muted small">{phase}</span></div>
             {nodes.map((node) => (
               <div className="node-row" key={node.key} title={node.key}>
                 <span className={`dot dot-${node.validity}`} />
                 <span>{node.child}</span>
                 <span className="muted" style={{ marginLeft: 'auto' }}>
-                  {node.validity === 'rerun' ? `${VALIDITY_LABEL.rerun}·${node.reason}` : VALIDITY_LABEL[node.validity as 'pending' | 'valid']}
+                  {node.validity === 'rerun' ? `${VALIDITY_LABEL.rerun}（理由：${node.reason}）` : VALIDITY_LABEL[node.validity as 'pending' | 'valid']}
                 </span>
               </div>
             ))}
@@ -475,19 +476,19 @@ function Approval({
       </div>
       <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         <div className="card" style={{ flex: '1.6', minWidth: 320, borderLeft: '4px solid var(--danger)' }}>
-          <h5>Pending Review Gate</h5>
+          <h5><Term term="review gate">Pending Review Gate</Term>（等待你审批）</h5>
           <div className="kv"><b>decision</b><span className="pill pill-blocked">{gate.decision}</span></div>
           <div className="kv"><b>phase</b><span>{gate.phase}</span></div>
           <div className="kv">
-            <b>proposed_reruns</b>
+            <b><Term term="rerun">proposed_reruns</Term></b>
             <span className="mono">
               {gate.proposed_reruns.length
                 ? gate.proposed_reruns.map(([node, r]) => `${node} → ${r}`).join('; ')
                 : '（无）'}
             </span>
           </div>
-          <div className="kv"><b>state_version</b><span>{gate.state_version}</span></div>
-          <div className="kv"><b>digest</b><span className="mono">{gate.digest.slice(0, 16)}…</span></div>
+          <div className="kv"><b>state_version（内容版本）</b><span>{gate.state_version}</span></div>
+          <div className="kv"><b><Term term="digest">digest</Term></b><span className="mono">{gate.digest.slice(0, 16)}…</span></div>
           <div className="kv"><b>proposed_at</b><span>{gate.proposed_at ?? '—'}</span></div>
           <div style={{ borderTop: '1px solid var(--line-soft)', margin: '9px 0', paddingTop: 9 }}>
             <h5>本阶段产出摘要</h5>

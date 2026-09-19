@@ -6,6 +6,7 @@ import { usePolling } from '../hooks'
 import { useToast } from '../toast'
 import { parseRunTime, pendingGate, type RunState } from '../types'
 import { LiveIndicator, Modal, StatusPill, TableSkeleton } from '../ui'
+import { Term } from '../Term'
 
 type Filter = 'all' | 'active' | 'blocked' | 'completed' | 'aborted'
 
@@ -32,14 +33,42 @@ export default function Dashboard() {
   return <RunList repoId={selectedRepo.id} repoName={selectedRepo.name} onOpen={(runId) => navigate(`/runs/${runId}`)} />
 }
 
+const ONBOARDING_STEPS = [
+  { icon: '📁', title: '① 注册仓库', text: '左栏「＋ 添加仓库」，选择一个已配置 .ai-workflow.yaml 的项目目录' },
+  { icon: '🚀', title: '② 发起 Run', text: '点「＋ 发起 Run」写下需求——这相当于给 AI 开一张工单' },
+  { icon: '💻', title: '③ 回终端跑 agent', text: '在项目目录用 Codex/ZCode 加载 $ai-workflow-harness 技能，按 Run ID 执行 spec → plan → implement → verify' },
+  { icon: '✅', title: '④ 回这里看与批', text: 'GUI 实时显示阶段进度；卡在"待处理"时回来审批 gate、治理知识' },
+]
+
 function EmptyState() {
+  const hasRepos = false
   return (
-    <div className="empty">
-      <div className="icon">🗂️</div>
-      <div style={{ fontSize: 15, fontWeight: 700 }}>还没有注册任何仓库</div>
-      <div className="hint">
-        点击左侧「＋ 添加仓库」，输入一个包含{' '}
-        <span className="mono">.ai-workflow.yaml</span> 的仓库路径开始使用。注册时会自动校验配置文件。
+    <div style={{ maxWidth: 760, margin: '4vh auto 0' }}>
+      <div className="empty" style={{ minHeight: 'auto', marginBottom: 8 }}>
+        <div className="icon">🗂️</div>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>四步开始使用</div>
+        <div className="hint">
+          这个 GUI 是 AI 编码工作流的「驾驶舱」：agent 在终端写代码，你在这里发起任务、盯进度、做审批。
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        {ONBOARDING_STEPS.map((step) => (
+          <div className="card" key={step.title} style={{ margin: 0 }}>
+            <div style={{ fontSize: 18 }}>{step.icon}</div>
+            <div style={{ fontWeight: 700, margin: '4px 0' }}>{step.title}</div>
+            <div className="muted small" style={{ lineHeight: 1.7 }}>{step.text}</div>
+          </div>
+        ))}
+      </div>
+      <div className="card" style={{ marginTop: 10 }}>
+        <h5>工作流是什么？30 秒版</h5>
+        <div className="small" style={{ lineHeight: 1.9, color: 'var(--ink-2)' }}>
+          每个 Run（任务）会经过四个阶段：<b>spec</b>（写需求规格）→ <b>plan</b>（拆实施计划）→ <b>implement</b>（写代码）→{' '}
+          <b>verify</b>（跑构建和测试）。阶段产出由 agent 提交、系统做确定性校验；关键节点会生成{' '}
+          <b>审批 gate</b>——需要你看过产出、点「接受」之后流程才能继续。过程中 agent 产出的经验会沉淀为{' '}
+          <b>候选知识</b>，由你批准后进入知识库，供后续 run 复用。
+          {hasRepos ? '' : ' 现在从左栏「＋ 添加仓库」开始。'}
+        </div>
       </div>
     </div>
   )
@@ -226,8 +255,18 @@ function RunList({
           })}
           {visible.length === 0 && (
             <tr>
-              <td colSpan={7} className="muted" style={{ textAlign: 'center', padding: 26 }}>
-                没有符合条件的 run
+              <td colSpan={7} style={{ textAlign: 'center', padding: 30 }}>
+                {runs.length === 0 ? (
+                  <div>
+                    <div style={{ fontWeight: 700, marginBottom: 6 }}>还没有任何 Run</div>
+                    <div className="muted small" style={{ lineHeight: 1.8 }}>
+                      点右上角「＋ 发起 Run」写下需求 → 回终端让 agent 执行（$ai-workflow-harness）→ 回这里看进度。<br />
+                      一个 Run = 一次"给 AI 的完整任务"，四个阶段自动推进，卡住时等你审批。
+                    </div>
+                  </div>
+                ) : (
+                  <span className="muted">当前筛选没有匹配的 run——试试点「全部」chip 或清空搜索框</span>
+                )}
               </td>
             </tr>
           )}
@@ -318,7 +357,7 @@ function CreateRunModal({
   return (
     <Modal title={`发起 Run — ${repoName}`} onClose={onClose}>
       <div className="field">
-        <label>需求描述（requirement）</label>
+        <label>需求描述——「给 AI 的工单」，写清楚要做什么</label>
         <textarea
           className="textarea"
           placeholder="用一段话描述这次要完成的需求…"
@@ -329,14 +368,14 @@ function CreateRunModal({
       </div>
       <div style={{ display: 'flex', gap: 12 }}>
         <div className="field" style={{ flex: 1 }}>
-          <label>Profile</label>
+          <label><Term term="profile">Profile</Term>（流程模板）</label>
           <select className="select" value={profile} onChange={(event) => setProfile(event.target.value)}>
             <option value="full">full（四阶段）</option>
             <option value="grill">grill（三阶段，PRD 驱动）</option>
           </select>
         </div>
         <div className="field" style={{ flex: 2 }}>
-          <label>源 revision{head === null ? '（该仓库不是 git 仓库，必填）' : '（留空自动取当前 HEAD）'}</label>
+          <label><Term term="source revision">源 revision</Term>{head === null ? '（该仓库不是 git 仓库，必填）' : '（留空自动取当前 HEAD）'}</label>
           <input
             className="input mono"
             value={sourceRevision}

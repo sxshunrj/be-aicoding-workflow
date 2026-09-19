@@ -4,6 +4,7 @@ import { useApp } from '../App'
 import { usePolling } from '../hooks'
 import { useToast } from '../toast'
 import { TableSkeleton } from '../ui'
+import { Term } from '../Term'
 import type { ApprovedEntry, Candidate } from '../types'
 
 export default function Knowledge() {
@@ -59,7 +60,7 @@ export default function Knowledge() {
             setSelected(null)
           }}
         >
-          已批准
+          已批准（<Term term="approved">知识库</Term>）
         </div>
       </div>
 

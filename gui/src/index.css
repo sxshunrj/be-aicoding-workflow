@@ -196,3 +196,13 @@ pre.code { background: #f6f8fa; border: 1px solid var(--line); border-radius: 8p
 .diff-add { background: #e6f6ee; color: #116640; }
 .diff-del { background: #fdecec; color: #a33; }
 .diff-hunk { color: var(--brand); font-weight: 600; }
+
+/* ---- 术语提示 ---- */
+.term { border-bottom: 1px dashed var(--brand); cursor: help; position: relative; }
+.term-pop {
+  position: absolute; z-index: 60; left: 0; top: calc(100% + 6px);
+  width: 300px; background: #24292f; color: #e6e9ee; border-radius: 8px;
+  padding: 10px 12px; font-size: 12px; line-height: 1.7; box-shadow: 0 8px 24px rgba(20,30,50,.3);
+  display: flex; flex-direction: column; gap: 4px; cursor: default;
+}
+.term-pop b { color: #9ec2ff; font-weight: 600; }
