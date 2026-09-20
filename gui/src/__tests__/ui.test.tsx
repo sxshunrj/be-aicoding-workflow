@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { ConfirmDialog, Skeleton } from '../ui'
+import { ConfirmDialog, Modal, Skeleton } from '../ui'
 
 describe('ConfirmDialog', () => {
   it('确认与取消回调都触发', () => {
@@ -37,5 +37,26 @@ describe('Skeleton', () => {
   it('按行数渲染占位', () => {
     const { container } = render(<Skeleton lines={3} />)
     expect(container.querySelectorAll('.skeleton').length).toBe(3)
+  })
+})
+
+describe('Modal 焦点', () => {
+  it('初始焦点落在 autoFocus 输入框而非关闭按钮', () => {
+    render(
+      <Modal title="t" onClose={() => {}}>
+        <input data-testid="q" autoFocus placeholder="需求" />
+      </Modal>,
+    )
+    expect(document.activeElement).toBe(screen.getByTestId('q'))
+  })
+
+  it('无 autoFocus 时焦点落在第一个输入框', () => {
+    render(
+      <Modal title="t" onClose={() => {}}>
+        <p>说明</p>
+        <input data-testid="path" placeholder="路径" />
+      </Modal>,
+    )
+    expect(document.activeElement).toBe(screen.getByTestId('path'))
   })
 })

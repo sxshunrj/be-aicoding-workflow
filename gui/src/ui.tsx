@@ -13,10 +13,13 @@ export function Modal({
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
-    const first = boxRef.current?.querySelector<HTMLElement>(
-      'button, input, select, textarea, [tabindex]',
-    )
-    first?.focus()
+    const box = boxRef.current
+    const preferred = box
+      ? (box.querySelector<HTMLElement>('[autofocus]') ??
+        box.querySelector<HTMLElement>('input, textarea, select') ??
+        box.querySelector<HTMLElement>('button:not(.modal-close)'))
+      : null
+    preferred?.focus()
 
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
