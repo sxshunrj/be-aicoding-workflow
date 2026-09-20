@@ -497,14 +497,21 @@ function Approval({
           <h5><Term term="review gate">Pending Review Gate</Term>（等待你审批）</h5>
           <div className="kv"><b>decision</b><span className="pill pill-blocked">{gate.decision}</span></div>
           <div className="kv"><b>phase</b><span>{gate.phase}</span></div>
-          <div className="kv">
-            <b><Term term="rerun">proposed_reruns</Term></b>
-            <span className="mono">
-              {gate.proposed_reruns.length
-                ? gate.proposed_reruns.map(([node, r]) => `${node} → ${r}`).join('; ')
-                : '（无）'}
-            </span>
-          </div>
+          {gate.proposed_reruns.length > 0 ? (
+            <div style={{ padding: '6px 0', borderBottom: '1px dashed var(--line-soft)' }}>
+              <div className="muted small" style={{ marginBottom: 4 }}>
+                agent 建议重做以下节点（<Term term="rerun">重做 = 下次驱动时会重新执行</Term>）：
+              </div>
+              {gate.proposed_reruns.map(([node, reason]) => (
+                <div key={node} className="report-row" style={{ alignItems: 'baseline' }}>
+                  <span className="pill pill-rerun">{nodeLabel(node, run)}</span>
+                  <span className="muted small" style={{ lineHeight: 1.6 }}>{reason}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="kv"><b>重做建议</b><span className="muted">无——直接继续下一阶段</span></div>
+          )}
           <div className="kv"><b>state_version（内容版本）</b><span>{gate.state_version}</span></div>
           <div className="kv"><b><Term term="digest">digest</Term></b><span className="mono">{gate.digest.slice(0, 16)}…</span></div>
           <div className="kv"><b>proposed_at</b><span>{gate.proposed_at ?? '—'}</span></div>
@@ -557,6 +564,12 @@ function Approval({
   )
 }
 
+
+function nodeLabel(node: string, run: RunState): string {
+  const graph = run.run_graph[node]
+  const phase = PHASE_LABEL[node.split('.')[0]]
+  return `${phase ?? node.split('.')[0]} · ${graph?.child ?? node.split('.')[1] ?? ''}`
+}
 
 const EVENT_LABEL: Record<string, string> = {
   run_created: 'run 创建',
@@ -775,11 +788,12 @@ function DriverCard({
   const confirm = useConfirm()
   const operable = run.status !== 'completed' && run.status !== 'aborted'
   const [showConsole, setShowConsole] = useState(false)
-  const consoleRef = useRef<HTMLPreElement>(null)
+  const consoleRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (consoleRef.current) consoleRef.current.scrollTop = consoleRef.current.scrollHeight
   }, [drive?.tail?.length])
+
 
   async function start() {
     try {
@@ -822,8 +836,13 @@ function DriverCard({
 
   function statusPill(): { cls: string; text: string } {
     if (!drive || drive.state === 'idle') return { cls: 'pill-pending', text: '未启动' }
-    if (drive.state === 'running')
-      return { cls: 'pill-running', text: `● 运行中 · pid ${drive.pid}${drive.adopted ? '（重启接管）' : ''}` }
+    if (drive.state === 'running') {
+      const seconds = drive.started_at ? Math.max(0, Math.round(Date.now() / 1000 - drive.started_at)) : 0
+      return {
+        cls: 'pill-running',
+        text: `● 运行中 · 已 ${seconds}s${drive.adopted ? '（重启接管）' : ''}`,
+      }
+    }
     if (drive.state === 'unknown') return { cls: 'pill-blocked', text: '✕ 已结束（GUI 重启期间，退出码未知）' }
     if (drive.exit_code === 0) return { cls: 'pill-completed', text: '✓ 已正常退出' }
     return { cls: 'pill-blocked', text: `✕ 已退出（code ${drive.exit_code}）` }
@@ -883,9 +902,9 @@ function DriverCard({
         </div>
       )}
       {showConsole && drive && (
-        <pre className="code" ref={consoleRef} style={{ marginTop: 10, maxHeight: 300 }}>
-          {drive.tail.length ? drive.tail.join('\n') : '（暂无输出）'}
-        </pre>
+        <div className="md-body console" ref={consoleRef as never}>
+          {drive.tail.length ? <MarkdownView content={drive.tail.join('\n\n')} /> : <span className="muted">（暂无输出）</span>}
+        </div>
       )}
       {confirm.dialog}
     </div>
