@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 import subprocess
 
@@ -64,7 +64,7 @@ def register_repo(body: RegisterBody, request: Request):
     config = current_config(request)
     if any(item.id == entry.id for item in config.repos):
         return entry.to_dict()
-    save_config(GuiConfig(config.repos + (entry,), config.reviewer), config_path(request))
+    save_config(replace(config, repos=config.repos + (entry,)), config_path(request))
     return entry.to_dict()
 
 
@@ -73,7 +73,7 @@ def remove_repo(repo_id_value: str, request: Request):
     config = current_config(request)
     find_repo(config, repo_id_value)
     remaining = tuple(item for item in config.repos if item.id != repo_id_value)
-    save_config(GuiConfig(remaining, config.reviewer), config_path(request))
+    save_config(replace(config, repos=remaining), config_path(request))
     return {"removed": repo_id_value}
 
 
@@ -146,5 +146,5 @@ def update_settings(body: SettingsBody, request: Request):
     reviewer = body.reviewer.strip()
     if not reviewer:
         raise AppError("invalid_arguments", "reviewer must not be empty")
-    save_config(GuiConfig(config.repos, reviewer), config_path(request))
+    save_config(replace(config, reviewer=reviewer), config_path(request))
     return {"reviewer": reviewer}

@@ -308,7 +308,7 @@ def test_init_run_persists_model_and_drive_uses_it(client: TestClient, tmp_path)
 
     client.put(
         "/api/agent-config",
-        json={"command": "bash -c 'printf %s \"$3\"' x {prompt} {model}"},
+        json={"command": "bash -c 'printf %s \"$2\"' x {prompt} {model}"},
     )
     started = client.post(f"/api/repos/{repo_id}/runs/{run_id}/drive")
     assert started.status_code == 200

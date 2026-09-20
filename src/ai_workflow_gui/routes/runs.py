@@ -68,21 +68,15 @@ def init_run(body: InitBody, repo_id_value: str, request: Request):
     )
     model = (body.model or "").strip()
     if model:
+        from dataclasses import replace
+
         from ai_workflow_gui._deps import config_path
-        from ai_workflow_gui.config_store import GuiConfig, load_config, save_config
+        from ai_workflow_gui.config_store import load_config, save_config
 
         config = load_config(config_path(request))
         run_models = dict(config.run_models)
         run_models[state.run_id] = model
-        save_config(
-            GuiConfig(
-                config.repos,
-                config.reviewer,
-                config.agent_command,
-                run_models,
-            ),
-            config_path(request),
-        )
+        save_config(replace(config, run_models=run_models), config_path(request))
     return state.to_dict()
 
 

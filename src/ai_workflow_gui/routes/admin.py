@@ -21,7 +21,9 @@ from ai_workflow_gui._deps import (
     resolve_clients,
 )
 from ai_workflow_gui.agent_runner import DEFAULT_AGENT_COMMAND
-from ai_workflow_gui.config_store import GuiConfig, save_config
+from dataclasses import replace
+
+from ai_workflow_gui.config_store import save_config
 
 router = APIRouter(prefix="/api", tags=["admin"])
 
@@ -51,9 +53,7 @@ def put_agent_config(body: AgentConfigBody, request: Request):
     if "{prompt}" not in command:
         raise AppError("invalid_arguments", "agent 命令模板必须包含 {prompt} 占位符")
     config = current_config(request)
-    save_config(
-        GuiConfig(config.repos, config.reviewer, command), config_path(request)
-    )
+    save_config(replace(config, agent_command=command), config_path(request))
     return {"command": command}
 
 
