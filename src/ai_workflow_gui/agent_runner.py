@@ -121,6 +121,7 @@ class AgentDriver:
     def __init__(self, log_dir: Path | None = None) -> None:
         self._log_dir = log_dir or (Path.home() / ".ai-workflow-gui" / "agent-logs")
         self._jobs: dict[str, DriverJob] = {}
+        self._lock = threading.Lock()
         self._recover()
 
     # ---- 持久化 ----
@@ -317,3 +318,69 @@ class AgentDriver:
             prompt=prompt,
         )
         return {"resumed": True}
+
+    def schedule_resume(
+        self,
+        *,
+        run_id: str,
+        repo_id: str,
+        repo_root: Path,
+        template: str,
+        get_state,
+        timeout: float = 120.0,
+        interval: float = 2.0,
+        on_result=None,
+    ) -> None:
+        """接受 gate 时 agent 尚未退出：后台等它退出后自动接力（有界）。"""
+
+        def watch() -> None:
+            import logging
+
+            log = logging.getLogger("ai_workflow_gui")
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    state = get_state()
+                except AppError as error:
+                    if on_result:
+                        on_result({"resumed": False, "reason": error.message})
+                    return
+                if state.status in ("completed", "aborted"):
+                    if on_result:
+                        on_result({"resumed": False, "reason": "terminal"})
+                    return
+                gate = state.artifacts.get("review_gate")
+                if (
+                    isinstance(gate, dict)
+                    and gate.get("decision") == "human_review"
+                    and not gate.get("accepted_at")
+                ):
+                    if on_result:
+                        on_result({"resumed": False, "reason": "gate_pending"})
+                    return
+                if self.is_active(run_id):
+                    time.sleep(interval)
+                    continue
+                try:
+                    self.start(
+                        run_id=run_id,
+                        repo_id=repo_id,
+                        repo_root=repo_root,
+                        template=template,
+                        prompt=build_prompt(
+                            state.profile, run_id, state.requirement
+                        ),
+                    )
+                    log.info("auto-resume started agent for %s", run_id)
+                except AppError as error:
+                    log.warning("auto-resume failed for %s: %s", run_id, error.message)
+                    if on_result:
+                        on_result({"resumed": False, "reason": error.message})
+                    return
+                if on_result:
+                    on_result({"resumed": True})
+                return
+            if on_result:
+                on_result({"resumed": False, "reason": "timeout"})
+
+        threading.Thread(target=watch, daemon=True).start()

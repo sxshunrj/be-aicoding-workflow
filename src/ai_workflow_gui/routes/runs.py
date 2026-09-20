@@ -84,13 +84,24 @@ def review_accept(run_id: str, body: ReviewAcceptBody, repo_id_value: str, reque
         template = (
             current_config(request).agent_command.strip() or DEFAULT_AGENT_COMMAND
         )
-        auto_resume = request.app.state.driver.auto_resume(
+        result = request.app.state.driver.auto_resume(
             run_id=run_id,
             repo_id=repo_id_value,
             repo_root=root,
             state=service.status(run_id),
             template=template,
         )
+        if result.get("resumed") is False and result.get("reason") == "already_running":
+            request.app.state.driver.schedule_resume(
+                run_id=run_id,
+                repo_id=repo_id_value,
+                repo_root=root,
+                template=template,
+                get_state=lambda: WorkflowService(root).status(run_id),
+            )
+            auto_resume = {"resumed": False, "reason": "queued_after_exit"}
+        else:
+            auto_resume = result
     except AppError as error:
         auto_resume = {"resumed": False, "reason": error.message}
     return {"run": accepted, "auto_resume": auto_resume}

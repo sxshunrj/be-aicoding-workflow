@@ -211,3 +211,64 @@ def test_auto_resume_paths(client: TestClient, tmp_path):
     )
     assert terminal["resumed"] is False and terminal["reason"] == "terminal"
     assert (home / ".ai-workflow-gui" / "agent-logs").is_dir()
+
+
+def test_schedule_resume_after_agent_exit(client: TestClient, tmp_path):
+    """复现真实时序缺陷：gate 接受时 agent 尚未退出 → 后台等退出后自动接力。"""
+    import threading
+
+    from ai_workflow.workflow.service import WorkflowService
+
+    repo = make_repo(tmp_path)
+    repo_id = register(client, repo)
+    run_id = _init(client, repo_id)
+    driver = client.app.state.driver
+
+    first = driver.start(
+        run_id=run_id,
+        repo_id=repo_id,
+        repo_root=repo,
+        template="bash -c 'sleep 2' {prompt}",
+        prompt="p",
+    )
+    assert first["state"] == "running"
+
+    immediate = driver.auto_resume(
+        run_id=run_id,
+        repo_id=repo_id,
+        repo_root=repo,
+        state=WorkflowService(repo).status(run_id),
+        template="printf 'second' {prompt}",
+    )
+    assert immediate["resumed"] is False and immediate["reason"] == "already_running"
+
+    outcome: dict = {}
+    done = threading.Event()
+
+    def on_result(result: dict) -> None:
+        outcome.update(result)
+        done.set()
+
+    driver.schedule_resume(
+        run_id=run_id,
+        repo_id=repo_id,
+        repo_root=repo,
+        template="printf %s {prompt}",
+        get_state=lambda: WorkflowService(repo).status(run_id),
+        timeout=10,
+        interval=0.3,
+        on_result=on_result,
+    )
+    assert done.wait(12), "auto-resume watcher did not finish"
+    assert outcome["resumed"] is True
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        status = driver.status(run_id)
+        if status["state"] == "exited":
+            break
+        time.sleep(0.1)
+    assert status["state"] == "exited"
+    assert status["exit_code"] == 0
+    tail_text = "\n".join(status["tail"])
+    assert run_id in tail_text

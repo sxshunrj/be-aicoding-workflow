@@ -446,6 +446,8 @@ function Approval({
           const data = await api.reviewAccept(repoId, run.run_id, gate.digest)
           if (data.auto_resume?.resumed) {
             toast.success('已接受，agent 已自动继续执行')
+          } else if (data.auto_resume?.reason === 'queued_after_exit') {
+            toast.info('已接受；当前 agent 退出后将自动继续接力')
           } else if (data.auto_resume?.reason === 'gate_pending') {
             toast.info('已接受；gate 状态尚未就绪，请手动点「驱动 agent」')
           } else if (data.auto_resume?.reason) {
