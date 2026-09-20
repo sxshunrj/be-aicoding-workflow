@@ -881,6 +881,7 @@ function DriverCard({
           {drive.tail.length ? drive.tail.join('\n') : '（暂无输出）'}
         </pre>
       )}
+      {confirm.dialog}
     </div>
   )
 }
