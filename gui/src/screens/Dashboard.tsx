@@ -315,8 +315,23 @@ function CreateRunModal({
   const [profile, setProfile] = useState('full')
   const [head, setHead] = useState<string | null | undefined>(undefined)
   const [sourceRevision, setSourceRevision] = useState('')
+  const [model, setModel] = useState(() => window.localStorage.getItem('aiw.lastModel') ?? '')
+  const [agentCommand, setAgentCommand] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [confirmQuestion, setConfirmQuestion] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void api
+      .agentConfig()
+      .then((data) => {
+        if (!cancelled) setAgentCommand(data.command)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [repoId])
 
   useEffect(() => {
     let cancelled = false
@@ -356,6 +371,7 @@ function CreateRunModal({
         requirement: requirement.trim(),
         profile,
         source_revision: sourceRevision.trim() || undefined,
+        model: model.trim() || undefined,
       })
       onCreated(run.run_id)
     } catch (error) {
@@ -373,6 +389,7 @@ function CreateRunModal({
         requirement: requirement.trim(),
         profile,
         source_revision: sourceRevision.trim() || undefined,
+        model: model.trim() || undefined,
       })
       onCreated(run.run_id)
     } catch (error) {
@@ -400,6 +417,32 @@ function CreateRunModal({
           <option value="full">full —— 完整四阶段：先写规格、再拆计划、再写代码、最后验证（推荐）</option>
           <option value="grill">grill —— 三阶段：需求已有 PRD 文档时用，直接从计划开始</option>
         </select>
+      </div>
+
+      <div className="field">
+        <label>Agent 模型（留空 = 用 agent 默认模型）</label>
+        <input
+          className="input mono"
+          list="model-presets"
+          placeholder="如 deepseek-chat / sonnet / opus"
+          value={model}
+          onChange={(event) => {
+            setModel(event.target.value)
+            window.localStorage.setItem('aiw.lastModel', event.target.value)
+          }}
+        />
+        <datalist id="model-presets">
+          <option value="deepseek-chat" />
+          <option value="deepseek-flash" />
+          <option value="sonnet" />
+          <option value="opus" />
+          <option value="haiku" />
+        </datalist>
+        {model && agentCommand && !agentCommand.includes('{model}') && (
+          <div className="note note-warn" style={{ marginTop: 6 }}>
+            当前 agent 命令模板不含 <span className="mono">{'{model}'}</span> 占位符，模型选择不会生效——到「装机与诊断 → Agent 命令」更新模板。
+          </div>
+        )}
       </div>
 
       <details className="advanced">

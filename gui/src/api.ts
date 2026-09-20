@@ -63,8 +63,10 @@ export const api = {
     request<{ runs: RunState[]; errors: Array<{ run_id: string; error: string }> }>(
       `/api/repos/${repoId}/runs`,
     ),
-  initRun: (repoId: string, body: { requirement: string; profile: string; source_revision?: string }) =>
-    post<RunState>(`/api/repos/${repoId}/runs`, body),
+  initRun: (
+    repoId: string,
+    body: { requirement: string; profile: string; source_revision?: string; model?: string },
+  ) => post<RunState>(`/api/repos/${repoId}/runs`, body),
   run: (repoId: string, runId: string) =>
     request<RunState>(`/api/repos/${repoId}/runs/${runId}`),
   reviewAccept: (repoId: string, runId: string, expectedDigest: string) =>

@@ -272,3 +272,52 @@ def test_schedule_resume_after_agent_exit(client: TestClient, tmp_path):
     assert status["exit_code"] == 0
     tail_text = "\n".join(status["tail"])
     assert run_id in tail_text
+
+
+def test_render_argv_model_handling():
+    from ai_workflow_gui.agent_runner import render_argv
+
+    template = "claude -p {prompt} --model {model} --flag"
+    assert render_argv(template, "P", "deepseek-chat") == [
+        "claude", "-p", "P", "--model", "deepseek-chat", "--flag",
+    ]
+    assert render_argv(template, "P", "") == ["claude", "-p", "P", "--flag"]
+    assert render_argv("claude --model={model} -p {prompt}", "P", "") == ["claude", "-p", "P"]
+    assert render_argv("claude --model={model} -p {prompt}", "P", "m") == ["claude", "--model=m", "-p", "P"]
+
+
+def test_init_run_persists_model_and_drive_uses_it(client: TestClient, tmp_path):
+    from pathlib import Path as _P
+
+    from ai_workflow_gui.config_store import load_config
+
+    repo_id = register(client, make_repo(tmp_path))
+    created = client.post(
+        f"/api/repos/{repo_id}/runs",
+        json={
+            "requirement": "model pick",
+            "source_revision": "rev",
+            "model": "deepseek-chat",
+        },
+    )
+    assert created.status_code == 201
+    run_id = created.json()["run_id"]
+
+    config = load_config(_P(client.app.state.config_path))
+    assert config.run_models == {run_id: "deepseek-chat"}
+
+    client.put(
+        "/api/agent-config",
+        json={"command": "bash -c 'printf %s \"$3\"' x {prompt} {model}"},
+    )
+    started = client.post(f"/api/repos/{repo_id}/runs/{run_id}/drive")
+    assert started.status_code == 200
+    deadline = time.time() + 5
+    status = started.json()
+    while time.time() < deadline:
+        status = client.get(f"/api/repos/{repo_id}/runs/{run_id}/drive").json()
+        if status["exit_code"] is not None:
+            break
+        time.sleep(0.1)
+    assert status["exit_code"] == 0
+    assert "deepseek-chat" in "\n".join(status["tail"])

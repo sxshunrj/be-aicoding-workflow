@@ -12,7 +12,9 @@ import time
 
 from ai_workflow.errors import AppError
 
-DEFAULT_AGENT_COMMAND = "claude -p {prompt} --dangerously-skip-permissions"
+DEFAULT_AGENT_COMMAND = (
+    "claude -p {prompt} --model {model} --dangerously-skip-permissions"
+)
 MAX_TAIL_LINES = 400
 TAIL_READ_BYTES = 32_000
 
@@ -37,6 +39,23 @@ def _pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+
+
+def render_argv(template: str, prompt: str, model: str = "") -> list[str]:
+    """模板 → argv。{model} 为空时安全移除 --model/-m 与 = 形式占位。"""
+    argv: list[str] = []
+    for token in shlex.split(template):
+        if "{prompt}" in token:
+            argv.append(token.replace("{prompt}", prompt))
+            continue
+        if "{model}" in token:
+            if model:
+                argv.append(token.replace("{model}", model))
+            elif argv and argv[-1] in ("--model", "-m"):
+                argv.pop()
+            continue
+        argv.append(token)
+    return argv
 
 
 def _process_lstart(pid: int) -> str | None:
@@ -220,7 +239,14 @@ class AgentDriver:
     # ---- 操作 ----
 
     def start(
-        self, *, run_id: str, repo_id: str, repo_root: Path, template: str, prompt: str
+        self,
+        *,
+        run_id: str,
+        repo_id: str,
+        repo_root: Path,
+        template: str,
+        prompt: str,
+        model: str = "",
     ) -> dict[str, object]:
         if self.is_active(run_id):
             raise AppError("driver_busy", "该 run 的 agent 已在运行中")
@@ -228,12 +254,7 @@ class AgentDriver:
             raise AppError(
                 "invalid_arguments", "agent 命令模板必须包含 {prompt} 占位符"
             )
-        argv: list[str] = []
-        for token in shlex.split(template):
-            if "{prompt}" in token:
-                argv.append(token.replace("{prompt}", prompt))
-            else:
-                argv.append(token)
+        argv = render_argv(template, prompt, model)
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         log_path = self._log_dir / f"{run_id}-{timestamp}.log"
         self._log_dir.mkdir(parents=True, exist_ok=True)
@@ -295,7 +316,7 @@ class AgentDriver:
         return self.status(run_id)
 
     def auto_resume(
-        self, *, run_id: str, repo_id: str, repo_root: Path, state, template: str
+        self, *, run_id: str, repo_id: str, repo_root: Path, state, template: str, model: str = ""
     ) -> dict[str, object]:
         """gate 接受后的自动接力：可驱且空闲才启动。"""
         if state.status in ("completed", "aborted"):
@@ -316,6 +337,7 @@ class AgentDriver:
             repo_root=repo_root,
             template=template,
             prompt=prompt,
+            model=model,
         )
         return {"resumed": True}
 
@@ -326,6 +348,7 @@ class AgentDriver:
         repo_id: str,
         repo_root: Path,
         template: str,
+        model: str = "",
         get_state,
         timeout: float = 120.0,
         interval: float = 2.0,
@@ -370,6 +393,7 @@ class AgentDriver:
                         prompt=build_prompt(
                             state.profile, run_id, state.requirement
                         ),
+                        model=model,
                     )
                     log.info("auto-resume started agent for %s", run_id)
                 except AppError as error:

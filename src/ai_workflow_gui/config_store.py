@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import os
@@ -25,6 +25,7 @@ class GuiConfig:
     repos: tuple[RepoEntry, ...] = ()
     reviewer: str = ""
     agent_command: str = ""
+    run_models: dict[str, str] = field(default_factory=dict)
 
 
 def repo_id(path: str | Path) -> str:
@@ -60,10 +61,17 @@ def load_config(path: Path | None = None) -> GuiConfig:
             )
     reviewer = raw.get("reviewer")
     agent_command = raw.get("agent_command")
+    run_models_raw = raw.get("run_models")
+    run_models = (
+        {str(k): str(v) for k, v in run_models_raw.items()}
+        if isinstance(run_models_raw, dict)
+        else {}
+    )
     return GuiConfig(
         tuple(repos),
         reviewer if isinstance(reviewer, str) else "",
         agent_command if isinstance(agent_command, str) else "",
+        run_models,
     )
 
 
@@ -74,6 +82,7 @@ def save_config(config: GuiConfig, path: Path | None = None) -> None:
         "repos": [entry.to_dict() for entry in config.repos],
         "reviewer": config.reviewer,
         "agent_command": config.agent_command,
+        "run_models": config.run_models,
     }
     descriptor, temporary = tempfile.mkstemp(
         prefix=".config.", suffix=".tmp", dir=path.parent

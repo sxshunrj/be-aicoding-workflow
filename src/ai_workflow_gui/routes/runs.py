@@ -22,6 +22,7 @@ class InitBody(BaseModel):
     requirement: str
     profile: str = "full"
     source_revision: str | None = None
+    model: str | None = None
 
 
 class ReviewAcceptBody(BaseModel):
@@ -62,11 +63,27 @@ def init_run(body: InitBody, repo_id_value: str, request: Request):
             "invalid_source_revision",
             "source revision is required (repository has no git HEAD)",
         )
-    return (
-        WorkflowService(root)
-        .init(root, source_revision, body.requirement, body.profile)
-        .to_dict()
+    state = WorkflowService(root).init(
+        root, source_revision, body.requirement, body.profile
     )
+    model = (body.model or "").strip()
+    if model:
+        from ai_workflow_gui._deps import config_path
+        from ai_workflow_gui.config_store import GuiConfig, load_config, save_config
+
+        config = load_config(config_path(request))
+        run_models = dict(config.run_models)
+        run_models[state.run_id] = model
+        save_config(
+            GuiConfig(
+                config.repos,
+                config.reviewer,
+                config.agent_command,
+                run_models,
+            ),
+            config_path(request),
+        )
+    return state.to_dict()
 
 
 @router.get("/{run_id}")
@@ -84,12 +101,15 @@ def review_accept(run_id: str, body: ReviewAcceptBody, repo_id_value: str, reque
         template = (
             current_config(request).agent_command.strip() or DEFAULT_AGENT_COMMAND
         )
+        config = current_config(request)
+        model = config.run_models.get(run_id, "")
         result = request.app.state.driver.auto_resume(
             run_id=run_id,
             repo_id=repo_id_value,
             repo_root=root,
             state=service.status(run_id),
             template=template,
+            model=model,
         )
         if result.get("resumed") is False and result.get("reason") == "already_running":
             request.app.state.driver.schedule_resume(
@@ -97,6 +117,7 @@ def review_accept(run_id: str, body: ReviewAcceptBody, repo_id_value: str, reque
                 repo_id=repo_id_value,
                 repo_root=root,
                 template=template,
+                model=model,
                 get_state=lambda: WorkflowService(root).status(run_id),
             )
             auto_resume = {"resumed": False, "reason": "queued_after_exit"}
@@ -181,6 +202,7 @@ def drive_run(run_id: str, repo_id_value: str, request: Request):
         raise AppError("driver_busy", "该 run 的 agent 已在运行中")
     config = current_config(request)
     template = config.agent_command.strip() or DEFAULT_AGENT_COMMAND
+    model = config.run_models.get(run_id, "")
     prompt = build_prompt(state.profile, run_id, state.requirement)
     return driver.start(
         run_id=run_id,
@@ -188,6 +210,7 @@ def drive_run(run_id: str, repo_id_value: str, request: Request):
         repo_root=root,
         template=template,
         prompt=prompt,
+        model=model,
     )
 
 

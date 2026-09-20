@@ -334,13 +334,13 @@ function AgentTab() {
           />
         </div>
         <div className="chips">
-          <button className="chip" onClick={() => setCommand('claude -p {prompt} --dangerously-skip-permissions')}>
+          <button className="chip" onClick={() => setCommand('claude -p {prompt} --model {model} --dangerously-skip-permissions')}>
             Claude Code 无头模式
           </button>
-          <button className="chip" onClick={() => setCommand('caffeinate claude -p {prompt} --dangerously-skip-permissions')}>
+          <button className="chip" onClick={() => setCommand('caffeinate claude -p {prompt} --model {model} --dangerously-skip-permissions')}>
             Claude + 防休眠
           </button>
-          <button className="chip" onClick={() => setCommand('codex exec --full-auto {prompt}')}>
+          <button className="chip" onClick={() => setCommand('codex exec --full-auto -m {model} {prompt}')}>
             Codex exec
           </button>
         </div>
