@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { useApp } from '../App'
 import { usePolling, useRunStream } from '../hooks'
@@ -35,6 +35,7 @@ function artifactMeta(key: string) {
 
 export default function RunDetail() {
   const { runId = '' } = useParams()
+  const navigate = useNavigate()
   const { selectedRepo } = useApp()
   const [tab, setTab] = useState<'overview' | 'approval' | 'files'>('overview')
   const [, setTick] = useState(0)
@@ -62,6 +63,11 @@ export default function RunDetail() {
 
   return (
     <div>
+      <div style={{ marginBottom: 8 }}>
+        <button className="btn btn-ghost btn-sm" onClick={() => navigate('/')}>
+          ‹ 返回 Runs
+        </button>
+      </div>
       <div className="tabs" style={{ marginBottom: 0, marginTop: -6 }}>
         <div className={`tab${tab === 'overview' ? ' active' : ''}`} onClick={() => setTab('overview')}>
           概览
