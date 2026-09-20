@@ -114,11 +114,6 @@ def block_run(run_id: str, body: BlockBody, repo_id_value: str, request: Request
     return service(request, repo_id_value).block(run_id, body.reason).to_dict()
 
 
-@router.post("/{run_id}/repair-review-gate")
-def repair_review_gate(run_id: str, repo_id_value: str, request: Request):
-    return service(request, repo_id_value).repair_review_gate(run_id).to_dict()
-
-
 @router.post("/{run_id}/resume")
 def resume_run(run_id: str, body: ResumeBody, repo_id_value: str, request: Request):
     for node, reason in body.reruns.items():

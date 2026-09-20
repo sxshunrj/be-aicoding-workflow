@@ -81,7 +81,6 @@ GUI 自身配置：`~/.ai-workflow-gui/config.json`，记录注册的 repo 路�
 | `/api/repos/{id}/runs/{run_id}` | GET | `service.status` | 返回 `RunState.to_dict()`；审批 Tab 数据源即其中 `artifacts["review_gate"]` |
 | `.../review-accept` | POST | `service.record_review_acceptance` | body：`expected_digest`（取自 gate 卡片，digest 乐观锁） |
 | `.../block` | POST | `service.block` | body：`reason`(非空) |
-| `.../repair-review-gate` | POST | `service.repair_review_gate` | |
 | `.../resume` | POST | `service.resume` | body：`reruns: {node: reason}`（对应 CLI `NODE=REASON`，reason 必填） |
 | `.../abort` | POST | `service.abort` | |
 | `.../summary` | GET | `service.summary` | `RunSummary.to_dict()` |

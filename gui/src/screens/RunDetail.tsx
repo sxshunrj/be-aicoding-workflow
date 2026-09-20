@@ -13,7 +13,7 @@ import {
   type DriveStatus,
   type RunState,
 } from '../types'
-import { LiveIndicator, Modal, StatusPill, useConfirm } from '../ui'
+import { LiveIndicator, MarkdownView, Modal, StatusPill, useConfirm } from '../ui'
 import { Term } from '../Term'
 
 const ARTIFACT_META: Record<string, { label: string; icon: string; color: string }> = {
@@ -489,7 +489,8 @@ function Approval({
   return (
     <div>
       <div className="note">
-        ⚠ 该 run 在 <b>{gate.phase}</b> 阶段等待人工审批（状态 {run.status}）。接受后请在终端继续运行 agent 的对应阶段。
+        ⚠ 这个 run 在 <b>{gate.phase}</b> 阶段等你做决定：「接受」= 同意当前结果，agent 会自动接着往下跑；「驳回」=
+        打回重做，需填原因。
       </div>
       <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         <div className="card" style={{ flex: '1.6', minWidth: 320, borderLeft: '4px solid var(--danger)' }}>
@@ -548,13 +549,6 @@ function Approval({
                 </button>
               </div>
             )}
-            <button
-              className="btn btn-ghost"
-              disabled={busy}
-              onClick={() => void act(() => api.repairGate(repoId, run.run_id), 'gate 已修复')}
-            >
-              修复 review gate
-            </button>
           </div>
           {confirm.dialog}
         </div>
@@ -667,7 +661,11 @@ function FilesTab({ repoId, runId }: { repoId: string; runId: string }) {
       {file && (
         <Modal title={file.path} onClose={() => setFile(null)}>
           {file.truncated && <div className="note note-warn">文件过大，内容被截断</div>}
-          <pre className="code">{file.content}</pre>
+          {file.path.endsWith('.md') ? (
+            <MarkdownView content={file.content} />
+          ) : (
+            <pre className="code">{file.content}</pre>
+          )}
         </Modal>
       )}
     </div>

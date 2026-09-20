@@ -74,8 +74,6 @@ export const api = {
     ),
   block: (repoId: string, runId: string, reason: string) =>
     post<RunState>(`/api/repos/${repoId}/runs/${runId}/block`, { reason }),
-  repairGate: (repoId: string, runId: string) =>
-    post<RunState>(`/api/repos/${repoId}/runs/${runId}/repair-review-gate`),
   resume: (repoId: string, runId: string, reruns: Record<string, string>) =>
     post<RunState>(`/api/repos/${repoId}/runs/${runId}/resume`, { reruns }),
   abort: (repoId: string, runId: string) =>

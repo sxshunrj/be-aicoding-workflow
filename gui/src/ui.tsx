@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { marked } from 'marked'
 
 export function Modal({
   title,
@@ -181,4 +182,13 @@ export function LiveIndicator({ lastUpdated }: { lastUpdated: number | null }) {
   const seconds = Math.max(0, Math.round((Date.now() - lastUpdated) / 1000))
   const text = seconds < 5 ? '刚刚' : seconds < 60 ? `${seconds} 秒前` : `${Math.round(seconds / 60)} 分钟前`
   return <span className="live">● {text}自动刷新</span>
+}
+
+
+export function MarkdownView({ content }: { content: string }) {
+  const html = useMemo(() => {
+    void marked.parse('')
+    return marked.parse(content, { async: false }) as string
+  }, [content])
+  return <div className="md-body" dangerouslySetInnerHTML={{ __html: html }} />
 }

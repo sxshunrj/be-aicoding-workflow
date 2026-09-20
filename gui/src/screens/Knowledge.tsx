@@ -3,7 +3,7 @@ import { api } from '../api'
 import { useApp } from '../App'
 import { usePolling } from '../hooks'
 import { useToast } from '../toast'
-import { TableSkeleton } from '../ui'
+import { MarkdownView, TableSkeleton } from '../ui'
 import { Term } from '../Term'
 import type { ApprovedEntry, Candidate } from '../types'
 
@@ -233,7 +233,7 @@ function ApprovedDetail({
       </div>
       <div className="card">
         <h5>内容</h5>
-        <pre className="code">{entry.body}</pre>
+        <MarkdownView content={entry.body} />
       </div>
     </div>
   )
