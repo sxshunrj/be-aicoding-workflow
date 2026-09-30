@@ -25,7 +25,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool, type ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
-import { runHelper, type HelperEnvelope } from './cli.ts'
+import { runHelper, type HelperEnvelope } from './cli.js'
 
 export const name = 'tool-aicoding-workflow'
 export const inject = ['tools']

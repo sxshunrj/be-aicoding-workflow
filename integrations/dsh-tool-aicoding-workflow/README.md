@@ -40,23 +40,37 @@ helper 暴露三层命令面。本插件默认只给模型**编排与检视层**
 
 需要保留 Codex 式手动模式的部署，可显式打开 `exposeRunControl: true`（默认关闭）。
 
-## 挂载
-
-```yaml
-# profile 的插件配置层
-- name: dsh-tool-aicoding-workflow
-  cli: ['/abs/path/to/be-aicoding-workflow/.venv/bin/ai-workflow']
-  timeoutMs: 120000
-  exposeRunControl: false
-```
-
-`cli` 是启动 helper 的 argv 前缀。DSH 进程的 PATH 里通常没有 `.venv/bin`，**建议写绝对路径**；`cli` 为空或不可执行时，工具会返回 `helper_not_found` / `helper_not_configured`，而不是静默失败。
-
-安装插件：
+## 挂载（已实测验证）
 
 ```bash
-dsh plugin --profile <name> add ./integrations/dsh-tool-aicoding-workflow   # 转发给 profile 目录里的 pnpm
+# 1) 构建（profile 通过 main: lib/index.js 解析本包）
+cd integrations/dsh-tool-aicoding-workflow && npm install && npm run build
+
+# 2) 建一个独立 profile（不要用正在使用的 desktop/web/headless）
+cp -R "$DSH_HOME/profiles/headless" "$DSH_HOME/profiles/aiworkflow-check"
+#    然后把 profile 的 package.json name 改成 dsh-profile-aiworkflow-check
+
+# 3) 装成本地 link 依赖
+dsh plugin --profile aiworkflow-check add "$PWD"
+
+# 4) 在 profile 的 cordis.patch.yml 里插入插件条目
+cat >> "$DSH_HOME/profiles/aiworkflow-check/cordis.patch.yml" <<'YAML'
+- insert:
+    - id: aiworkflow-tools
+      name: 'dsh-tool-aicoding-workflow'
+      config:
+        cli: ['/abs/path/to/be-aicoding-workflow/.venv/bin/ai-workflow']
+        timeoutMs: 120000
+        exposeRunControl: false
+YAML
+
+# 5) 验证组合结果，无需启动 agent
+dsh --profile aiworkflow-check --dump-config | grep -A5 aiworkflow-tools
 ```
+
+`insert:` 是插入新条目的语法（`@deepseek-ai/dsh-base` 自己的 bundle 也这么起头）；`dsh plugin add` 只装包，**不会**自动加载，必须在上面的 patch 层里引用。
+
+`cli` 是启动 helper 的 argv 前缀。DSH 进程的 PATH 里通常没有 `.venv/bin`，**必须写绝对路径**；`cli` 为空或不可执行时，工具会返回 `helper_not_found` / `helper_not_configured`，而不是静默失败。
 
 ### 依赖版本必须与宿主一致
 
@@ -74,7 +88,7 @@ dsh plugin --profile <name> add ./integrations/dsh-tool-aicoding-workflow   # �
 ## 已知缺口
 
 1. **`stage_owned` 未暴露**：grill profile 的 `plan.prd` 是 `workflow_owned` 节点，`aiworkflow_run_start` 遇到它会停下并给出需要 owner 补的 `stage-owned` 命令。要不要把它放进编排面，得先决定它算不算"代写 child 结果"。
-2. **`run_start` 未在 DSH 里实测挂载**：类型检查（`tsc --noEmit`）通过，Python 侧 `run --detach` / `run-status` 已有端到端验证（`tests/e2e/test_orchestrator_detach.py`），但"插件被 profile 加载后模型真的能调用"这一步没有在真实 profile 里跑过。
+2. **`run_start` 全流程未在 DSH turn 内跑过**：插件已在真实 profile 里加载成功，且模型调用 `aiworkflow_doctor` 走通了整条链路；但"让模型发起 `aiworkflow_run_start` 并轮询到 gate"这一步只在 Python 侧（`tests/e2e/test_orchestrator_detach.py`）验证过。
 3. **未编译产物**：本目录没有 `node_modules` 与构建产物；挂载前需要 `pnpm install && pnpm typecheck`。
 4. **Skill 文档尚未描述 orchestrator**：`helper-cli.md` 的命令矩阵被契约测试逐行锁定（15 条 `config|workflow` 命令），要把 `ai-workflow run` 写进去必须同步改 `tests/contract/test_skill_contract.py`，这是一次有意的文档变更，本提交未做。
 
@@ -82,6 +96,31 @@ dsh plugin --profile <name> add ./integrations/dsh-tool-aicoding-workflow   # �
 
 ```bash
 cd integrations/dsh-tool-aicoding-workflow
-pnpm install
-pnpm typecheck
+npm install
+npm run typecheck     # tsc --noEmit
+npm run build         # 产出 lib/
+
+# 端到端：让模型真的调用一次工具（headless profile 跑一个任务后退出）
+dsh aiworkflow-check "Call the tool aiworkflow_doctor exactly once with \
+  source_root=\"$PWD/../../skills\", repo=\"$PWD/../../examples/language-neutral\", client=\"all\". \
+  Then reply with the tool result verbatim."
+```
+
+最后一次实测输出（2026-09-30，dsh 0.2.0-rc.2）：
+
+```
+cli_import            pass  "ai_workflow.cli imports"
+canonical_skill_layout pass  "canonical skills valid"
+installed_skills      pass  "installed skill digests match"
+repository_config     pass  "repository config loads"
+wiki_lint             pass  "wiki lint clean"
+failed: []
+```
+
+即：profile → 插件加载 → 工具注册 → 模型调用 → Python helper → envelope 原样回传，整条链路通了。
+
+清理这个 profile：
+
+```bash
+rm -rf "$DSH_HOME/profiles/aiworkflow-check"
 ```
