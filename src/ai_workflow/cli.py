@@ -1,9 +1,12 @@
 import argparse
 from dataclasses import asdict
+from datetime import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import shlex
+import subprocess
 import sys
 from typing import Sequence
 
@@ -52,6 +55,13 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--timeout-seconds", type=int, default=1800)
     run.add_argument("--max-steps", type=int, default=200)
     run.add_argument("--gate", choices=("refuse", "prompt"), default="refuse")
+    run.add_argument("--progress", type=Path, help="write one NDJSON line per loop event")
+    run.add_argument("--result-file", type=Path, help="final envelope path, with --detach")
+    run.add_argument("--detach", action="store_true", help="drive the run in a background process")
+    run_status = commands.add_parser("run-status")
+    run_status.add_argument("--repo", type=Path, required=True)
+    run_status.add_argument("--run-id", required=True)
+    run_status.add_argument("--progress-limit", type=int, default=200)
     run.add_argument("--evidence", dest="evidence", action="store_true", default=True)
     run.add_argument("--no-evidence", dest="evidence", action="store_false")
     config = commands.add_parser("config")
@@ -208,7 +218,43 @@ def _run_command(args: argparse.Namespace) -> dict[str, object]:
             "--child-command is required; pass an argv template such as "
             "'codex exec {prompt_file} {result_file}'",
         )
+    if args.detach and args.gate == "prompt":
+        raise AppError(
+            "invalid_arguments",
+            "--detach cannot use --gate prompt: a detached run has no stdin",
+        )
     service = WorkflowService(args.repo)
+    if args.detach:
+        return _start_detached(args, service)
+    if args.result_file is not None:
+        raise AppError(
+            "invalid_arguments", "--result-file is only meaningful with --detach"
+        )
+
+    progress = args.progress
+    stream = None
+    if progress is not None:
+        progress.parent.mkdir(parents=True, exist_ok=True)
+        stream = progress.open("w", encoding="utf-8")
+
+    def on_event(event) -> None:
+        payload = json.dumps(event.data, ensure_ascii=False, sort_keys=True)
+        print(f"[{event.kind}] {payload}", file=sys.stderr)
+        if stream is not None:
+            stream.write(
+                json.dumps(
+                    {
+                        "time": datetime.now().isoformat(),
+                        "kind": event.kind,
+                        "data": event.data,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+            stream.flush()
+
     runner = SubprocessChildRunner(
         template, repo_root=args.repo, timeout_seconds=args.timeout_seconds
     )
@@ -221,12 +267,27 @@ def _run_command(args: argparse.Namespace) -> dict[str, object]:
         skill_dir=args.skill_dir,
         evidence=recorder,
         max_steps=args.max_steps,
-        on_event=lambda event: print(
-            f"[{event.kind}] {json.dumps(event.data, ensure_ascii=False, sort_keys=True)}",
-            file=sys.stderr,
-        ),
+        on_event=on_event,
     )
     outcome = loop.run(args.run_id)
+    if stream is not None:
+        stream.write(
+            json.dumps(
+                {
+                    "time": datetime.now().isoformat(),
+                    "kind": "run_finished",
+                    "data": {
+                        "status": outcome.status,
+                        "steps": outcome.steps,
+                        "stopped_reason": outcome.stopped_reason,
+                    },
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        stream.close()
     return {
         "run_id": outcome.run_id,
         "status": outcome.status,
@@ -235,6 +296,108 @@ def _run_command(args: argparse.Namespace) -> dict[str, object]:
         "events": [
             {"kind": event.kind, "data": event.data} for event in outcome.events
         ],
+    }
+
+
+def _run_status_command(args: argparse.Namespace) -> dict[str, object]:
+    """Read a run's persisted status plus its detached progress and result.
+
+    The harness directory layout stays inside this module: an external driver
+    polls one command instead of duplicating the on-disk paths.
+    """
+    service = WorkflowService(args.repo)
+    state = service.status(args.run_id)
+    harness = service.harness_directory(args.run_id)
+    progress_path = harness / "run-progress.jsonl"
+    result_path = harness / "run-result.json"
+    events: list[object] = []
+    if progress_path.is_file():
+        lines = [
+            line
+            for line in progress_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        for line in lines[-args.progress_limit :]:
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError as error:
+                raise AppError(
+                    "invalid_state", "run progress line is malformed"
+                ) from error
+    result: object = None
+    if result_path.is_file():
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise AppError("invalid_state", "run result is malformed") from error
+    return {
+        "run_id": state.run_id,
+        "status": state.status,
+        "current_phase": state.current_phase,
+        # Best effort: a detached driver writes the result when it stops, so an
+        # absent result means the loop has not settled yet.
+        "running": result is None
+        and state.status not in {"completed", "aborted", "blocked"},
+        "progress_path": str(progress_path),
+        "result_path": str(result_path),
+        "progress": events,
+        "result": result,
+    }
+
+
+def _start_detached(
+    args: argparse.Namespace, service: WorkflowService
+) -> dict[str, object]:
+    """Start the loop in a background process and return an observable handle.
+
+    The detached process writes one NDJSON progress line per loop event and its
+    final JSON envelope to the result file, so a driver (a DSH tool, a GUI, CI)
+    can start a run and poll it without holding the process open.
+    """
+    harness = service.harness_directory(args.run_id)
+    progress = args.progress or harness / "run-progress.jsonl"
+    result_file = args.result_file or harness / "run-result.json"
+    progress.parent.mkdir(parents=True, exist_ok=True)
+    result_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file = result_file.with_suffix(".log")
+    argv = [
+        sys.executable, "-m", "ai_workflow.cli", "run",
+        "--repo", str(args.repo),
+        "--run-id", args.run_id,
+        "--progress", str(progress),
+        "--timeout-seconds", str(args.timeout_seconds),
+        "--max-steps", str(args.max_steps),
+        "--gate", args.gate,
+    ]
+    for raw in args.child_command:
+        argv.extend(["--child-command", raw])
+    if args.skill_dir is not None:
+        argv.extend(["--skill-dir", str(args.skill_dir)])
+    if not args.evidence:
+        argv.append("--no-evidence")
+    env = dict(os.environ)
+    # The child re-imports this package, so it needs the same import roots as the
+    # parent: an editable install already provides them, a source checkout does not.
+    env["PYTHONPATH"] = os.pathsep.join(entry for entry in sys.path if entry)
+    with result_file.open("w", encoding="utf-8") as result_stream, log_file.open(
+        "w", encoding="utf-8"
+    ) as log_stream:
+        process = subprocess.Popen(
+            argv,
+            stdout=result_stream,
+            stderr=log_stream,
+            stdin=subprocess.DEVNULL,
+            cwd=str(args.repo),
+            env=env,
+            start_new_session=True,
+        )
+    return {
+        "run_id": args.run_id,
+        "status": "started",
+        "pid": process.pid,
+        "progress_path": str(progress),
+        "result_path": str(result_file),
+        "log_path": str(log_file),
     }
 
 
@@ -270,6 +433,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return status
         elif args.command == "run":
             data = _run_command(args)
+        elif args.command == "run-status":
+            data = _run_status_command(args)
         elif args.command == "config":
             if args.config_command == "migrate":
                 # Migration must run before RepositoryConfig.load: a legacy file
@@ -418,3 +583,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def entrypoint() -> None:
     raise SystemExit(main())
+
+
+if __name__ == "__main__":  # pragma: no cover - entry point for detached runs
+    entrypoint()
