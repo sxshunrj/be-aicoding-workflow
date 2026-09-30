@@ -3,6 +3,8 @@ from dataclasses import asdict
 import hashlib
 import json
 from pathlib import Path
+import shlex
+import sys
 from typing import Sequence
 
 from ai_workflow.config import RepositoryConfig
@@ -37,6 +39,21 @@ def _parser() -> argparse.ArgumentParser:
     doctor.add_argument("--source-root", type=Path, required=True)
     doctor.add_argument("--repo", type=Path)
     doctor.add_argument("--client", choices=("codex", "claude", "all"), default="all")
+    run = commands.add_parser("run")
+    run.add_argument("--repo", type=Path, required=True)
+    run.add_argument("--run-id", required=True)
+    run.add_argument("--skill-dir", type=Path)
+    run.add_argument(
+        "--child-command",
+        action="append",
+        default=[],
+        help="argv template for one child, e.g. 'codex exec {prompt_file} {result_file}'",
+    )
+    run.add_argument("--timeout-seconds", type=int, default=1800)
+    run.add_argument("--max-steps", type=int, default=200)
+    run.add_argument("--gate", choices=("refuse", "prompt"), default="refuse")
+    run.add_argument("--evidence", dest="evidence", action="store_true", default=True)
+    run.add_argument("--no-evidence", dest="evidence", action="store_false")
     config = commands.add_parser("config")
     config_commands = config.add_subparsers(dest="config_command", required=True)
     show = config_commands.add_parser("show")
@@ -171,6 +188,56 @@ def _reruns(values: list[str]) -> dict[str, str]:
     return reruns
 
 
+def _run_command(args: argparse.Namespace) -> dict[str, object]:
+    """Drive one run to a terminal status or to a human decision point."""
+    from ai_workflow.harness.evidence import EvidenceRecorder
+    from ai_workflow.harness.gates import PromptHumanGate, RefusingGate
+    from ai_workflow.harness.loop import RunLoop
+    from ai_workflow.harness.runner import SubprocessChildRunner
+
+    template = tuple(
+        token for raw in args.child_command for token in shlex.split(raw)
+    )
+    if not template:
+        raise AppError(
+            "invalid_child_command",
+            "--child-command is required; pass an argv template such as "
+            "'codex exec {prompt_file} {result_file}'",
+        )
+    service = WorkflowService(args.repo)
+    runner = SubprocessChildRunner(
+        template, repo_root=args.repo, timeout_seconds=args.timeout_seconds
+    )
+    gate = PromptHumanGate() if args.gate == "prompt" else RefusingGate()
+    recorder = (
+        EvidenceRecorder(service.harness_directory(args.run_id))
+        if args.evidence
+        else None
+    )
+    loop = RunLoop(
+        service,
+        runner,
+        gate,
+        skill_dir=args.skill_dir,
+        evidence=recorder,
+        max_steps=args.max_steps,
+        on_event=lambda event: print(
+            f"[{event.kind}] {json.dumps(event.data, ensure_ascii=False, sort_keys=True)}",
+            file=sys.stderr,
+        ),
+    )
+    outcome = loop.run(args.run_id)
+    return {
+        "run_id": outcome.run_id,
+        "status": outcome.status,
+        "steps": outcome.steps,
+        "stopped_reason": outcome.stopped_reason,
+        "events": [
+            {"kind": event.kind, "data": event.data} for event in outcome.events
+        ],
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
@@ -201,6 +268,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             status = 1 if report.failed else 0
             print(json.dumps({"ok": not report.failed, "data": data}))
             return status
+        elif args.command == "run":
+            data = _run_command(args)
         elif args.command == "config":
             config = RepositoryConfig.load(args.repo)
             if args.config_command == "show":

@@ -273,6 +273,16 @@ class WorkflowService:
     def status(self, run_id: str) -> RunState:
         return self._load(run_id)
 
+    def harness_directory(self, run_id: str) -> Path:
+        """Scratch directory for harness-owned files of one run.
+
+        A code-owned orchestrator keeps child result files and observed command
+        evidence here. The run subtree is the one place the checkpoint excludes
+        wholesale, so harness scratch never enters an implementation checkpoint,
+        and nothing under it is helper-validated run state.
+        """
+        return self._store(run_id).run_dir / "harness"
+
     def begin(
         self, run_id: str, phase: Phase, skill_dir: Path | None
     ) -> PhaseAttempt:
