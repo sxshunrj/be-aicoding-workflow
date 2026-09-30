@@ -209,11 +209,7 @@ def _run_command(args: argparse.Namespace) -> dict[str, object]:
         template, repo_root=args.repo, timeout_seconds=args.timeout_seconds
     )
     gate = PromptHumanGate() if args.gate == "prompt" else RefusingGate()
-    recorder = (
-        EvidenceRecorder(service.harness_directory(args.run_id))
-        if args.evidence
-        else None
-    )
+    recorder = EvidenceRecorder() if args.evidence else None
     loop = RunLoop(
         service,
         runner,

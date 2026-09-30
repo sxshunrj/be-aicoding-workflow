@@ -52,6 +52,7 @@ BLOCKED_STATE_KEY = "_blocked_state"
 LAST_TRANSITION_KEY = "_last_transition"
 RUN_POLICY_KEY = "_run_policy"
 LIFECYCLE_OPERATION_KEY = "_lifecycle_operation"
+EVIDENCE_KEY = "harness_evidence"
 LIFECYCLE_EVENT_TYPES = {
     "block": "run_blocked",
     "resume": "run_resumed",
@@ -187,6 +188,7 @@ class RunSummary:
     rerun_count: int
     review_gate_decisions: tuple[dict[str, object], ...]
     cited_knowledge_ids: tuple[str, ...]
+    harness_evidence: tuple[dict[str, object], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -196,6 +198,7 @@ class RunSummary:
             "rerun_count": self.rerun_count,
             "review_gate_decisions": list(self.review_gate_decisions),
             "cited_knowledge_ids": list(self.cited_knowledge_ids),
+            "harness_evidence": list(self.harness_evidence),
         }
 
 
@@ -864,7 +867,7 @@ class WorkflowService:
             return aggregate
 
     def summary(self, run_id: str) -> RunSummary:
-        self._load(run_id)
+        state = self._load(run_id)
         events = self._read_events(run_id)
         for path in self._store(run_id).run_dir.glob("attempts/*/dispatch/*.json"):
             try:
@@ -939,7 +942,116 @@ class WorkflowService:
             reruns,
             transitions,
             tuple(sorted(cited)),
+            self._harness_evidence(state),
         )
+
+    @staticmethod
+    def _harness_evidence(state: RunState) -> tuple[dict[str, object], ...]:
+        """Flatten recorded harness evidence, ordered by attempt then child."""
+        raw = state.artifacts.get(EVIDENCE_KEY)
+        if raw is None:
+            return ()
+        if not isinstance(raw, dict):
+            raise AppError("invalid_state", "harness evidence metadata is invalid")
+        records: list[dict[str, object]] = []
+        for attempt_id in sorted(raw):
+            per_attempt = raw[attempt_id]
+            if not isinstance(per_attempt, dict):
+                raise AppError("invalid_state", "harness evidence metadata is invalid")
+            for child in sorted(per_attempt):
+                record = per_attempt[child]
+                if (
+                    not isinstance(record, dict)
+                    or record.get("attempt_id") != attempt_id
+                    or record.get("child") != child
+                ):
+                    raise AppError("invalid_state", "harness evidence metadata is invalid")
+                records.append(dict(record))
+        return tuple(records)
+
+    def record_evidence(
+        self,
+        run_id: str,
+        *,
+        attempt_id: str,
+        node: str,
+        child: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        """Persist harness-observed command evidence for one child of one attempt.
+
+        The observation is written immutably under ``<run>/harness/evidence`` and
+        registered in ``state.artifacts['harness_evidence']``, so a run summary
+        reports what the harness itself saw instead of what a child claimed.
+        Recording is idempotent for identical bytes and refuses to overwrite a
+        different observation of the same attempt and child.
+
+        Callers must record before ``review``: a write after the review gate is
+        proposed invalidates that gate as stale.
+        """
+        if (
+            not isinstance(attempt_id, str)
+            or ATTEMPT_ID_PATTERN.fullmatch(attempt_id) is None
+        ):
+            raise AppError("invalid_evidence", "evidence attempt ID is invalid")
+        try:
+            body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        except (TypeError, ValueError) as error:
+            raise AppError(
+                "invalid_evidence", "harness evidence is not lossless JSON"
+            ) from error
+        encoded = body.encode("utf-8")
+        digest = hashlib.sha256(encoded).hexdigest()
+        store = self._store(run_id)
+        with store.event_lock():
+            state = self._load_locked(store, run_id)
+            history = self._mapping(
+                state.artifacts, "attempt_history", "attempt history"
+            )
+            if attempt_id not in history:
+                raise AppError(
+                    "attempt_owner_mismatch",
+                    "harness evidence does not belong to an attempt of this run",
+                )
+            registered = state.artifacts.get(EVIDENCE_KEY)
+            if registered is None:
+                registered = {}
+                state.artifacts[EVIDENCE_KEY] = registered
+            if not isinstance(registered, dict):
+                raise AppError("invalid_state", "harness evidence metadata is invalid")
+            per_attempt = registered.setdefault(attempt_id, {})
+            if not isinstance(per_attempt, dict):
+                raise AppError("invalid_state", "harness evidence metadata is invalid")
+            existing = per_attempt.get(child)
+            if isinstance(existing, dict):
+                if existing.get("sha256") == digest:
+                    return dict(existing)
+                raise AppError(
+                    "evidence_conflict",
+                    f"harness evidence for {attempt_id}/{child} already exists "
+                    "with different content",
+                )
+            relative = Path("harness") / "evidence" / f"{attempt_id}-{child}.json"
+            store.write_immutable(store.run_dir / relative, encoded)
+            registration = {
+                "attempt_id": attempt_id,
+                "child": child,
+                "node": node,
+                "path": relative.as_posix(),
+                "sha256": digest,
+                "exit_status": payload.get("exit_status"),
+                "argv": payload.get("argv"),
+                "duration_ms": payload.get("duration_ms"),
+                "output_digest": payload.get("output_digest"),
+            }
+            per_attempt[child] = registration
+            recorded_at = self.clock().isoformat()
+            store.save_locked(
+                state.version,
+                state,
+                Event("harness_evidence_recorded", registration, recorded_at),
+            )
+            return dict(registration)
 
     def reflection_packet(self, run_id: str) -> ReflectionPacket:
         state = self._load(run_id)

@@ -165,11 +165,9 @@ def test_subprocess_runner_reports_missing_executable(tmp_path: Path) -> None:
     assert "could not start" in (outcome.failure or "")
 
 
-def test_evidence_recorder_persists_what_it_observed(tmp_path: Path) -> None:
-    recorder = EvidenceRecorder(tmp_path / "harness")
+def test_evidence_recorder_reports_what_it_observed(tmp_path: Path) -> None:
+    recorder = EvidenceRecorder()
     record = recorder.record(
-        run_id="RUN-20260101-000000-abcdef",
-        attempt_id="verify-1-abcdef",
         node="verify.build",
         child="build",
         command=("python3", "-c", "print('built ok')"),
@@ -177,17 +175,17 @@ def test_evidence_recorder_persists_what_it_observed(tmp_path: Path) -> None:
     )
     assert record.passed
     assert record.exit_status == 0
-    payload = json.loads(Path(record.path).read_text(encoding="utf-8"))
+    assert record.output_digest
+    payload = record.to_payload()
     assert payload["node"] == "verify.build"
+    assert payload["child"] == "build"
     assert payload["exit_status"] == 0
-    assert payload["output_digest"] == record.output_digest
+    assert payload["argv"] == ["python3", "-c", "print('built ok')"]
 
 
 def test_evidence_recorder_captures_non_zero_exit(tmp_path: Path) -> None:
-    recorder = EvidenceRecorder(tmp_path / "harness")
+    recorder = EvidenceRecorder()
     record = recorder.record(
-        run_id="RUN-20260101-000000-abcdef",
-        attempt_id="verify-1-abcdef",
         node="verify.unit_test",
         child="unit_test",
         command=("python3", "-c", "import sys;print('boom');sys.exit(2)"),

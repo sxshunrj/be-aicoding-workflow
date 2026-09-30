@@ -77,6 +77,7 @@ def test_loop_drives_a_full_run_to_completion(project_template, tmp_path: Path) 
         FakeChildRunner(repo),
         gate,
         skill_dir=repo / ".test-skill",
+        evidence=EvidenceRecorder(),
     )
 
     outcome = loop.run(run_id)
@@ -90,6 +91,12 @@ def test_loop_drives_a_full_run_to_completion(project_template, tmp_path: Path) 
     # full profile minus the disabled integration_test node
     assert kinds.count("stage") == 7
     assert kinds[-1] == "terminal"
+
+    summary = _service(repo).summary(run_id)
+    observed = {record["child"]: record for record in summary.harness_evidence}
+    assert set(observed) == {"build", "unit_test"}
+    assert all(record["exit_status"] == 0 for record in observed.values())
+    assert observed["build"]["node"] == "verify.build"
 
 
 def test_failing_harness_evidence_blocks_the_verify_phase(project_template, tmp_path: Path) -> None:
@@ -115,7 +122,7 @@ def test_failing_harness_evidence_blocks_the_verify_phase(project_template, tmp_
         FakeChildRunner(repo),
         BlockOnFailingEvidenceGate(),
         skill_dir=repo / ".test-skill",
-        evidence=EvidenceRecorder(harness_root),
+        evidence=EvidenceRecorder(),
     )
 
     outcome = loop.run(run_id)

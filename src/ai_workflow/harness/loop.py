@@ -14,7 +14,7 @@ answer on a human's behalf.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -197,7 +197,7 @@ class RunLoop:
                 # A child produced no result: the loop parked the run and returns.
                 return RunOutcome(run_id, BLOCKED_STATUS, step, tuple(events))
 
-            evidence = self._collect_evidence(run_id, attempt)
+            evidence = self._collect_evidence(emit, run_id, attempt)
             aggregate = self.service.finalize(run_id, attempt.attempt_id)
             emit(
                 "finalize",
@@ -278,8 +278,14 @@ class RunLoop:
             emit("stage", child=item.child, node=item.node, result=str(result_path))
         return True
 
-    def _collect_evidence(self, run_id: str, attempt: PhaseAttempt) -> tuple[EvidenceRecord, ...]:
-        """Run the configured command for every child that has one."""
+    def _collect_evidence(
+        self, emit: Callable[..., None], run_id: str, attempt: PhaseAttempt
+    ) -> tuple[EvidenceRecord, ...]:
+        """Run the configured command for every child that has one, and persist it.
+
+        Persisting happens here, before ``finalize``/``review``: a state write after
+        the review gate is proposed would invalidate that gate as stale.
+        """
         if self.evidence is None or self.service.repo_root is None:
             return ()
         config = RepositoryConfig.load(self.service.repo_root)
@@ -288,15 +294,26 @@ class RunLoop:
             command = config.command(item.child)
             if command is None:
                 continue
-            records.append(
-                self.evidence.record(
-                    run_id=run_id,
-                    attempt_id=attempt.attempt_id,
-                    node=item.node,
-                    child=item.child,
-                    command=command,
-                    cwd=self.service.repo_root,
-                )
+            observed = self.evidence.record(
+                node=item.node,
+                child=item.child,
+                command=command,
+                cwd=self.service.repo_root,
+            )
+            registration = self.service.record_evidence(
+                run_id,
+                attempt_id=attempt.attempt_id,
+                node=item.node,
+                child=item.child,
+                payload=observed.to_payload(),
+            )
+            records.append(replace(observed, path=str(registration.get("path", ""))))
+            emit(
+                "evidence",
+                node=item.node,
+                child=item.child,
+                exit_status=observed.exit_status,
+                path=registration.get("path"),
             )
         return tuple(records)
 
