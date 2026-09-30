@@ -13,10 +13,13 @@ def _read(skill_dir: Path, relative: str = "SKILL.md") -> str:
 def test_small_tdd_skill_is_explicit_only_and_has_exact_loop() -> None:
     skill = _read(SMALL_TDD_DIR)
 
+    # disable-model-invocation mirrors the Codex-only agents/openai.yaml policy for
+    # clients that read invocation policy from SKILL.md frontmatter.
     assert skill.startswith(
         "---\nname: ai-small-tdd-change\n"
         "description: Use only when 用户显式点名 $ai-small-tdd-change "
         "或明确要求 lightweight/small TDD AI coding workflow。\n"
+        "disable-model-invocation: true\n"
         "---\n"
     )
     assert "policy:\n  allow_implicit_invocation: false\n" in _read(

@@ -1,6 +1,7 @@
 ---
 name: ai-small-tdd-change
 description: Use only when 用户显式点名 $ai-small-tdd-change 或明确要求 lightweight/small TDD AI coding workflow。
+disable-model-invocation: true
 ---
 
 # AI Small TDD Change
