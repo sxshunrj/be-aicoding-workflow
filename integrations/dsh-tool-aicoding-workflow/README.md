@@ -119,6 +119,27 @@ failed: []
 
 即：profile → 插件加载 → 工具注册 → 模型调用 → Python helper → envelope 原样回传，整条链路通了。
 
+### `aiworkflow_run_start` 全流程（在 DSH turn 内实测）
+
+给模型一个已 `workflow init` 的 run 和一条 child 命令模板，它按顺序调用
+`aiworkflow_run_start` → `aiworkflow_run_status` 后回报：
+
+```
+START_STATUS=started
+RUN_STATUS=blocked
+CURRENT_PHASE=spec
+RUNNING=false
+PROGRESS_KINDS=begin,stage,finalize,review,block,blocked_waiting_for_human,run_finished
+```
+
+独立核对持久层，全部一致：
+
+- `workflow status` → `blocked / spec`；
+- child **确实被跑过**：`artifacts/spec-spec.md`（child 写的产物）+ `harness/results/<attempt>/spec.json`（被 stage 的 ChildResult）；
+- `run --detach` 的 NDJSON 进度流 7 条事件，最后一条 `run_finished`。
+
+refuse gate 在 spec 的 review gate 处把 run 停住 —— 这正是预期行为：**orchestrator 不替人回答 gate**。
+
 清理这个 profile：
 
 ```bash
