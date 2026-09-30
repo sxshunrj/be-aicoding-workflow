@@ -19,7 +19,7 @@ def _repo(root: Path) -> Path:
     repo = root / "repo"
     repo.mkdir()
     (repo / ".ai-workflow.yaml").write_text(
-        "repository: demo\nwiki_path: wiki\n", encoding="utf-8"
+        "schema_version: 2\nrepository: demo\nwiki_path: wiki\n", encoding="utf-8"
     )
     for name in ("approved", "candidates", "archive"):
         (repo / "wiki" / name).mkdir(parents=True, exist_ok=True)

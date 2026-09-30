@@ -29,7 +29,7 @@ def _skill_dir(root: Path) -> Path:
 
 def test_begin_writes_child_packet_and_stage_validates_citations(tmp_path: Path) -> None:
     (tmp_path / ".ai-workflow.yaml").write_text(
-        "repository: demo\n", encoding="utf-8"
+        "schema_version: 2\nrepository: demo\n", encoding="utf-8"
     )
     for name in ("approved", "candidates", "archive"):
         (tmp_path / "wiki" / name).mkdir(parents=True, exist_ok=True)

@@ -168,6 +168,7 @@ Verification Commands
 依赖 `.ai-workflow.yaml` 中的 adapter：
 
 ```yaml
+schema_version: 2
 adapter:
   source_paths: [...]
   test_paths: [...]
@@ -177,6 +178,8 @@ commands:
   integration_test: [...]
 protected_paths: [...]
 ```
+
+配置必须声明 `schema_version: 2`；旧文件用 `ai-workflow config migrate --repo <repo>` 升级（只改版本行，注释与键顺序保留）。
 
 它只写 adapter 授权的测试路径，优先写 `generated_test_destinations`；不修改生产代码，不写 protected paths。adapter 不足时会停止并要求补配置。
 

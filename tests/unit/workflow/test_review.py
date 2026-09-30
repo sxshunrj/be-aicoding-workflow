@@ -18,7 +18,7 @@ from ai_workflow.workflow.store import Event, StateStore
 def _config(repo: Path, *, review_mode: str = "human") -> None:
     repo.mkdir(parents=True, exist_ok=True)
     (repo / ".ai-workflow.yaml").write_text(
-        f"repository: demo\nreview_mode: {review_mode}\n",
+        f"schema_version: 2\nrepository: demo\nreview_mode: {review_mode}\n",
         encoding="utf-8",
     )
 

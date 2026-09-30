@@ -10,7 +10,7 @@ from ai_workflow.workflow.service import WorkflowService
 
 
 def _run(tmp_path):
-    (tmp_path / ".ai-workflow.yaml").write_text("repository: demo\n", encoding="utf-8")
+    (tmp_path / ".ai-workflow.yaml").write_text("schema_version: 2\nrepository: demo\n", encoding="utf-8")
     contracts = tmp_path / "skill" / "references" / "agents"
     contracts.mkdir(parents=True)
     for name in ("common-phase-contract.md", "spec-writer.md"):

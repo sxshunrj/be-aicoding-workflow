@@ -20,7 +20,7 @@ def _config(
             + "".join(f"  - {path}\n" for path in protected_paths)
         )
     (repo / ".ai-workflow.yaml").write_text(
-        f"repository: demo\n{protected}{adapter}",
+        f"schema_version: 2\nrepository: demo\n{protected}{adapter}",
         encoding="utf-8",
     )
     return RepositoryConfig.load(repo)

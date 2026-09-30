@@ -16,7 +16,7 @@ from ai_workflow.workflow.service import WorkflowService
 
 def _config(repo: Path, *, knowledge_limit: int = 12000) -> None:
     (repo / ".ai-workflow.yaml").write_text(
-        "repository: demo\n"
+        "schema_version: 2\nrepository: demo\n"
         "review_mode: auto_accept\n"
         "knowledge:\n"
         "  max_entries: 8\n"

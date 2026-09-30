@@ -38,6 +38,7 @@ def test_cli_parser_errors_use_stable_json_envelope(argv, capsys) -> None:
 def _repo_config(repo: Path) -> None:
     (repo / ".ai-workflow.yaml").write_text(
         """
+schema_version: 2
 repository: demo
 protected_paths: [.git/**, .ai-workflow/**]
 adapter:

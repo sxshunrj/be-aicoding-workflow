@@ -9,7 +9,7 @@ from ai_workflow.workflow.service import WorkflowService
 
 def test_service_recovers_staged_and_finalized_phase_from_disk(tmp_path: Path) -> None:
     (tmp_path / ".ai-workflow.yaml").write_text(
-        "repository: demo\n", encoding="utf-8"
+        "schema_version: 2\nrepository: demo\n", encoding="utf-8"
     )
     contracts = tmp_path / "skill" / "references" / "agents"
     contracts.mkdir(parents=True)

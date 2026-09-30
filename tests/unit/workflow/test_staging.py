@@ -19,7 +19,7 @@ def _config(repo: Path, *, protected_paths: tuple[str, ...] = ()) -> None:
     if protected_paths:
         protected = f"protected_paths: [{', '.join(protected_paths)}]\n"
     (repo / ".ai-workflow.yaml").write_text(
-        "repository: demo\n"
+        "schema_version: 2\nrepository: demo\n"
         "commands:\n"
         "  unit_test: [pytest, -q]\n"
         f"{protected}",

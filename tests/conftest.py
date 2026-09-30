@@ -57,7 +57,7 @@ def git_repo(tmp_path: Path) -> GitRepo:
     repo.git("config", "user.email", "test@example.com")
     repo.write(
         ".ai-workflow.yaml",
-        "repository: checkpoint-test\nprotected_paths: [.git/**, .ai-workflow/**]\n",
+        "schema_version: 2\nrepository: checkpoint-test\nprotected_paths: [.git/**, .ai-workflow/**]\n",
     )
     repo.write("src/app.py", "original\n")
     repo.git("add", ".ai-workflow.yaml", "src/app.py")

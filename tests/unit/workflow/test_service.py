@@ -18,7 +18,7 @@ from ai_workflow.workflow.store import Event, StateStore
 
 def _config(repo: Path, max_attempts: int = 3) -> None:
     (repo / ".ai-workflow.yaml").write_text(
-        f"repository: demo\nmax_attempts: {max_attempts}\n", encoding="utf-8"
+        f"schema_version: 2\nrepository: demo\nmax_attempts: {max_attempts}\n", encoding="utf-8"
     )
 
 

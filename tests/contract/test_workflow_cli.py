@@ -8,7 +8,7 @@ from ai_workflow.workflow.models import Phase
 
 
 def _config(repo: Path) -> None:
-    (repo / ".ai-workflow.yaml").write_text("repository: demo\n", encoding="utf-8")
+    (repo / ".ai-workflow.yaml").write_text("schema_version: 2\nrepository: demo\n", encoding="utf-8")
 
 
 def _skill_dir(root: Path) -> Path:

@@ -7,7 +7,7 @@ import shlex
 import sys
 from typing import Sequence
 
-from ai_workflow.config import RepositoryConfig
+from ai_workflow.config import SCHEMA_VERSION, RepositoryConfig, migrate_repository_config
 from ai_workflow.doctor import run_doctor
 from ai_workflow.errors import AppError
 from ai_workflow.install import install_skills
@@ -58,6 +58,10 @@ def _parser() -> argparse.ArgumentParser:
     config_commands = config.add_subparsers(dest="config_command", required=True)
     show = config_commands.add_parser("show")
     show.add_argument("--repo", type=Path, required=True)
+    migrate = config_commands.add_parser("migrate")
+    migrate.add_argument("--repo", type=Path, required=True)
+    migrate.add_argument("--to", type=int, default=SCHEMA_VERSION)
+    migrate.add_argument("--dry-run", action="store_true")
     authorize_path = config_commands.add_parser("authorize-path")
     authorize_path.add_argument("--repo", type=Path, required=True)
     authorize_path.add_argument(
@@ -267,19 +271,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "run":
             data = _run_command(args)
         elif args.command == "config":
-            config = RepositoryConfig.load(args.repo)
-            if args.config_command == "show":
-                data: object = _config_data(config)
+            if args.config_command == "migrate":
+                # Migration must run before RepositoryConfig.load: a legacy file
+                # has no schema_version and would be rejected by it.
+                data: object = migrate_repository_config(
+                    args.repo, to_version=args.to, dry_run=args.dry_run
+                ).to_dict()
             else:
-                kind: PathKind = args.kind
-                authorized = RepositoryPathAuthorizer(
-                    args.repo, config
-                ).authorize(kind, args.path)
-                data = {
-                    "authorized": True,
-                    "kind": kind,
-                    "path": authorized,
-                }
+                config = RepositoryConfig.load(args.repo)
+                if args.config_command == "show":
+                    data = _config_data(config)
+                else:
+                    kind: PathKind = args.kind
+                    authorized = RepositoryPathAuthorizer(
+                        args.repo, config
+                    ).authorize(kind, args.path)
+                    data = {
+                        "authorized": True,
+                        "kind": kind,
+                        "path": authorized,
+                    }
         elif args.command == "wiki":
             service = WikiService(WikiRepository(args.wiki, validate_layout=False))
             if args.wiki_command == "lint":

@@ -17,7 +17,7 @@ from ai_workflow.workflow.models import Phase
 
 def test_builds_language_neutral_run_graph_from_commands(tmp_path: Path) -> None:
     (tmp_path / ".ai-workflow.yaml").write_text(
-        "repository: demo\n"
+        "schema_version: 2\nrepository: demo\n"
         "commands:\n"
         "  build: [bash, verify.sh, build]\n"
         "  unit_test: [bash, verify.sh, test]\n"
@@ -43,7 +43,7 @@ def test_builds_language_neutral_run_graph_from_commands(tmp_path: Path) -> None
 
 def test_command_gated_and_explicitly_disabled_nodes_are_omitted(tmp_path: Path) -> None:
     (tmp_path / ".ai-workflow.yaml").write_text(
-        "repository: demo\n"
+        "schema_version: 2\nrepository: demo\n"
         "commands:\n"
         "  build: [make]\n"
         "  integration_test: [pytest, integration]\n"
@@ -72,7 +72,7 @@ def test_rejects_disabled_mandatory_node(
     tmp_path: Path, mandatory_node: str
 ) -> None:
     (tmp_path / ".ai-workflow.yaml").write_text(
-        f"repository: demo\ndisabled_nodes: [{mandatory_node}]\n",
+        f"schema_version: 2\nrepository: demo\ndisabled_nodes: [{mandatory_node}]\n",
         encoding="utf-8",
     )
 
@@ -82,7 +82,7 @@ def test_rejects_disabled_mandatory_node(
 
 def test_builds_grill_profile_graph_with_prd_initial_phase(tmp_path: Path) -> None:
     (tmp_path / ".ai-workflow.yaml").write_text(
-        "repository: demo\n"
+        "schema_version: 2\nrepository: demo\n"
         "commands:\n"
         "  build: [bash, verify.sh, build]\n"
         "  unit_test: [bash, verify.sh, test]\n"
@@ -107,7 +107,7 @@ def test_builds_grill_profile_graph_with_prd_initial_phase(tmp_path: Path) -> No
 
 
 def test_grill_omits_command_gated_verify_nodes(tmp_path: Path) -> None:
-    (tmp_path / ".ai-workflow.yaml").write_text("repository: demo\n", encoding="utf-8")
+    (tmp_path / ".ai-workflow.yaml").write_text("schema_version: 2\nrepository: demo\n", encoding="utf-8")
 
     definition = build_run_graph(RepositoryConfig.load(tmp_path), WorkflowProfile.GRILL)
 
@@ -120,7 +120,7 @@ def test_grill_omits_command_gated_verify_nodes(tmp_path: Path) -> None:
 
 def test_grill_rejects_disabled_mandatory_node(tmp_path: Path) -> None:
     (tmp_path / ".ai-workflow.yaml").write_text(
-        "repository: demo\ndisabled_nodes: [plan.prd]\n",
+        "schema_version: 2\nrepository: demo\ndisabled_nodes: [plan.prd]\n",
         encoding="utf-8",
     )
 

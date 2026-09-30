@@ -1,10 +1,17 @@
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import re
 from typing import Mapping
 
 import yaml
 
 from ai_workflow.errors import AppError
+
+
+SCHEMA_VERSION = 2
+
+_SCHEMA_LINE = re.compile(r"^schema_version\s*:.*$")
 
 
 def _mapping(value: object, name: str) -> Mapping[object, object]:
@@ -59,6 +66,14 @@ class RepositoryConfig:
         except yaml.YAMLError as error:
             raise AppError("config_invalid", "configuration YAML is invalid") from error
         raw = _mapping({} if loaded is None else loaded, "configuration")
+        version = raw.get("schema_version")
+        if version != SCHEMA_VERSION:
+            raise AppError(
+                "unsupported_schema_version",
+                f"unsupported repository schema_version: {version!r}; run "
+                f"`ai-workflow config migrate --repo <repo>` to upgrade to "
+                f"{SCHEMA_VERSION}",
+            )
         repository = raw.get("repository")
         if repository is None:
             raise AppError("config_invalid", "repository is required")
@@ -123,3 +138,89 @@ class RepositoryConfig:
                 adapter.get("report_paths"), "adapter.report_paths"
             ),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigMigrationResult:
+    """Outcome of upgrading one repository configuration file."""
+
+    path: str
+    from_version: int
+    to_version: int
+    changed: bool
+    dry_run: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "path": self.path,
+            "from_version": self.from_version,
+            "to_version": self.to_version,
+            "changed": self.changed,
+            "dry_run": self.dry_run,
+        }
+
+
+def migrate_repository_config(
+    repo_root: Path,
+    *,
+    to_version: int = SCHEMA_VERSION,
+    dry_run: bool = False,
+) -> ConfigMigrationResult:
+    """Upgrade ``<repo>/.ai-workflow.yaml`` to the current schema version.
+
+    Only the ``schema_version`` line changes: every other key keeps its value,
+    comment, and position, because the file belongs to the user. A missing
+    version is read as legacy v1. Unknown versions are refused rather than
+    guessed at.
+    """
+    if to_version != SCHEMA_VERSION:
+        raise AppError(
+            "invalid_arguments",
+            f"config migrate only supports --to {SCHEMA_VERSION}",
+        )
+    path = repo_root / ".ai-workflow.yaml"
+    if not path.is_file():
+        raise AppError("config_not_found", f"configuration not found: {path}")
+    text = path.read_text(encoding="utf-8")
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError as error:
+        raise AppError("config_invalid", "configuration YAML is invalid") from error
+    raw = _mapping({} if loaded is None else loaded, "configuration")
+    declared = raw.get("schema_version")
+    if declared not in (None, 1, SCHEMA_VERSION) or type(declared) is bool:
+        raise AppError(
+            "unsupported_schema_version",
+            f"unsupported repository schema_version: {declared!r}",
+        )
+    from_version = 1 if declared is None else declared
+    if declared == SCHEMA_VERSION:
+        return ConfigMigrationResult(
+            str(path), SCHEMA_VERSION, SCHEMA_VERSION, False, dry_run
+        )
+
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if _SCHEMA_LINE.match(line):
+            lines[index] = f"schema_version: {SCHEMA_VERSION}\n"
+            break
+    else:
+        insert_at = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if line.strip() and not line.lstrip().startswith("#")
+            ),
+            len(lines),
+        )
+        lines.insert(insert_at, f"schema_version: {SCHEMA_VERSION}\n")
+    updated = "".join(lines)
+    candidate = yaml.safe_load(updated)
+    _mapping({} if candidate is None else candidate, "configuration")
+    if not dry_run:
+        temporary = path.with_name(f".{path.name}.migrate.tmp")
+        temporary.write_text(updated, encoding="utf-8")
+        os.replace(temporary, path)
+    return ConfigMigrationResult(
+        str(path), from_version, SCHEMA_VERSION, True, dry_run
+    )

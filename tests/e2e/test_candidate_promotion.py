@@ -7,7 +7,7 @@ from ai_workflow.cli import main
 
 
 def _config(root: Path) -> None:
-    (root / ".ai-workflow.yaml").write_text("repository: demo\nwiki_path: wiki\n", encoding="utf-8")
+    (root / ".ai-workflow.yaml").write_text("schema_version: 2\nrepository: demo\nwiki_path: wiki\n", encoding="utf-8")
 
 
 def _wiki(root: Path) -> None:
