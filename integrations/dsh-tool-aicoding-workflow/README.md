@@ -14,13 +14,15 @@ Codex/Claude Code 模式下，主 Agent 靠读 242 行 `helper-cli.md` 再拼命
 
 ## 暴露面：窄，是刻意的
 
-helper 有 16 个 `workflow` 子命令。本插件默认只暴露**编排与检视层**：
+helper 暴露三层命令面。本插件默认只给模型**编排与检视层**（13 个工具）：
 
 | 工具 | helper 命令 | 语义 |
 |---|---|---|
 | `aiworkflow_status` | `workflow status` | 唯一恢复入口，纯读 |
-| `aiworkflow_summary` | `workflow summary` | 终态摘要，纯读 |
+| `aiworkflow_summary` | `workflow summary` | 终态摘要，含 harness 观测到的命令证据，纯读 |
 | `aiworkflow_start` | `workflow init` | 建 run + 不可变 policy |
+| **`aiworkflow_run_start`** | `run --detach` | **交给代码化 orchestrator 后台驱动**，返回 pid/进度/结果路径 |
+| **`aiworkflow_run_status`** | `run-status` | 读 run 状态 + 进度流 + 终态结果，纯读 |
 | `aiworkflow_review` | `workflow review` | 推导 review gate（`NODE=REASON`） |
 | `aiworkflow_approve` | `workflow review-accept` | **人工**接受 gate，必须带 digest |
 | `aiworkflow_block` | `workflow block` | 阻塞并留证据 |
@@ -30,9 +32,11 @@ helper 有 16 个 `workflow` 子命令。本插件默认只暴露**编排与检�
 | `aiworkflow_wiki_search` | `wiki search` | 只搜已批准知识 |
 | `aiworkflow_doctor` | `doctor` | 环境诊断 |
 
-**不暴露** `begin` / `stage` / `stage-owned` / `finalize` / `transition`。
+`run_start` 虽然会驱动 run，仍放在默认面 —— 它把控制权交给**代码化 orchestrator**，而不是把原语交给模型。人工 gate 依然会让 run 停住，orchestrator 不替人回答。
 
-理由：helper 能校验产物的**形状**（归属、路径授权、digest），但**无法判断是谁写的**。把这四个原语交给模型，就等于重新打开"Harnes 自己写 child 结果"的口子——而这条正是 SKILL.md 里只能用 prose 禁止的事。它们必须由代码化的 orchestrator 独占。
+**不暴露**（需 `exposeRunControl: true`，4 个）：`workflow begin` / `workflow stage` / `workflow finalize` / `workflow transition`。
+
+理由：helper 能校验产物的**形状**（归属、路径授权、digest），但**无法判断是谁写的**。把这四个原语交给模型，就等于重新打开"Harness 自己写 child 结果"的口子——而这条正是 SKILL.md 里只能用 prose 禁止的事。它们必须由代码化的 orchestrator 独占。
 
 需要保留 Codex 式手动模式的部署，可显式打开 `exposeRunControl: true`（默认关闭）。
 
@@ -67,11 +71,12 @@ dsh plugin --profile <name> add ./integrations/dsh-tool-aicoding-workflow   # �
 - **客户端预校验**：`--rerun` 的 `NODE=REASON` 形状、重复 node 在前置校验里就报错（helper 仍会再校验一次，纵深防御）。
 - **并发标注**：只读工具标记 `isConcurrencySafe`，可加入并行组；写工具不标记。
 
-## 已知缺口（骨架阶段）
+## 已知缺口
 
-1. **没有 orchestrator**：默认面不包含 run control，所以目前没有代码在驱动 `begin → stage → finalize → transition`。插件解决的是"接口与权限"，不是"控制流"。
-2. **未编译验证**：本目录尚无 `node_modules`；类型检查需要 `pnpm install` 拉取与宿主同版本的 `@deepseek-ai/*` 类型。
-3. **`stage_owned` 未暴露**：grill profile 的 `plan.prd` 需要它；加入前要先决定它属于编排面还是 run-control 面。
+1. **`stage_owned` 未暴露**：grill profile 的 `plan.prd` 是 `workflow_owned` 节点，`aiworkflow_run_start` 遇到它会停下并给出需要 owner 补的 `stage-owned` 命令。要不要把它放进编排面，得先决定它算不算"代写 child 结果"。
+2. **`run_start` 未在 DSH 里实测挂载**：类型检查（`tsc --noEmit`）通过，Python 侧 `run --detach` / `run-status` 已有端到端验证（`tests/e2e/test_orchestrator_detach.py`），但"插件被 profile 加载后模型真的能调用"这一步没有在真实 profile 里跑过。
+3. **未编译产物**：本目录没有 `node_modules` 与构建产物；挂载前需要 `pnpm install && pnpm typecheck`。
+4. **Skill 文档尚未描述 orchestrator**：`helper-cli.md` 的命令矩阵被契约测试逐行锁定（15 条 `config|workflow` 命令），要把 `ai-workflow run` 写进去必须同步改 `tests/contract/test_skill_contract.py`，这是一次有意的文档变更，本提交未做。
 
 ## 验证
 

@@ -148,6 +148,45 @@ const SPECS: readonly ToolSpec[] = [
     ],
   },
   {
+    // Deliberately on the default surface even though it drives a run: it hands
+    // control to the code-owned orchestrator instead of exposing the primitives
+    // a model could use to fabricate a staged result. Human gates still park the
+    // run; the orchestrator never answers them itself.
+    name: 'aiworkflow_run_start',
+    description: 'Drive a run with the code-owned orchestrator in a background process and return a handle (pid, progress path, result path). Poll with aiworkflow_run_status; a review gate parks the run until a human answers it.',
+    parameters: {
+      repo: REPO,
+      run_id: RUN_ID,
+      child_command: { type: 'string', required: true, description: 'argv template for one child, e.g. "codex exec {prompt_file} {result_file}".' },
+      skill_dir: { type: 'string', description: 'Absolute skill directory holding references/agents contracts; required for child-backed phases.' },
+      max_steps: { type: 'integer', description: 'Loop step budget before the orchestrator gives up.' },
+    },
+    argv: (args) => [
+      'run', '--detach',
+      '--repo', required(args, 'repo'),
+      '--run-id', required(args, 'run_id'),
+      '--child-command', required(args, 'child_command'),
+      ...flag('--skill-dir', optional(args, 'skill_dir')),
+      ...flag('--max-steps', optionalNumber(args, 'max_steps')),
+    ],
+  },
+  {
+    name: 'aiworkflow_run_status',
+    description: 'Read one run status plus the detached orchestrator progress stream and its final result, if it has settled.',
+    parameters: {
+      repo: REPO,
+      run_id: RUN_ID,
+      progress_limit: { type: 'integer', description: 'Maximum number of trailing progress events to return.' },
+    },
+    readOnly: true,
+    argv: (args) => [
+      'run-status',
+      '--repo', required(args, 'repo'),
+      '--run-id', required(args, 'run_id'),
+      ...flag('--progress-limit', optionalNumber(args, 'progress_limit')),
+    ],
+  },
+  {
     name: 'aiworkflow_review',
     description: 'Propose the review gate for the finalized current phase. Reruns must be an actionable NODE=REASON mapping; verify phases always require a human decision.',
     parameters: { repo: REPO, run_id: RUN_ID, rerun: RERUN },
